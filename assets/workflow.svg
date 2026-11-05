@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="100%" height="100%" role="img" aria-label="DRIFT 4-Stage Verification Pipeline: Draft, Seal, Prove, Gate">
+  <title>DRIFT 4-Stage Verification Pipeline</title>
+  <defs>
+    <!-- Dot-matrix pattern from Observatory Deck -->
+    <pattern id="wfFluxDots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="11" cy="11" r="0.85" fill="#8D9B9B" fill-opacity="0.22" />
+    </pattern>
+
+    <!-- Central Verdigris / Mint radial glow -->
+    <radialGradient id="wfMintGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#58DCC3" stop-opacity="0.16" />
+      <stop offset="70%" stop-color="#58DCC3" stop-opacity="0.04" />
+      <stop offset="100%" stop-color="#58DCC3" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Warm Copper radial glow -->
+    <radialGradient id="wfCopperGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E8A76D" stop-opacity="0.14" />
+      <stop offset="70%" stop-color="#E8A76D" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#E8A76D" stop-opacity="0" />
+    </radialGradient>
+
+    <style>
+      .sans { font-family: 'Archivo', 'Ubuntu Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .mono { font-family: 'JetBrains Mono', 'Ubuntu Sans Mono', 'SFMono-Regular', Consolas, monospace; font-variant-numeric: tabular-nums; }
+    </style>
+  </defs>
+
+  <!-- ==================== 0. OBSERVATORY DECK BACKGROUND ==================== -->
+  <rect width="1200" height="340" rx="10" fill="#181B1F" />
+  <rect x="0.75" y="0.75" width="1198.5" height="338.5" rx="9.5" fill="none" stroke="#2E3237" stroke-width="1.5" />
+
+  <!-- ==================== 1. TOPLINE CARTOGRAPHIC HEADER ==================== -->
+  <g class="mono" font-size="11" font-weight="600" letter-spacing="1.1">
+    <rect x="32" y="19" width="7" height="7" rx="1.5" fill="#D6A27A" />
+    <text x="48" y="26.5" fill="#E8A76D">I V  ·  VERIFICATION PIPELINE &amp; LIFECYCLE</text>
+    <text x="1168" y="26.5" text-anchor="end" fill="#9A9891" letter-spacing="0.9">WHEN → SEAL → PROVE → GATE</text>
+  </g>
+
+  <!-- Cartographic horizon scale in center of topline (.tab-horizon-scale) -->
+  <g stroke="#6F6A63" stroke-width="1" opacity="0.55">
+    <line x1="390" y1="21" x2="810" y2="21" />
+    <line x1="390" y1="25" x2="810" y2="25" stroke-opacity="0.5" />
+    <path d="M 480 18 V 24 M 540 18 V 24 M 660 18 V 24 M 720 18 V 24" />
+    <path d="M 600 17.5 L 604.5 22 L 600 26.5 L 595.5 22 Z" fill="#181B1F" stroke="#E8A76D" stroke-width="1.2" />
+  </g>
+
+  <!-- Top structural rule -->
+  <line x1="24" y1="42" x2="1176" y2="42" stroke="#383B3D" stroke-width="1" />
+
+  <!-- ==================== 2. ARCHITECTURAL 4-COLUMN GRID & SIGNAL BUS ==================== -->
+  <!-- Dot-matrix canvas inside the 4 columns -->
+  <rect x="24" y="43" width="1152" height="249" fill="url(#wfFluxDots)" />
+
+  <!-- Vertical column dividers (4 equal 288px columns: 24..312, 312..600, 600..888, 888..1176) -->
+  <g stroke="#383B3D" stroke-width="1">
+    <line x1="312" y1="42" x2="312" y2="292" />
+    <line x1="600" y1="42" x2="600" y2="292" />
+    <line x1="888" y1="42" x2="888" y2="292" />
+  </g>
+
+  <!-- Ambient glows at Stage 02 (Seal) and Stage 04 (Gate) -->
+  <circle cx="456" cy="144" r="68" fill="url(#wfCopperGlow)">
+    <animate attributeName="r" values="62;76;62" dur="4.0s" repeatCount="indefinite" />
+  </circle>
+  <circle cx="1032" cy="144" r="76" fill="url(#wfMintGlow)">
+    <animate attributeName="r" values="68;86;68" dur="3.6s" repeatCount="indefinite" />
+  </circle>
+
+  <!-- Horizontal Signal Axis & Ghost Lines across all 4 stages (y = 144) -->
+  <line x1="36" y1="144" x2="1164" y2="144" stroke="#9A9891" stroke-width="1" stroke-dasharray="2 9" opacity="0.22" />
+  <line x1="72" y1="118" x2="1128" y2="118" stroke="#9FB5AD" stroke-width="0.7" stroke-dasharray="2 8" opacity="0.18" />
+  <line x1="72" y1="170" x2="1128" y2="170" stroke="#9FB5AD" stroke-width="0.7" stroke-dasharray="2 8" opacity="0.18" />
+
+  <!-- Continuous Bezier Signal Waves connecting Node 1 (168) -> Node 2 (456) -> Node 3 (744) -> Node 4 (1032) -->
+  <!-- Segment 1->2 (Copper Intent Wave) -->
+  <path d="M 64 144 H 168 C 236 144, 268 122, 312 132 S 392 154, 434 144"
+        fill="none" stroke="#E8A76D" stroke-width="1.5" opacity="0.78" stroke-linecap="round" />
+  <path d="M 168 144 C 236 144, 268 166, 312 156 S 392 134, 434 144"
+        fill="none" stroke="#E8A76D" stroke-width="1.2" opacity="0.45" stroke-linecap="round" />
+  <path d="M 168 144 C 236 144, 268 122, 312 132 S 392 154, 434 144"
+        fill="none" stroke="#FFCE8B" stroke-width="2.4" stroke-dasharray="8 38" opacity="0.92" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="184" to="0" dur="2.8s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Segment 2->3 (Copper-to-Mint Transition Wave) -->
+  <path d="M 478 144 C 540 144, 568 122, 600 130 S 680 154, 744 144"
+        fill="none" stroke="#9FB5AD" stroke-width="1.4" opacity="0.72" stroke-linecap="round" />
+  <path d="M 478 144 C 540 144, 568 166, 600 158 S 680 134, 744 144"
+        fill="none" stroke="#67978C" stroke-width="1.2" opacity="0.48" stroke-linecap="round" />
+  <path d="M 478 144 C 540 144, 568 122, 600 130 S 680 154, 744 144"
+        fill="none" stroke="#70F6D9" stroke-width="2.2" stroke-dasharray="8 38" opacity="0.85" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="184" to="0" dur="2.8s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Segment 3->4 (Verdigris Mint Runtime Proof Wave) -->
+  <path d="M 744 144 C 812 144, 848 120, 888 130 S 968 154, 1008 144 M 1056 144 H 1140"
+        fill="none" stroke="#58DCC3" stroke-width="1.6" opacity="0.85" stroke-linecap="round" />
+  <path d="M 744 144 C 812 144, 848 168, 888 158 S 968 134, 1008 144"
+        fill="none" stroke="#58DCC3" stroke-width="1.2" opacity="0.48" stroke-linecap="round" />
+  <path d="M 744 144 C 812 144, 848 120, 888 130 S 968 154, 1008 144"
+        fill="none" stroke="#74FFE4" stroke-width="2.4" stroke-dasharray="8 38" opacity="0.94" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="184" to="0" dur="2.8s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Traveling Signal Particles across the 4-stage pipeline -->
+  <circle r="3.2" fill="#FFCE8B">
+    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 168 144 C 236 144, 268 122, 312 132 S 392 154, 434 144" />
+    <animate attributeName="opacity" values="0.2;1;1;0.2" keyTimes="0;0.15;0.85;1" dur="2.8s" repeatCount="indefinite" />
+  </circle>
+  <circle r="3.2" fill="#70F6D9">
+    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 478 144 C 540 144, 568 122, 600 130 S 680 154, 744 144" />
+    <animate attributeName="opacity" values="0.2;1;1;0.2" keyTimes="0;0.15;0.85;1" dur="2.8s" repeatCount="indefinite" />
+  </circle>
+  <circle r="3.2" fill="#74FFE4">
+    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 744 144 C 812 144, 848 120, 888 130 S 968 154, 1008 144" />
+    <animate attributeName="opacity" values="0.2;1;1;0.2" keyTimes="0;0.15;0.85;1" dur="2.8s" repeatCount="indefinite" />
+  </circle>
+
+  <!-- Crosshair markers at column boundaries -->
+  <g stroke="#7A948B" stroke-width="0.9" opacity="0.55">
+    <path d="M 312 126 V 138 M 306 132 H 318" />
+    <path d="M 600 124 V 136 M 594 130 H 606" />
+    <path d="M 888 124 V 136 M 882 130 H 894" />
+  </g>
+
+  <!-- ==================== STAGE 01: DRAFT & CHECK (x = 24..312, center = 168) ==================== -->
+  <g>
+    <text x="44" y="76" class="sans" font-size="28" font-weight="500" fill="#E8A76D" fill-opacity="0.54" letter-spacing="-1">01</text>
+    <text x="86" y="66" class="mono" font-size="10.5" font-weight="600" fill="#E8A76D" letter-spacing="0.9">STAGE 01 · INTENT</text>
+    <text x="86" y="84" class="sans" font-size="16.5" font-weight="500" fill="#EEECE6" letter-spacing="-0.3">Draft &amp; Check</text>
+
+    <!-- Node 01 at (168, 144) -->
+    <circle cx="168" cy="144" r="18" fill="#181B1F" stroke="#BC8151" stroke-width="1.2" />
+    <circle cx="168" cy="144" r="11" fill="#231E1A" stroke="#E8A76D" stroke-width="1.4" />
+    <circle cx="168" cy="144" r="4" fill="#E8A76D" />
+
+    <!-- Stage 01 Spec Panel -->
+    <rect x="42" y="184" width="252" height="92" rx="6" fill="#202328" stroke="#383B3D" stroke-width="1" />
+    <text x="56" y="205" class="mono" font-size="11.5" font-weight="600" fill="#EEECE6">.drift/contracts/&lt;id&gt;.toml</text>
+    <text x="56" y="224" class="sans" font-size="12.5" fill="#B6B2A8">Declare <tspan class="mono" font-size="11.5" fill="#E8A76D">when</tspan> → <tspan class="mono" font-size="11.5" fill="#58DCC3">then</tspan> cases &amp; scope</text>
+    <rect x="56" y="238" width="224" height="24" rx="4" fill="#181B1F" stroke="#4A3B2C" stroke-width="1" />
+    <text x="66" y="254" class="mono" font-size="11" fill="#E8A76D">$ drift fmt &amp;&amp; drift check</text>
+  </g>
+
+  <!-- ==================== STAGE 02: OWNER SEAL (x = 312..600, center = 456) ==================== -->
+  <g>
+    <text x="332" y="76" class="sans" font-size="28" font-weight="500" fill="#E8A76D" fill-opacity="0.54" letter-spacing="-1">02</text>
+    <text x="374" y="66" class="mono" font-size="10.5" font-weight="600" fill="#E8A76D" letter-spacing="0.9">STAGE 02 · AUTHORITY</text>
+    <text x="374" y="84" class="sans" font-size="16.5" font-weight="500" fill="#EEECE6" letter-spacing="-0.3">Review &amp; Owner Seal</text>
+
+    <!-- Node 02 at (456, 144): Rotated Diamond Seal -->
+    <circle cx="456" cy="144" r="24" fill="none" stroke="#BC8151" stroke-width="0.9" opacity="0.55" />
+    <rect x="441" y="129" width="30" height="30" transform="rotate(45 456 144)" fill="#192220" stroke="#CB9367" stroke-width="1.5" />
+    <rect x="446" y="134" width="20" height="20" transform="rotate(45 456 144)" fill="#102926" stroke="#58DCC3" stroke-width="1.4" />
+    <circle cx="456" cy="144" r="3.5" fill="#E8A76D" />
+
+    <!-- Stage 02 Spec Panel -->
+    <rect x="330" y="184" width="252" height="92" rx="6" fill="#202328" stroke="#5C4735" stroke-width="1" />
+    <text x="344" y="205" class="mono" font-size="11.5" font-weight="600" fill="#9FB5AD">dr1:sha256:e5bd6c21bc7b</text>
+    <text x="344" y="224" class="sans" font-size="12.5" fill="#B6B2A8">Human owner pins content digest</text>
+    <rect x="344" y="238" width="224" height="24" rx="4" fill="#181B1F" stroke="#5C4735" stroke-width="1" />
+    <text x="354" y="254" class="mono" font-size="11" fill="#E8A76D">$ drift approve --by &lt;owner&gt;</text>
+  </g>
+
+  <!-- ==================== STAGE 03: BIND & PROVE (x = 600..888, center = 744) ==================== -->
+  <g>
+    <text x="620" y="76" class="sans" font-size="28" font-weight="500" fill="#58DCC3" fill-opacity="0.54" letter-spacing="-1">03</text>
+    <text x="662" y="66" class="mono" font-size="10.5" font-weight="600" fill="#58DCC3" letter-spacing="0.9">STAGE 03 · EXECUTION</text>
+    <text x="662" y="84" class="sans" font-size="16.5" font-weight="500" fill="#EEECE6" letter-spacing="-0.3">Bind &amp; Prove Runtime</text>
+
+    <!-- Node 03 at (744, 144) -->
+    <circle cx="744" cy="144" r="18" fill="#181B1F" stroke="#67978C" stroke-width="1.2" />
+    <circle cx="744" cy="144" r="11" fill="#102926" stroke="#58DCC3" stroke-width="1.4" />
+    <circle cx="744" cy="144" r="4" fill="#58DCC3" />
+
+    <!-- Stage 03 Spec Panel -->
+    <rect x="618" y="184" width="252" height="92" rx="6" fill="#202328" stroke="#383B3D" stroke-width="1" />
+    <text x="632" y="205" class="mono" font-size="11.5" font-weight="600" fill="#EEECE6">@DriftCase · runDriftCase · py</text>
+    <text x="632" y="224" class="sans" font-size="12.5" fill="#B6B2A8">Tests read <tspan class="mono" font-size="11.5" fill="#58DCC3">then.*</tspan> &amp; emit JSONL proof</text>
+    <rect x="632" y="238" width="224" height="24" rx="4" fill="#181B1F" stroke="#284B44" stroke-width="1" />
+    <text x="642" y="254" class="mono" font-size="11" fill="#58DCC3">JUnit 5 · Node.js · Python 3</text>
+  </g>
+
+  <!-- ==================== STAGE 04: RELEASE GATE (x = 888..1176, center = 1032) ==================== -->
+  <g>
+    <text x="908" y="76" class="sans" font-size="28" font-weight="500" fill="#58DCC3" fill-opacity="0.54" letter-spacing="-1">04</text>
+    <text x="950" y="66" class="mono" font-size="10.5" font-weight="600" fill="#58DCC3" letter-spacing="0.9">STAGE 04 · VERDICT</text>
+    <text x="950" y="84" class="sans" font-size="16.5" font-weight="500" fill="#EEECE6" letter-spacing="-0.3">Release Gate</text>
+
+    <!-- Node 04 at (1032, 144): Full Observatory Diamond Gate -->
+    <circle cx="1032" cy="144" r="28" fill="none" stroke="#67978C" stroke-width="0.9" stroke-dasharray="2 8" opacity="0.65">
+      <animateTransform attributeName="transform" type="rotate" from="0 1032 144" to="360 1032 144" dur="24s" repeatCount="indefinite" />
+    </circle>
+    <rect x="1015" y="127" width="34" height="34" transform="rotate(45 1032 144)" fill="#192220" stroke="#CB9367" stroke-width="1.4" />
+    <rect x="1021" y="133" width="22" height="22" transform="rotate(45 1032 144)" fill="#102926" stroke="#58DCC3" stroke-width="1.6" />
+    <circle cx="1032" cy="144" r="4.5" fill="#70F6D9">
+      <animate attributeName="r" values="4.0;5.8;4.0" dur="3.0s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="1032" cy="144" r="1.6" fill="#1C584E" />
+
+    <!-- Stage 04 Spec Panel -->
+    <rect x="906" y="184" width="252" height="92" rx="6" fill="#192422" stroke="#2A7166" stroke-width="1.2" />
+    <text x="920" y="205" class="mono" font-size="11.5" font-weight="600" fill="#58DCC3">● VERIFIED · 0 REGRESSED</text>
+    <text x="920" y="224" class="sans" font-size="12.5" fill="#B6B2A8">Matches sealed digest &amp; proof events</text>
+    <rect x="920" y="238" width="224" height="24" rx="4" fill="#102926" stroke="#58DCC3" stroke-width="1" />
+    <text x="930" y="254" class="mono" font-size="11" font-weight="600" fill="#70F6D9">$ drift gate   →   exit 0</text>
+  </g>
+
+  <!-- ==================== 3. FOOTER GUARDRAIL BAR ==================== -->
+  <line x1="24" y1="292" x2="1176" y2="292" stroke="#383B3D" stroke-width="1" />
+  <g class="mono" font-size="11.5">
+    <text x="32" y="318" fill="#F0B65E" font-weight="600">× DRIFT GUARD <tspan fill="#9A9891" font-weight="400">/ BLOCKS STALE APPROVAL (DR-E601) · MISSING PROOF (DR-E701) · UNBOUND THEN (DR-E704)</tspan></text>
+    <text x="1168" y="318" text-anchor="end" fill="#58DCC3" font-weight="600">● GATE GREEN <tspan fill="#9A9891" font-weight="400">/ conformance@1</tspan></text>
+  </g>
+</svg>

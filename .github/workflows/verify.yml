@@ -1,0 +1,262 @@
+name: Verify DRIFT Release & Bridges
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+          python3 verifier/drift_verify.py --self-test
+          for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && break || sleep 3; done
+          export PATH="$HOME/.local/bin:$PATH"
+          drift version && drift check example/.drift && drift status example/.drift/contracts && drift review example/.drift/contracts --brief
+
+          mkdir -p /tmp/drift-ci/resolved /tmp/drift-ci/events
+          drift show example/.drift/contracts --out /tmp/drift-ci/resolved
+
+          DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/neg.jsonl node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict';
+          import { runDriftCase } from './bridges/drift.mjs';
+          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#incomplete', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: 200 })), /no check for then\.name/);
+          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#regression', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: 500, name: 'lamp' })), /expected then\.status=200, got 500/);
+          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#noop', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: (v) => {}, name: (v) => {} })), /must inspect the expected value/);
+          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#non_asserting', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: (expected) => { const ignored = expected; }, name: (expected) => { const ignored = expected; } })), /must inspect and assert the expected value/);
+          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#view_non_asserting', cases: ['found'], level: 'http' }, async (d) => d.checkView('found', { status: 200, name: 'lamp' }, { status: (expected) => { const ignored = expected; } })), /must inspect and assert the expected value/);
+          await runDriftCase({ contract: 'item-get', test: 'ci.mjs#build_only', cases: ['found'], level: 'http' }, async (d) => {
+            assert.equal(d.buildOutput('found').status, 200);
+            assert.deepEqual(d.fullyReadCases(), []);
+          });
+          EOF
+
+          DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/events/js.jsonl node --input-type=module - <<'EOF'
+          import { runDriftCase } from './bridges/drift.mjs';
+          import { createItemServer } from './example/server.mjs';
+          const srv = createItemServer();
+          await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+          const base = `http://127.0.0.1:${srv.address().port}`;
+          try {
+            await runDriftCase({ contract: 'item-get', test: 'ci.mjs#found', cases: ['found', 'bad-id'], level: 'http' }, async (d) => {
+              const res1 = await fetch(`${base}${d.when('found', 'request').split(' ')[1]}`);
+              const body1 = await res1.json();
+              await d.check('found', { status: res1.status, name: body1.name });
+              const res2 = await fetch(`${base}${d.when('bad-id', 'request').split(' ')[1]}`);
+              const body2 = await res2.json();
+              await d.check('bad-id', { status: res2.status, error: body2.error });
+            });
+          } finally { srv.close(); }
+          EOF
+
+          PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/neg_py.jsonl python3 - <<'PY'
+          import drift
+          def non_asserting(expected): ignored = expected
+          try:
+              drift.run_drift_case('item-get', 'ci.py#non_asserting', ['read-only'], lambda d: d.check_view('read-only', {'status': 200}, {'status': non_asserting}), 'unit')
+              raise SystemExit('expected AssertionError')
+          except AssertionError: pass
+          def check_build_only(d):
+              assert d.build_output('read-only')['status'] == 200 and d.fully_read_cases() == []
+          drift.run_drift_case('item-get', 'ci.py#build_only', ['read-only'], check_build_only, 'unit')
+          drift.reset_drift_cache()
+          PY
+
+          PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/events/py.jsonl python3 - <<'PY'
+          import drift
+          def handle_get_item(req: str) -> dict:
+              return {'status': 200, 'name': 'lamp'} if req.rsplit('/', 1)[-1] == '1' else {'status': 404, 'error': 'item not found'}
+          assert drift.run_drift_case('item-get', 'ci.py#not_found', ['not-found'], lambda d: d.check('not-found', handle_get_item(d.when('not-found', 'request'))), 'http') == 'passed'
+          assert drift.run_drift_case('item-get', 'ci.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': handle_get_item(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
+          PY
+
+          # Assert real bridge sidecars (js.meta.json & py.meta.json) exist and verify field-by-field JSON equivalence (default min-proof = verified)
+          test -f /tmp/drift-ci/events/js.meta.json && test -f /tmp/drift-ci/events/py.meta.json
+          drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/gate.json
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/ver.json
+
+          python3 - <<'PY'
+          import json
+          g = json.load(open('/tmp/drift-ci/gate.json'))['contracts'][0]
+          v = json.load(open('/tmp/drift-ci/ver.json'))['contracts'][0]
+          assert g['ok'] is True and v['ok'] is True
+          assert g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'current'
+          assert g['reasons'] == v['reasons'] == []
+          assert g['ignored'] == v['ignored'] == 0
+          g_states = [(r['case'], r['level'], r['state']) for r in g['results']]
+          v_states = [(r['case'], r['level'], r['state']) for r in v['results']]
+          assert g_states == v_states, (g_states, v_states)
+          assert all(st == 'verified' for _, _, st in g_states), g_states
+          PY
+
+          # JVM Bridge (MIT sources -> Maven build + JUnit 5 suite + live ItemServer HTTP test -> gate & verifier parity)
+          mkdir -p /tmp/drift-ci/jvm-events
+          mvn -q -B -f bridges/jvm/drift-junit/pom.xml test install
+          mvn -q -B -f example/pom.xml test -Ddrift.resolved=/tmp/drift-ci/resolved -Ddrift.events=/tmp/drift-ci/jvm-events/jvm.jsonl
+          test -f /tmp/drift-ci/jvm-events/jvm.meta.json
+          drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/jvm-events >/dev/null
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/jvm-events >/dev/null
+
+          # Concurrency Stress Test (24 parallel async JS tasks + 24 parallel multithreaded Python tasks)
+          mkdir -p /tmp/drift-ci/conc
+          DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/conc/js.jsonl node --input-type=module - <<'EOF'
+          import { runDriftCase } from './bridges/drift.mjs';
+          await Promise.all(Array.from({ length: 24 }, (_, i) =>
+            runDriftCase({ contract: 'item-get', test: `conc.mjs#t${i}`, cases: ['read-only'], level: 'unit' }, async (d) => {
+              await new Promise((r) => setTimeout(r, (i % 5) * 2));
+              await d.check('read-only', { status: 200 });
+            })
+          ));
+          EOF
+          PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/conc/py.jsonl python3 - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor
+          import drift, json
+          with ThreadPoolExecutor(max_workers=8) as ex:
+              res = list(ex.map(lambda i: drift.run_drift_case('item-get', f'conc.py#t{i}', ['read-only'], lambda d: d.check('read-only', {'status': 200}), 'unit'), range(24)))
+          assert all(r == 'passed' for r in res)
+          drift.flush_all_inventories()
+          assert len(json.load(open('/tmp/drift-ci/conc/js.meta.json'))['tests']) == 24
+          assert len(json.load(open('/tmp/drift-ci/conc/py.meta.json'))['tests']) == 24
+          PY
+
+          # Conformance check: decisions/open owner & note exclusion + minimum proof = "verified" policy floor
+          mkdir -p /tmp/drift-ci/pol/.drift/profiles /tmp/drift-ci/pol/.drift/contracts
+          cp example/.drift/profiles/http-json@1.toml /tmp/drift-ci/pol/.drift/profiles/
+          cp example/.drift/config.toml /tmp/drift-ci/pol/.drift/config.toml
+          cp example/.drift/contracts/item-get.toml /tmp/drift-ci/pol/.drift/contracts/item-get.toml
+          cat >> /tmp/drift-ci/pol/.drift/contracts/item-get.toml <<'EOF'
+
+          [decisions.id-format]
+          kind = "choice"
+          ask = "Which identifier format is accepted?"
+          owner = "alice"
+          evidence = "observed"
+          source = "src/main/java/example/items/ItemServer.java"
+          cases = ["bad-id"]
+          pick = "pos-int"
+          why = "Matches legacy sequence IDs"
+          note = "Editorial note excluded from digest"
+
+          [decisions.id-format.options.pos-int]
+          does = "Accept positive decimal integers"
+          complexity = "1/4"
+          effort_h = 1
+          risk = "1/4"
+          undo = "easy"
+          EOF
+          drift fmt /tmp/drift-ci/pol/.drift/contracts/item-get.toml >/dev/null
+          drift approve /tmp/drift-ci/pol/.drift/contracts/item-get.toml --by items-team >/dev/null
+          sed -i 's/owner = "alice"/owner = "bob"/' /tmp/drift-ci/pol/.drift/contracts/item-get.toml
+          drift check /tmp/drift-ci/pol/.drift/contracts/item-get.toml --json > /tmp/drift-ci/pol_chk.json
+          python3 - <<'PY'
+          import json
+          chk = json.load(open('/tmp/drift-ci/pol_chk.json'))['files'][0]
+          assert chk['ok'] is True, chk
+          PY
+          # Verify that under proof = "verified", a bound-only event ("read": []) is rejected by both CLI and verifier
+          mkdir -p /tmp/drift-ci/bound-ev
+          DIG=$(python3 -c "import json; print(json.load(open('/tmp/drift-ci/pol_chk.json'))['files'][0]['digest'])")
+          printf '{"test":"t#1","contract":"item-get","cases":["found","not-found","bad-id"],"level":"http","outcome":"passed","read":[],"digest":"%s"}\n' "$DIG" > /tmp/drift-ci/bound-ev/s.jsonl
+          printf '{"test":"t#2","contract":"item-get","cases":["read-only"],"level":"unit","outcome":"passed","read":["read-only"],"digest":"%s"}\n' "$DIG" >> /tmp/drift-ci/bound-ev/s.jsonl
+          printf '{"version":1,"classes":["t"],"tests":["t#1","t#2"]}\n' > /tmp/drift-ci/bound-ev/s.meta.json
+          ! drift gate /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null 2>&1
+          ! python3 verifier/drift_verify.py /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null
+
+          # Adversarial Scenario D: Unapproved contract modification (DR-E601) -> both report contract.approval.stale
+          mkdir -p /tmp/drift-ci/tampered && cp -R example/.drift /tmp/drift-ci/tampered/.drift
+          sed -i 's/status = 200/status = 201/' /tmp/drift-ci/tampered/.drift/contracts/item-get.toml
+          drift gate /tmp/drift-ci/tampered/.drift/contracts --config /tmp/drift-ci/tampered/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_tamp.json || true
+          python3 verifier/drift_verify.py /tmp/drift-ci/tampered/.drift/contracts --config /tmp/drift-ci/tampered/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/v_tamp.json || true
+          python3 - <<'PY'
+          import json
+          g = json.load(open('/tmp/drift-ci/g_tamp.json'))['contracts'][0]
+          v = json.load(open('/tmp/drift-ci/v_tamp.json'))['contracts'][0]
+          assert g['ok'] is False and v['ok'] is False
+          assert g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'stale'
+          assert g['ignored'] == v['ignored'] == 3
+          assert g['reasons'] == v['reasons'] == ['contract.findings', 'contract.approval.stale', 'proof.not_green']
+          PY
+
+          # Adversarial Scenario E: Deleted test in real js.meta.json -> both report gone == 1 and proof.not_green
+          mkdir -p /tmp/drift-ci/gone-events
+          cp /tmp/drift-ci/events/* /tmp/drift-ci/gone-events/
+          printf '{"version":1,"classes":[],"tests":[]}\n' > /tmp/drift-ci/gone-events/js.meta.json
+          drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/gone-events --json > /tmp/drift-ci/g_gone.json || true
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/gone-events --json > /tmp/drift-ci/v_gone.json || true
+          python3 - <<'PY'
+          import json
+          g = json.load(open('/tmp/drift-ci/g_gone.json'))['contracts'][0]
+          v = json.load(open('/tmp/drift-ci/v_gone.json'))['contracts'][0]
+          assert g['ok'] is False and v['ok'] is False
+          assert g['gone'] == v['gone'] == 1
+          assert g['reasons'] == v['reasons'] == ['proof.not_green']
+          PY
+
+          # Adversarial Scenario F: Malformed event line (DR-E701) -> both report events.invalid
+          mkdir -p /tmp/drift-ci/bad-events
+          cp /tmp/drift-ci/events/* /tmp/drift-ci/bad-events/
+          printf '{"test":"ci.mjs#bad","contract":"item-get","cases":["found"],"level":"http","outcome":"passed","unknown":1}\n' >> /tmp/drift-ci/bad-events/js.jsonl
+          drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/g_bad.json 2>/dev/null || true
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/v_bad.json || true
+          python3 - <<'PY'
+          import json
+          g = json.load(open('/tmp/drift-ci/g_bad.json'))['contracts'][0]
+          v = json.load(open('/tmp/drift-ci/v_bad.json'))['contracts'][0]
+          assert g['ok'] is False and v['ok'] is False
+          assert 'events.invalid' in g['reasons'] and 'events.invalid' in v['reasons']
+          PY
+
+  verify-macos-arm64:
+    runs-on: macos-15
+    steps:
+      - name: Verify macOS arm64 Release Archive, Bridges & Verifier
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+          python3 verifier/drift_verify.py --self-test
+          for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && break || sleep 3; done
+          export PATH="$HOME/.local/bin:$PATH"
+          drift version
+          drift check example/.drift
+          drift review example/.drift/contracts --brief
+
+  verify-windows-x64:
+    runs-on: windows-2025
+    steps:
+      - name: Verify Windows x64 Release Archive, PowerShell Installer & Verifier
+        shell: pwsh
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          git fetch -q --depth=1 origin "$env:GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+          python verifier/drift_verify.py --self-test
+          $ver = (Get-Content VERSION -TotalCount 1).Trim()
+          $pkg = "drift-$ver-windows-x64.zip"
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$ver"
+          for ($i = 0; $i -lt 10; $i++) {
+            try {
+              Invoke-WebRequest -Uri "$base/$pkg" -OutFile $pkg -UseBasicParsing
+              Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile SHA256SUMS -UseBasicParsing
+              break
+            } catch {
+              Start-Sleep -Seconds 3
+            }
+          }
+          $expected = (Select-String -Path SHA256SUMS -Pattern "  $pkg$").Line.Split(" ")[0]
+          $actual = (Get-FileHash $pkg -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "SHA256 mismatch for $pkg" }
+          Expand-Archive -Path $pkg -DestinationPath . -Force
+          & ".\drift-$ver-windows-x64\bin\drift.exe" version
+          & ".\drift-$ver-windows-x64\bin\drift.exe" check example/.drift

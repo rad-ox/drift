@@ -1,0 +1,10 @@
+drift = "0.2"
+profile = "http-json@1"
+kit = "drift-junit"
+
+[vocabulary]
+when = ["request"]
+then = ["status", "name", "error"]
+
+[requires]
+writes = []

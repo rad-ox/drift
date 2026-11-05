@@ -1,0 +1,15 @@
+drift = "0.2"
+kind = "config"
+
+[area]
+owner = "items-team"
+
+[policy]
+pack = "core@1"
+approvers = ["items-team"]
+proof = "verified"
+
+[approval]
+ref = "dr1:69e6e39655e1"
+by = "items-team"
+at = 2026-10-14T10:00:00Z

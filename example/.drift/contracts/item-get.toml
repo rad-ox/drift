@@ -1,0 +1,41 @@
+drift = "0.2"
+id = "item-get"
+intent = "Return one item by id without changing any data."
+
+[use]
+profile = "http-json@1"
+
+[scope]
+surface = "GET /items/{id}"
+writes = []
+reads = ["items"]
+indirect = "none"
+code = ["src/main/java/example/items/ItemServer.java"]
+
+[cases.found]
+at = ["http"]
+when.request = "GET /items/1"
+then.status = 200
+then.name = "lamp"
+
+[cases.not-found]
+at = ["http"]
+when.request = "GET /items/999"
+then.status = 404
+then.error = "item not found"
+
+[cases.bad-id]
+at = ["http"]
+when.request = "GET /items/abc"
+then.status = 400
+then.error = "id must be a positive integer"
+
+[cases.read-only]
+at = ["unit"]
+when.request = "GET /items/1"
+then.status = 200
+
+[approval]
+ref = "dr1:5153b5fae73c"
+by = "items-team"
+at = 2026-10-14T10:00:00Z

@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 440" width="100%" height="100%" role="img" aria-label="DRIFT — Behaviour Contract Gate">
+  <title>DRIFT — Behaviour Contract Gate</title>
+  <defs>
+    <!-- Dot-matrix pattern from Observatory Deck -->
+    <pattern id="driftFluxDots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="11" cy="11" r="0.85" fill="#8D9B9B" fill-opacity="0.24" />
+    </pattern>
+
+    <!-- Vertical fade mask for the dot-matrix band -->
+    <linearGradient id="dotsMaskGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0" />
+      <stop offset="22%" stop-color="#FFFFFF" stop-opacity="0.92" />
+      <stop offset="82%" stop-color="#FFFFFF" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+    <mask id="dotsBandMask">
+      <rect x="0" y="180" width="1200" height="214" fill="url(#dotsMaskGrad)" />
+    </mask>
+
+    <!-- Central Verdigris / Mint radial glow -->
+    <radialGradient id="driftFluxGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#58DCC3" stop-opacity="0.15" />
+      <stop offset="68%" stop-color="#58DCC3" stop-opacity="0.04" />
+      <stop offset="100%" stop-color="#58DCC3" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Feathered ink-guards behind the 01 and 03 typographic callouts -->
+    <radialGradient id="driftInkGuard" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#181B1F" stop-opacity="0.97" />
+      <stop offset="55%" stop-color="#181B1F" stop-opacity="0.88" />
+      <stop offset="82%" stop-color="#181B1F" stop-opacity="0.40" />
+      <stop offset="100%" stop-color="#181B1F" stop-opacity="0" />
+    </radialGradient>
+
+    <style>
+      .sans { font-family: 'Archivo', 'Ubuntu Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .mono { font-family: 'JetBrains Mono', 'Ubuntu Sans Mono', 'SFMono-Regular', Consolas, monospace; font-variant-numeric: tabular-nums; }
+    </style>
+  </defs>
+
+  <!-- ==================== 0. OBSERVATORY DECK BACKGROUND ==================== -->
+  <rect width="1200" height="440" rx="10" fill="#181B1F" />
+  <rect x="0.75" y="0.75" width="1198.5" height="438.5" rx="9.5" fill="none" stroke="#2E3237" stroke-width="1.5" />
+
+  <!-- ==================== 1. TOPLINE INSTRUMENT HEADER ==================== -->
+  <!-- Brand icon (.drift-flux-brand-icon) at (36, 22) -->
+  <g transform="translate(36, 22)">
+    <rect x="0" y="0" width="30" height="30" rx="8" fill="#14171A" stroke="#CB9367" stroke-width="1.2" />
+    <rect x="8.5" y="8.5" width="13" height="13" transform="rotate(45 15 15)" fill="none" stroke="#58DCC3" stroke-width="1.3" />
+    <circle cx="15" cy="15" r="2.3" fill="#E8A76D" />
+  </g>
+
+  <g class="mono" font-size="11.5" font-weight="600" letter-spacing="1.1">
+    <text x="80" y="41" fill="#E8A76D">
+      DRIFT 0.3
+      <tspan fill="#E8A76D" fill-opacity="0.40" dx="8" dy="0">/</tspan>
+      <tspan fill="#E8A76D" dx="8" dy="0">BEHAVIOUR GATE</tspan>
+      <tspan fill="#E8A76D" fill-opacity="0.40" dx="8" dy="0">/</tspan>
+      <tspan fill="#E8A76D" dx="8" dy="0">CONFORMANCE@1</tspan>
+    </text>
+    <text x="1164" y="41" text-anchor="end" fill="#9A9891" letter-spacing="1.2">CONTRACT STUDY  /  V · JVM · JS · PY</text>
+  </g>
+
+  <!-- ==================== 2. HERO TITLE & SEAL METADATA ==================== -->
+  <!-- Left: Contract / Product Identity -->
+  <text x="36" y="96" class="sans" font-size="38" font-weight="500" fill="#EEECE6" letter-spacing="-1.2">drift <tspan fill="#6F6A63" font-weight="400">—</tspan> behaviour-contract-gate</text>
+  <text x="36" y="118" class="mono" font-size="12" font-weight="500" fill="#9A9891" letter-spacing="0.6">CONTROL PLANE  <tspan fill="#E8A76D" font-weight="700">↗</tspan>  EXECUTION CONTRACT  ·  FORMAL SPECIFICATION &amp; RUNTIME PROOF</text>
+
+  <text x="36" y="146" class="sans" font-size="14.5" font-weight="400" fill="#B6B2A8">
+    Declare intended behaviour in one <tspan fill="#EEECE6" font-weight="600">.drift/contracts/&lt;slice&gt;.toml</tspan> contract, seal it with explicit owner approval,
+  </text>
+  <text x="36" y="167" class="sans" font-size="14.5" font-weight="400" fill="#B6B2A8">
+    and verify runtime proof events across <tspan fill="#EEECE6" font-weight="600">JUnit 5</tspan>, <tspan fill="#EEECE6" font-weight="600">Node.js</tspan>, and <tspan fill="#EEECE6" font-weight="600">Python 3</tspan> before any change ships.
+  </text>
+
+  <!-- Right: Provenance & Seal Block (.drift-flux-metadata) -->
+  <line x1="908" y1="68" x2="908" y2="132" stroke="#383B3D" stroke-width="1" />
+  <g class="mono" transform="translate(924, 79)">
+    <text x="0" y="0" font-size="11.5" font-weight="600" fill="#58DCC3" letter-spacing="1.0">● SEALED &amp; VERIFIED</text>
+    <text x="0" y="19" font-size="11.5" font-weight="400" fill="#9FB5AD">dr1:sha256:e5bd6c21bc7b</text>
+    <text x="0" y="38" font-size="11.5" font-weight="400" fill="#AFAFA7"><tspan fill="#EEECE6" font-weight="600">Owner Gate</tspan> · 0 Regressed</text>
+  </g>
+
+  <!-- ==================== 3. SIGNAL FLOW OBSERVATORY (01 — 03) ==================== -->
+  <!-- Top horizontal divider -->
+  <line x1="36" y1="184" x2="1164" y2="184" stroke="#383B3D" stroke-width="1" />
+
+  <!-- Dot-matrix canvas & central glow -->
+  <rect x="36" y="185" width="1128" height="208" fill="url(#driftFluxDots)" mask="url(#dotsBandMask)" />
+  <circle cx="600" cy="302" r="118" fill="url(#driftFluxGlow)">
+    <animate attributeName="r" values="108;132;108" dur="4.2s" repeatCount="indefinite" />
+    <animate attributeName="opacity" values="0.80;1;0.80" dur="4.2s" repeatCount="indefinite" />
+  </circle>
+
+  <!-- Signal Flow Header Bar -->
+  <g class="mono" font-size="12" letter-spacing="0.6">
+    <text x="36" y="204" fill="#9A9891"><tspan fill="#E8A76D" font-weight="700">↗</tspan> SIGNAL FLOW / 01—03</text>
+    <text x="1164" y="204" text-anchor="end" fill="#9FB5AD" letter-spacing="0.5">OWNER SIGNATURE   ·   dr1:sha256:e5bd6c21bc7b</text>
+  </g>
+
+  <!-- Cartographic Axes & Ghost Wires -->
+  <path d="M 36 302 H 1164 M 600 206 V 378" fill="none" stroke="#9A9891" stroke-width="1" stroke-dasharray="2 9" opacity="0.18" />
+  <path d="M 180 258 H 1020 M 220 346 H 980" fill="none" stroke="#9FB5AD" stroke-width="0.75" stroke-dasharray="2 8" opacity="0.22" />
+
+  <!-- Base Carrier Wave -->
+  <path d="M 124 302 Q 320 302 448 278 T 558 298 M 642 298 Q 760 324 888 302 T 1076 302"
+        fill="none" stroke="#9FB5AD" stroke-width="1.1" opacity="0.42" stroke-linecap="round" />
+
+  <!-- Left Copper Waves (01 WHEN & PERIMETER) -->
+  <path d="M 156 302 C 288 302, 348 268, 426 279 S 524 304, 558 302"
+        fill="none" stroke="#E8A76D" stroke-width="1.4" opacity="0.72" stroke-linecap="round" />
+  <path d="M 156 302 C 274 306, 352 338, 444 325 S 518 303, 558 302"
+        fill="none" stroke="#E8A76D" stroke-width="1.3" opacity="0.48" stroke-linecap="round" />
+  <path d="M 156 302 C 288 302, 348 268, 426 279 S 524 304, 558 302"
+        fill="none" stroke="#FFCE8B" stroke-width="2.4" stroke-dasharray="10 46" opacity="0.92" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="224" to="0" dur="3.2s" repeatCount="indefinite" />
+  </path>
+  <path d="M 156 302 C 274 306, 352 338, 444 325 S 518 303, 558 302"
+        fill="none" stroke="#FFCE8B" stroke-width="1.8" stroke-dasharray="6 54" opacity="0.72" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="240" to="0" dur="4.0s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Right Verdigris Mint Waves (03 THEN & DECISION) -->
+  <path d="M 642 302 C 730 300, 770 274, 830 282 S 940 301, 998 302 S 1050 302, 1076 302"
+        fill="none" stroke="#58DCC3" stroke-width="1.4" opacity="0.78" stroke-linecap="round" />
+  <path d="M 642 302 C 740 302, 790 332, 888 323 S 1018 302, 1076 302"
+        fill="none" stroke="#58DCC3" stroke-width="1.3" opacity="0.48" stroke-linecap="round" />
+  <path d="M 642 302 C 730 300, 770 274, 830 282 S 940 301, 998 302 S 1050 302, 1076 302"
+        fill="none" stroke="#74FFE4" stroke-width="2.4" stroke-dasharray="10 46" opacity="0.92" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="224" to="0" dur="3.2s" repeatCount="indefinite" />
+  </path>
+  <path d="M 642 302 C 740 302, 790 332, 888 323 S 1018 302, 1076 302"
+        fill="none" stroke="#74FFE4" stroke-width="1.8" stroke-dasharray="6 54" opacity="0.72" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" from="240" to="0" dur="4.0s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Traveling Signal Packets (01 -> 02 Gate -> 03) -->
+  <circle r="3.4" fill="#FFCE8B">
+    <animateMotion dur="3.2s" repeatCount="indefinite" path="M 156 302 C 288 302, 348 268, 426 279 S 524 304, 558 302" />
+    <animate attributeName="opacity" values="0.15;1;1;0.15" keyTimes="0;0.12;0.88;1" dur="3.2s" repeatCount="indefinite" />
+  </circle>
+  <circle r="3.4" fill="#70F6D9">
+    <animateMotion dur="3.2s" repeatCount="indefinite" path="M 642 302 C 730 300, 770 274, 830 282 S 940 301, 998 302 S 1050 302, 1076 302" />
+    <animate attributeName="opacity" values="0.15;1;1;0.15" keyTimes="0;0.12;0.88;1" dur="3.2s" repeatCount="indefinite" />
+  </circle>
+
+  <!-- Feathered ink-guards behind 01 and 03 labels -->
+  <ellipse cx="196" cy="244" rx="164" ry="38" fill="url(#driftInkGuard)" />
+  <ellipse cx="1004" cy="244" rx="164" ry="38" fill="url(#driftInkGuard)" />
+
+  <!-- Signal Nodes & Crosshairs (+) -->
+  <circle cx="156" cy="302" r="4.8" fill="#E8A76D" />
+  <circle cx="1076" cy="302" r="4.8" fill="#58DCC3" />
+  <circle cx="426" cy="279" r="2.5" fill="#E8A76D" />
+  <circle cx="830" cy="282" r="2.5" fill="#58DCC3" />
+  <circle cx="380" cy="329" r="2.0" fill="#E8A76D" opacity="0.65" />
+  <circle cx="928" cy="316" r="2.0" fill="#58DCC3" opacity="0.82" />
+
+  <g stroke="#7A948B" opacity="0.46" stroke-width="0.85">
+    <path d="M 110 294 V 310 M 102 302 H 118" />
+    <path d="M 1094 294 V 310 M 1086 302 H 1102" />
+    <path d="M 316 255 V 263 M 312 259 H 320" />
+    <path d="M 936 338 V 346 M 932 342 H 940" />
+  </g>
+  <g stroke="#4F736C" stroke-width="0.85" opacity="0.55">
+    <path d="M 600 355 V 362 M 588 362 H 612" />
+    <path d="M 96 348 H 138 M 1062 348 H 1104" />
+  </g>
+
+  <!-- Central Gate Rings & Double-Nested Rotated Diamond at (600, 302) -->
+  <g>
+    <!-- Satellite orbit (continuous rotation) -->
+    <g>
+      <animateTransform attributeName="transform" type="rotate" from="0 600 302" to="360 600 302" dur="28s" repeatCount="indefinite" />
+      <circle cx="600" cy="302" r="72" fill="none" stroke="#7A877E" stroke-width="0.8" stroke-dasharray="2 12" opacity="0.55" />
+      <circle cx="600" cy="230" r="2.5" fill="#E8A76D" />
+      <circle cx="650" cy="354" r="2.0" fill="#58DCC3" />
+    </g>
+
+    <!-- Concentric copper & sage rings -->
+    <circle cx="600" cy="302" r="55" fill="none" stroke="#BC8151" stroke-width="0.9" opacity="0.52" />
+    <circle cx="600" cy="302" r="45" fill="none" stroke="#67978C" stroke-width="1.0" opacity="0.56" />
+    <path d="M 600 249 V 240 M 600 364 V 355 M 547 302 H 536 M 653 302 H 664" stroke="#E4A36F" stroke-width="1.1" opacity="0.65" />
+
+    <!-- Rotated 45° Diamonds -->
+    <rect x="569" y="271" width="62" height="62" transform="rotate(45 600 302)" fill="#192220" stroke="#CB9367" stroke-width="1.5" />
+    <rect x="578" y="280" width="44" height="44" transform="rotate(45 600 302)" fill="#102926" stroke="#58DCC3" stroke-width="1.7" />
+
+    <!-- Core -->
+    <circle cx="600" cy="302" r="6.2" fill="#70F6D9">
+      <animate attributeName="r" values="5.5;7.4;5.5" dur="3.2s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.85;1;0.85" dur="3.2s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="600" cy="302" r="2.2" fill="#1C584E" />
+  </g>
+
+  <!-- 01 Left Callout: WHEN & PERIMETER -->
+  <g transform="translate(56, 212)">
+    <text x="0" y="25" class="sans" font-size="32" font-weight="500" fill="#E8A76D" fill-opacity="0.56" letter-spacing="-1.2">01</text>
+    <text x="0" y="43" class="mono" font-size="11.5" font-weight="600" fill="#E8A76D" letter-spacing="0.9">WHEN &amp; PERIMETER  ↘</text>
+    <text x="0" y="60" class="mono" font-size="11.5" font-weight="500" fill="#EEECE6" letter-spacing="0.3">TOML CONTRACT · READS &amp; WRITES · SCOPE</text>
+  </g>
+
+  <!-- 03 Right Callout: THEN & RUNTIME PROOF -->
+  <g transform="translate(1144, 212)" text-anchor="end">
+    <text x="0" y="25" class="sans" font-size="32" font-weight="500" fill="#58DCC3" fill-opacity="0.56" letter-spacing="-1.2">03</text>
+    <text x="0" y="43" class="mono" font-size="11.5" font-weight="600" fill="#58DCC3" letter-spacing="0.9">↙  THEN &amp; DECISION</text>
+    <text x="0" y="60" class="mono" font-size="11.5" font-weight="500" fill="#EEECE6" letter-spacing="0.3">INVARIANTS · DECISION CARDS · RUNTIME PROOF</text>
+  </g>
+
+  <!-- 02 Center Gate Callout -->
+  <g class="mono" text-anchor="middle" transform="translate(600, 372)">
+    <text x="0" y="0" font-size="11.5" font-weight="600" fill="#E8A76D" letter-spacing="1.0">
+      02  <tspan fill="#EEECE6">/</tspan>  GATE  <tspan fill="#EEECE6">/</tspan>  SEALED
+    </text>
+    <text x="0" y="15" font-size="11" font-weight="400" fill="#9FB5AD" letter-spacing="1.1">WHEN → THEN   [UNIT · HTTP · E2E]</text>
+  </g>
+
+  <!-- ==================== 4. FOOTER STATUS BAR ==================== -->
+  <line x1="36" y1="398" x2="1164" y2="398" stroke="#383B3D" stroke-width="1" />
+  <g class="mono" font-size="11.5">
+    <text x="36" y="421" fill="#F0B65E" font-weight="600">× DRIFT GUARD <tspan fill="#9A9891" font-weight="400">/ DR-E601</tspan></text>
+    <text x="600" y="421" text-anchor="middle" fill="#9A9891" letter-spacing="0.3">SIGNED CONTRACT · DECLARED CASES · VERIFIED AT RUNTIME (JUNIT 5 · NODE.JS · PYTHON 3)</text>
+    <text x="1164" y="421" text-anchor="end" fill="#58DCC3" font-weight="600">● APPROVED <tspan fill="#9A9891" font-weight="400">/ conformance@1</tspan></text>
+  </g>
+</svg>

@@ -1,0 +1,7 @@
+# Scripts and sources keep LF on every platform; Windows launchers need CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.jar binary
+*.zip binary
+*.gz binary

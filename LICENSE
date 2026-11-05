@@ -1,0 +1,63 @@
+# DRIFT License
+
+DRIFT is distributed under a dual-surface license model:
+
+1. **Open Integration Surface (MIT License)** — All test bridges (`bridges/`,
+   `integrations/`), the independent reference proof verifier (`verifier/`),
+   editor and Git hooks (`hooks/`, `install/hooks/`), JSON schemas (`schemas/`),
+   agent skill definitions (`skill/drift/`, `agent/skills/drift/`), example
+   areas (`example/`, `examples/`), installers (`install.sh`, `install.ps1`,
+   `install.cmd`, `uninstall.cmd`), visual assets (`assets/`), and documentation
+   (`*.md`) are licensed under the **MIT License** below. You may freely copy,
+   vendor, modify, and distribute them inside your own personal, open-source, or
+   commercial repositories.
+2. **DRIFT Free CLI Engine (`drift` / `drift.exe`)** — The precompiled `drift`
+   command-line executable is proprietary software provided under the **DRIFT
+   Free Edition License** below.
+
+---
+
+## Part I — MIT License (Bridges, Skill, Schemas, Hooks, Examples & Docs)
+
+Copyright (c) 2026 Lukasz Radkiewicz (rad-ox)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of these integration files and associated documentation files (the "Integration
+Software"), to deal in the Integration Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Integration Software, and to permit
+persons to whom the Integration Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Integration Software.
+
+THE INTEGRATION SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE INTEGRATION SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE INTEGRATION SOFTWARE.
+
+---
+
+## Part II — DRIFT Free Edition License (CLI Binary)
+
+Copyright (c) 2026 Lukasz Radkiewicz (rad-ox). All rights reserved.
+
+1. **Grant of License.** Subject to the terms below, the copyright holder
+   grants you a perpetual, worldwide, non-exclusive, royalty-free license to
+   download, install, and execute the unmodified `drift` Free Edition binary for
+   personal, academic, internal business, and commercial software development,
+   including execution inside automated Continuous Integration / Continuous
+   Delivery (CI/CD) pipelines.
+2. **Redistribution.** You may mirror or redistribute the official, unmodified
+   release archives alongside their `SHA256SUMS` digests within your
+   organization or development environments, provided that this `LICENSE` file
+   is retained intact.
+3. **Restrictions.** You may not decompile, disassemble, reverse-engineer,
+   binary-patch, or modify the `drift` CLI executable, nor circumvent edition
+   boundaries (`DRIFT Pro` / `DRIFT Enterprise`).
+4. **Disclaimer of Warranty.** THE DRIFT CLI BINARY IS PROVIDED "AS IS",
+   WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.

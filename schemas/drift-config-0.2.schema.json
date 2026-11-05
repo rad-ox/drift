@@ -1,0 +1,155 @@
+{
+  "$defs": {
+    "approval": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "ref"
+          ]
+        },
+        {
+          "required": [
+            "digest"
+          ]
+        }
+      ],
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "by": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^dr1:sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "ref": {
+          "pattern": "^dr1:[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "by",
+        "at"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:drift:schemas:config:0.2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": {
+    "type": "object"
+  },
+  "allOf": [
+    {
+      "else": {
+        "minProperties": 3
+      },
+      "if": {
+        "required": [
+          "approval"
+        ]
+      },
+      "then": {
+        "minProperties": 4
+      }
+    }
+  ],
+  "properties": {
+    "approval": {
+      "$ref": "#/$defs/approval"
+    },
+    "drift": {
+      "const": "0.2"
+    },
+    "kind": {
+      "const": "config"
+    },
+    "policy": {
+      "if": {
+        "required": [
+          "pack"
+        ]
+      },
+      "then": {
+        "additionalProperties": false,
+        "properties": {
+          "approvers": {
+            "items": {
+              "pattern": "^\\S(?:.*\\S)?$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "forbid_imports": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "ignore": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "max_lines": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_open": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pack": {
+            "const": "core@1"
+          },
+          "proof": {
+            "enum": [
+              "bound",
+              "verified",
+              "killed"
+            ]
+          },
+          "sweep": {
+            "anyOf": [
+              {
+                "const": "soundness"
+              },
+              {
+                "items": {
+                  "const": "soundness"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "pack",
+          "approvers",
+          "proof"
+        ]
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "drift",
+    "kind"
+  ],
+  "title": "DRIFT 0.2 configuration",
+  "type": "object"
+}

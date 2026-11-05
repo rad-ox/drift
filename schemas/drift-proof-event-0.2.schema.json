@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rad-ox/drift/schemas/drift-proof-event-0.2.schema.json",
+  "title": "DRIFT Proof Event (JSONL Line) & Inventory Sidecar (.meta.json)",
+  "description": "Normative schema for JSONL proof events (<shard>.jsonl) and test discovery inventory sidecars (<shard>.meta.json) emitted by DRIFT test bridges.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["test", "contract", "cases", "level", "outcome"],
+  "properties": {
+    "test": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical test identifier (<class-or-file>#<method>)."
+    },
+    "contract": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Contract identifier matching the contract file stem."
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "description": "Contract case identifiers covered by this test execution."
+    },
+    "level": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Verification level (for example unit, http, e2e)."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["passed", "failed", "skipped", "disabled", "interrupted", "timeout"],
+      "description": "Runtime outcome of the test execution."
+    },
+    "read": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "description": "Subset of cases for which the test read and checked every top-level then.<key> expectation."
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
+      "description": "Canonical contract digest (dr1:sha256:<64-hex>) or 12-hex reference (dr1:<12-hex>)."
+    }
+  },
+  "$defs": {
+    "inventorySidecar": {
+      "title": "DRIFT Test Inventory Sidecar (<shard>.meta.json)",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "classes", "tests"],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "classes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^# \\t\\r\\n/\\\\\\[\\]]+$"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^# \\t\\r\\n/\\\\\\[\\]]+#[^# \\t\\r\\n\\[\\]]+$"
+          }
+        },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "pack_ref": {
+          "type": "string",
+          "pattern": "^dr1:[0-9a-f]{12}$"
+        },
+        "touched": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)(?:\\.{1,2}|$)).+$"
+          }
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["toolchain", "deps", "config", "runner", "drift", "adapter", "policy"],
+          "properties": {
+            "toolchain": { "type": "string", "minLength": 1 },
+            "deps": { "type": "string", "minLength": 1 },
+            "config": { "type": "string", "minLength": 1 },
+            "runner": { "type": "string", "minLength": 1 },
+            "drift": { "type": "string", "minLength": 1 },
+            "adapter": { "type": "string", "minLength": 1 },
+            "policy": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}
