@@ -19,7 +19,12 @@ _PROF_MTIME_CACHE: dict[str, float] = {}
 def escape_pointer(s: str) -> str: return s.replace('~', '~0').replace('/', '~1')
 def unescape_pointer(s: str) -> str: return s.replace('~1', '/').replace('~0', '~') if '~' in s else s
 def is_array_index(s: str) -> bool: return s == '0' or (s.isdigit() and not s.startswith('0'))
-def values_mismatch(a: Any, b: Any) -> bool: return a != b or (type(a) is not type(b) and (isinstance(a, bool) or isinstance(b, bool)))
+def values_mismatch(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool): return type(a) is not type(b) or a != b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)): return abs(float(a) - float(b)) > 1e-9
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)): return len(a) != len(b) or any(values_mismatch(x, y) for x, y in zip(a, b))
+    if isinstance(a, Mapping) and isinstance(b, Mapping): return len(a) != len(b) or any(k not in b or values_mismatch(v, b[k]) for k, v in a.items())
+    return a != b
 
 
 def extract_projection_map(view: Mapping[str, Any], side: str) -> dict[str, str]:

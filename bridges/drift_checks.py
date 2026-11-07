@@ -46,16 +46,16 @@ resolve_param_spec = _up._cli.resolve_param_spec
 extract_projection_map = _up._cli.extract_projection_map
 
 
-def invoke_verified_callback(fn: Callable[..., Any], contract_id: str, case_id: str, k: str, exp: Any) -> None:
+def invoke_verified_callback(fn: Callable[..., Any], contract_id: str, case_id: str, k: str, exp: Any, *extra: Any) -> None:
     import dis
     code = getattr(fn, '__code__', None)
     ops = [i.opname for i in dis.get_instructions(code)] if code is not None else ['LOAD_FAST', 'CALL']
     if not any(op.startswith(('LOAD_FAST', 'LOAD_DEREF')) for op in ops):
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} must inspect the expected value')
-    res = fn(exp)
+    res = fn(exp, *extra)
     if res is False:
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} returned False')
-    if res is None and not any(op.startswith(('RAISE_VARARGS', 'CALL', 'COMPARE_OP', 'CONTAINS_OP', 'IS_OP')) for op in ops):
+    if res is not True and not any(op.startswith(('RAISE_VARARGS', 'CALL', 'COMPARE_OP', 'CONTAINS_OP', 'IS_OP')) for op in ops):
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} must inspect and assert the expected value')
 
 
@@ -83,23 +83,25 @@ def build_projected_input(view: Mapping[str, Any], when_table: Mapping[str, Any]
 
 
 def run_domain_bounds_check(contract_id: str, case_id: str, then_table: Mapping[str, Any], seen: set[str], domain: Any, checks: Mapping[str, Callable[[Any, Any], Any]], is_mut: bool) -> None:
-    samples = expand_domain(domain, is_mut)
+    _ = is_mut
+    samples = expand_domain(domain, False)
     b_checks: list[tuple[str, Any, Callable[[Any, Any], Any]]] = []
     for k, exp in then_table.items():
         fn = checks.get(k) if isinstance(checks, Mapping) else None
         if not callable(fn):
             raise AssertionError(f'{contract_id}.{case_id}: no check for then.{k}')
-        seen.add(k)
         b_checks.append((k, exp, fn))
     for s in samples:
         for k, exp, fn in b_checks:
             try:
-                fn(exp, s)
+                invoke_verified_callback(fn, contract_id, case_id, k, exp, s)
             except AssertionError as exc:
                 if '[counterexample:' not in str(exc):
                     ce = json.dumps(s, separators=(',', ':'), sort_keys=True)
                     raise AssertionError(f'{contract_id}.{case_id}.then.{k} failed [counterexample: {ce}]: {exc}') from exc
                 raise
+    for k, _, _ in b_checks:
+        seen.add(k)
 
 
 def expand_single_domain(spec: Any, first: bool = False) -> list[Any] | None:
@@ -142,7 +144,12 @@ def expand_domain(domain: Any, first: bool = False) -> list[Any]:
     cur = {keys[i]: vals_by_key[i][0] for i in range(d)}
     if first:
         return [cur]
-    max_excursions = 2 if d >= 3 else d
+    prod = 1
+    for v in vals_by_key:
+        prod *= len(v)
+        if prod > 16:
+            break
+    max_excursions = d if prod <= 16 else (2 if d >= 3 else d)
     out: list[dict[str, Any]] = []
 
     def dfs(pos: int, exc: int) -> None:
@@ -204,9 +211,9 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             return (True, payload[ref])
         return (False, None)
 
-    if 'min' in exp and (not is_num(act) or float(act) < float(exp['min'])):
+    if 'min' in exp and (not is_num(act) or float(act) + 1e-9 < float(exp['min'])):
         raise AssertionError(f"{pfx}: exp then.{key}>={exp['min']}, got {act!r}")
-    if 'max' in exp and (not is_num(act) or float(act) > float(exp['max'])):
+    if 'max' in exp and (not is_num(act) or float(act) - 1e-9 > float(exp['max'])):
         raise AssertionError(f"{pfx}: exp then.{key}<={exp['max']}, got {act!r}")
     if 'min_len' in exp and (act_len < 0 or act_len < int(exp['min_len'])):
         raise AssertionError(f"{pfx}: exp len(then.{key})>={exp['min_len']}, got {act_len}")
@@ -223,7 +230,7 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
         if op == '==':
             ok = not values_mismatch(act, pv)
         else:
-            ok = is_num(act) and is_num(pv) and (float(act) <= float(pv) if op == '<=' else float(act) >= float(pv))
+            ok = is_num(act) and is_num(pv) and (float(act) - 1e-9 <= float(pv) if op == '<=' else float(act) + 1e-9 >= float(pv))
         if not ok:
             raise AssertionError(f'{pfx}: exp then.{key} {op} {exp[fk]} ({pv!r}), got {act!r}')
     if 'in' in exp and (not isinstance(exp['in'], (list, tuple)) or not any(not values_mismatch(act, x) for x in exp['in'])):
@@ -246,10 +253,6 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
         raise AssertionError(f"{pfx}: exp then.{key} to start with {exp['prefix']!r}, got {act!r}")
     if 'suffix' in exp and (not isinstance(act, str) or not act.endswith(str(exp['suffix']))):
         raise AssertionError(f"{pfx}: exp then.{key} to end with {exp['suffix']!r}, got {act!r}")
-    mp = f'/cases/{escape_pointer(case_id)}/then/{escape_pointer(key)}'
-    if mutation_override is not None and isinstance(mutation_override.get('path'), str):
-        if mutation_override['path'] == mp or mutation_override['path'].startswith(f'{mp}/'):
-            raise AssertionError(f"{pfx}: relational bound mutated at {mutation_override['path']}")
     return True
 
 
@@ -306,7 +309,7 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
 
     def assert_bound(key: str, op: str, exp: Any, act: float) -> None:
         target = float(exp)
-        failed = (act > target if op == '<=' else act < target) or (is_mut and act != target)
+        failed = act > target if op == '<=' else act < target
         if failed:
             raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
 

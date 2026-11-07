@@ -338,7 +338,21 @@ final class Json {
         if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer)) {
             return ((Number) a).longValue() == ((Number) b).longValue();
         }
-        if (a instanceof Number na && b instanceof Number nb) return Double.compare(na.doubleValue(), nb.doubleValue()) == 0;
+        if (a instanceof Number na && b instanceof Number nb) {
+            return Math.abs(na.doubleValue() - nb.doubleValue()) <= 1e-9;
+        }
+        if (a instanceof List<?> la && b instanceof List<?> lb) {
+            if (la.size() != lb.size()) return false;
+            for (int i = 0; i < la.size(); i++) if (!valuesEqual(la.get(i), lb.get(i))) return false;
+            return true;
+        }
+        if (a instanceof Map<?, ?> ma && b instanceof Map<?, ?> mb) {
+            if (ma.size() != mb.size()) return false;
+            for (Map.Entry<?, ?> e : ma.entrySet()) {
+                if (!mb.containsKey(e.getKey()) || !valuesEqual(e.getValue(), mb.get(e.getKey()))) return false;
+            }
+            return true;
+        }
         return a.equals(b);
     }
 

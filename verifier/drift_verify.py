@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """DRIFT Independent Reference Proof Verifier (MIT License).
-
-Zero-dependency Python 3.11+ implementation of the DRIFT Proof Protocol:
-1. Full RFC 8785 (JCS) Canonical JSON serialization (UTF-16 code unit key sorting,
-   ECMAScript Number::toString float formatting, and +-(2^53-1) safe integer bounds).
-2. Strict JSON Schema validation for <shard>.jsonl events and <shard>.meta.json sidecars.
-3. Deterministic requirement state evaluation (missing, red, bound, verified) and gate verdicts.
+Zero-dependency Python 3.11+ RFC 8785 (JCS), event/sidecar schema, and gate verifier.
 """
 from __future__ import annotations
 
@@ -29,34 +24,15 @@ CLASS_TOKEN_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
 METHOD_TOKEN_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
 OUTCOMES = frozenset(("passed", "failed", "skipped", "disabled", "interrupted", "timeout"))
 EVENT_KEYS = frozenset(("test", "contract", "cases", "level", "outcome", "read", "digest"))
-META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "inputs", "env"))
+META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "self_stubbed", "inputs", "env"))
 ENV_KEYS = frozenset(("toolchain", "deps", "config", "runner", "drift", "adapter", "policy"))
 
 
+_ESC_MAP = {0x22: '\\"', 0x5C: "\\\\", 0x08: "\\b", 0x0C: "\\f", 0x0A: "\\n", 0x0D: "\\r", 0x09: "\\t"}
+
+
 def jcs_string(s: str) -> str:
-    out = ['"']
-    for ch in s:
-        cp = ord(ch)
-        if cp == 0x22:
-            out.append('\\"')
-        elif cp == 0x5C:
-            out.append("\\\\")
-        elif cp == 0x08:
-            out.append("\\b")
-        elif cp == 0x0C:
-            out.append("\\f")
-        elif cp == 0x0A:
-            out.append("\\n")
-        elif cp == 0x0D:
-            out.append("\\r")
-        elif cp == 0x09:
-            out.append("\\t")
-        elif cp < 0x20:
-            out.append(f"\\u{cp:04x}")
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
+    return '"' + "".join(_ESC_MAP.get(cp := ord(c), f"\\u{cp:04x}" if cp < 0x20 else c) for c in s) + '"'
 
 
 def jcs_number(val: int | float) -> str:
@@ -69,44 +45,33 @@ def jcs_number(val: int | float) -> str:
         raise ValueError("NaN and Infinity are not valid in RFC 8785 JSON")
     if f == 0.0:
         return "0"
-    neg = f < 0.0
-    if neg:
-        f = -f
+    neg, f = f < 0.0, abs(f)
     s = repr(f)
     if "e" in s or "E" in s:
         mant, exp_str = s.lower().split("e", 1)
-        digits = mant.replace(".", "").rstrip("0") or "0"
-        n = int(exp_str) + 1
+        digits, n = mant.replace(".", "").rstrip("0") or "0", int(exp_str) + 1
+    elif "." in s:
+        int_p, frac_p = s.split(".", 1)
+        digits = (int_p + frac_p).lstrip("0").rstrip("0") or "0"
+        n = len(int_p) if int_p != "0" else -(len(frac_p) - len(frac_p.lstrip("0")))
     else:
-        if "." in s:
-            int_p, frac_p = s.split(".", 1)
-            raw = (int_p + frac_p).lstrip("0")
-            digits = raw.rstrip("0") or "0"
-            n = len(int_p) if int_p != "0" else -(len(frac_p) - len(frac_p.lstrip("0")))
-        else:
-            digits = s.rstrip("0") or "0"
-            n = len(s)
+        digits, n = s.rstrip("0") or "0", len(s)
     k = len(digits)
     if k <= n <= 21:
         body = digits + ("0" * (n - k))
     elif 0 < n <= 21:
-        body = digits[:n] + "." + digits[n:]
+        body = f"{digits[:n]}.{digits[n:]}"
     elif -6 < n <= 0:
-        body = "0." + ("0" * (-n)) + digits
+        body = f"0.{'0' * (-n)}{digits}"
     else:
-        m = digits if k == 1 else (digits[0] + "." + digits[1:])
-        sign = "+" if (n - 1) >= 0 else "-"
-        body = f"{m}e{sign}{abs(n - 1)}"
+        m = digits if k == 1 else f"{digits[0]}.{digits[1:]}"
+        body = f"{m}e{'+' if n >= 1 else '-'}{abs(n - 1)}"
     return f"-{body}" if neg else body
 
 
 def canonical_json(obj: Any) -> str:
-    if obj is None:
-        return "null"
-    if obj is True:
-        return "true"
-    if obj is False:
-        return "false"
+    if obj is None or isinstance(obj, bool):
+        return "null" if obj is None else ("true" if obj else "false")
     if isinstance(obj, (int, float)):
         return jcs_number(obj)
     if isinstance(obj, str):
@@ -132,11 +97,21 @@ def digest_matches(event_digest: str, full_digest: str) -> bool:
 
 
 def _decode_no_dup_keys(text: str) -> Any:
+    depth, in_str, esc = 0, False, False
+    for ch in text:
+        if in_str:
+            esc = (not esc) if ch == "\\" else False
+            if ch == '"' and not esc: in_str = False
+        elif ch == '"': in_str = True
+        elif ch in "{[":
+            depth += 1
+            if depth > 64: raise ValueError("JSON nesting depth exceeds 64")
+        elif ch in "}]": depth = max(0, depth - 1)
+
     def hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for k, v in pairs:
-            if k in out:
-                raise ValueError(f'duplicate key "{k}"')
+            if k in out: raise ValueError(f'duplicate key "{k}"')
             out[k] = v
         return out
     return json.loads(text, object_pairs_hook=hook)
@@ -144,87 +119,51 @@ def _decode_no_dup_keys(text: str) -> Any:
 
 def validate_event_line(line: str) -> dict[str, Any]:
     doc = _decode_no_dup_keys(line)
-    if not isinstance(doc, dict):
-        raise ValueError("not a JSON object")
-    for k in doc:
-        if k not in EVENT_KEYS:
-            raise ValueError(f'unknown key "{k}"')
-    for req in ("test", "contract", "cases", "level", "outcome"):
-        if req not in doc:
-            raise ValueError(f'missing required key "{req}"')
-    if not isinstance(doc["test"], str) or not doc["test"].strip():
-        raise ValueError("test must be a non-empty string")
-    if not isinstance(doc["contract"], str) or not ID_RE.match(doc["contract"]):
-        raise ValueError(f'contract "{doc.get("contract")}" is not a valid id')
-    cases = doc["cases"]
+    if not isinstance(doc, dict) or any(k not in EVENT_KEYS for k in doc) or any(r not in doc for r in ("test", "contract", "cases", "level", "outcome")):
+        raise ValueError("invalid event object")
+    cases, read, digest = doc["cases"], doc.get("read", []), doc.get("digest", "")
+    if not isinstance(doc["test"], str) or not doc["test"].strip() or not isinstance(doc["contract"], str) or not ID_RE.match(doc["contract"]):
+        raise ValueError("invalid test or contract")
     if not isinstance(cases, list) or not cases or len(set(cases)) != len(cases) or not all(isinstance(c, str) and ID_RE.match(c) for c in cases):
-        raise ValueError("cases must be a non-empty array of unique case ids")
-    if not isinstance(doc["level"], str) or not WORD_RE.match(doc["level"]):
-        raise ValueError(f'level "{doc.get("level")}" is not a snake_case word')
-    if doc["outcome"] not in OUTCOMES:
-        raise ValueError(f'invalid outcome "{doc.get("outcome")}"')
-    read = doc.get("read", [])
+        raise ValueError("invalid cases")
+    if not isinstance(doc["level"], str) or not WORD_RE.match(doc["level"]) or doc["outcome"] not in OUTCOMES:
+        raise ValueError("invalid level or outcome")
     if not isinstance(read, list) or len(set(read)) != len(read) or not all(isinstance(r, str) and r in cases for r in read):
-        raise ValueError("read must be a unique subset of cases")
-    digest = doc.get("digest", "")
+        raise ValueError("invalid read")
     if digest != "" and (not isinstance(digest, str) or not DIGEST_RE.match(digest)):
-        raise ValueError(f'invalid digest "{digest}"')
+        raise ValueError("invalid digest")
     return {"test": doc["test"], "contract": doc["contract"], "cases": cases, "level": doc["level"], "outcome": doc["outcome"], "read": read, "digest": digest}
 
 
 def validate_inventory_text(text: str) -> dict[str, Any]:
     doc = _decode_no_dup_keys(text)
-    if not isinstance(doc, dict):
-        raise ValueError("inventory is not a JSON object")
-    for k in doc:
-        if k not in META_KEYS:
-            raise ValueError(f'unknown inventory key "{k}"')
-    if doc.get("version") != 1 or isinstance(doc.get("version"), bool):
-        raise ValueError("inventory version must be 1")
+    if not isinstance(doc, dict) or any(k not in META_KEYS for k in doc) or doc.get("version") != 1 or isinstance(doc.get("version"), bool):
+        raise ValueError("invalid inventory header")
     classes, tests = doc.get("classes"), doc.get("tests")
     if not isinstance(classes, list) or not all(isinstance(x, str) and CLASS_TOKEN_RE.match(x) for x in classes) or classes != sorted(set(classes)):
-        raise ValueError("classes must be a sorted unique array of valid class names")
+        raise ValueError("invalid classes")
     c_set = set(classes)
     if not isinstance(tests, list) or not all(isinstance(x, str) and "#" in x for x in tests) or tests != sorted(set(tests)):
-        raise ValueError("tests must be a sorted unique <class>#<method> array")
-    for t in tests:
-        cls, method = t.split("#", 1)
-        if cls not in c_set or not METHOD_TOKEN_RE.match(method):
-            raise ValueError(f'invalid test name "{t}"')
-    t_set = set(tests)
-    snap = doc.get("snapshot", "")
-    if "snapshot" in doc and (not isinstance(snap, str) or not SNAPSHOT_RE.match(snap)):
-        raise ValueError(f'invalid snapshot "{snap}"')
-    pack_ref = doc.get("pack_ref", "")
-    if "pack_ref" in doc and (not isinstance(pack_ref, str) or not PACK_REF_RE.match(pack_ref)):
-        raise ValueError(f'invalid pack_ref "{pack_ref}"')
+        raise ValueError("invalid tests")
+    if any((p := t.split("#", 1))[0] not in c_set or not METHOD_TOKEN_RE.match(p[1]) for t in tests):
+        raise ValueError("invalid test name")
+    t_set, snap, pack_ref = set(tests), doc.get("snapshot", ""), doc.get("pack_ref", "")
+    if ("snapshot" in doc and (not isinstance(snap, str) or not SNAPSHOT_RE.match(snap))) or ("pack_ref" in doc and (not isinstance(pack_ref, str) or not PACK_REF_RE.match(pack_ref))):
+        raise ValueError("invalid snapshot or pack_ref")
     if "touched" in doc:
-        touched = doc["touched"]
-        if not isinstance(touched, list) or not all(isinstance(x, str) and x.strip() for x in touched) or touched != sorted(set(touched)):
-            raise ValueError("touched must be a sorted unique string array")
-        for tp in touched:
-            if tp.startswith("/") or "\\" in tp or any(seg in ("", ".", "..") for seg in tp.split("/")):
-                raise ValueError(f'invalid touched path "{tp}"')
+        tc = doc["touched"]
+        if not isinstance(tc, list) or not all(isinstance(x, str) and x.strip() for x in tc) or tc != sorted(set(tc)) or any(tp.startswith("/") or "\\" in tp or any(s in ("", ".", "..") for s in tp.split("/")) for tp in tc):
+            raise ValueError("invalid touched")
+    if "self_stubbed" in doc and (not isinstance(doc["self_stubbed"], list) or any(not isinstance(x, str) or x not in t_set for x in doc["self_stubbed"])):
+        raise ValueError("invalid self_stubbed")
     if "inputs" in doc:
-        raw_inputs = doc["inputs"]
-        if not isinstance(raw_inputs, dict):
-            raise ValueError("inputs must be an object")
-        for tid, fmap in raw_inputs.items():
-            if tid not in t_set or not isinstance(fmap, dict):
-                raise ValueError(f'invalid inputs entry for "{tid}"')
-            for fpath, oid_val in fmap.items():
-                if not isinstance(fpath, str) or not fpath.strip() or not isinstance(oid_val, str) or not oid_val.strip():
-                    raise ValueError(f'invalid input digest for "{tid}:{fpath}"')
+        ri = doc["inputs"]
+        if not isinstance(ri, dict) or any(tid not in t_set or not isinstance(fm, dict) or any(not isinstance(fp, str) or not fp.strip() or not isinstance(ov, str) or not ov.strip() for fp, ov in fm.items()) for tid, fm in ri.items()):
+            raise ValueError("invalid inputs")
     if "env" in doc:
-        raw_env = doc["env"]
-        if not isinstance(raw_env, dict):
-            raise ValueError("env must be an object")
-        for ek, ev in raw_env.items():
-            if ek not in ENV_KEYS or not isinstance(ev, str) or not ev.strip():
-                raise ValueError(f'invalid env key "{ek}"')
-        for req_k in ENV_KEYS:
-            if req_k not in raw_env:
-                raise ValueError(f"env.{req_k} is missing")
+        re_env = doc["env"]
+        if not isinstance(re_env, dict) or set(re_env) != ENV_KEYS or any(not isinstance(ev, str) or not ev.strip() for ev in re_env.values()):
+            raise ValueError("invalid env")
     return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pack_ref}
 
 
@@ -233,230 +172,222 @@ def validate_inventory_sidecar(path: Path) -> dict[str, Any]:
 
 
 def verify_config_toml(path: Path) -> tuple[str, str, dict[str, Any]]:
-    if not path.is_file():
-        return "missing", "", {}
+    if not path.is_file(): return "missing", "", {}
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    appr = raw.pop("approval", None)
-    dig = dr1_digest(raw)
-    pol = raw.get("policy") if isinstance(raw.get("policy"), dict) else {}
-    if not isinstance(appr, dict) or not appr.get("ref"):
-        return "absent", dig, pol
+    appr, dig, pol = raw.pop("approval", None), dr1_digest(raw), (raw.get("policy") if isinstance(raw.get("policy"), dict) else {})
+    if not isinstance(appr, dict) or not appr.get("ref"): return "absent", dig, pol
     st = "current" if appr["ref"] == dr1_ref(dig) else "stale"
     return st, dig, (pol if st == "current" else {})
 
 
 def _is_unanchored_prose_source(raw: str) -> bool:
     s = raw.strip()
-    if not s or s.startswith("ADR-") or ";" in s or "://" in s:
-        return False
-    if " " in s:
-        return True
-    if ":" in s:
-        return False
-    base = s.split("@", 1)[0].split("#", 1)[0].replace("\\", "/")
+    if not s or s.startswith("ADR-") or ";" in s or "://" in s: return False
+    if " " in s: return True
+    if ":" in s: return False
+    base = s.split("@sha256:", 1)[0].replace("\\", "/")
+    if not base or base.startswith(("note:", "cite:")) or any(c in base for c in " \t\n\r;"): return True
     dot = base.rfind(".")
-    return not (0 < dot < len(base) - 1 and base[dot + 1:].isalnum() and any(c.isalpha() for c in base[dot + 1:]))
+    if 0 < dot < len(base) - 1 and base[dot + 1:].isalnum() and any(c.isalpha() for c in base[dot + 1:]): return False
+    return not ("/" in base and any("a" <= c <= "z" for c in base))
+
+
+def _contains_todo(val: Any) -> bool:
+    return val == "todo" if isinstance(val, str) else (any(_contains_todo(x) for x in val) if isinstance(val, list) else (any(_contains_todo(v) for v in val.values()) if isinstance(val, dict) else False))
+
+
+def _has_approval_blocker(raw: dict[str, Any], prof: dict[str, Any]) -> bool:
+    scope = raw.get("scope")
+    if isinstance(scope, dict) and scope.get("indirect") == "unknown": return True
+    if any(_contains_todo(raw.get(sec)) for sec in ("use", "scope", "cases")): return True
+    open_tbl = raw.get("open")
+    if isinstance(open_tbl, dict) and any(isinstance(qm, dict) and qm.get("blocks", "approval") == "approval" for qm in open_tbl.values()): return True
+    return any(isinstance(dm, dict) and dm.get("pick", "") == "" and dm.get("decide_by", "approval") == "approval" for dec_src in (raw.get("decisions"), prof.get("decisions")) if isinstance(dec_src, dict) for dm in dec_src.values())
+
+
+def _load_merged_profile(prof_ref: str, profiles_dir: Path) -> dict[str, Any]:
+    p0 = profiles_dir / f"{prof_ref}.toml"
+    if not prof_ref or not p0.is_file():
+        return {}
+    prof = tomllib.loads(p0.read_text(encoding="utf-8"))
+    exts = prof.pop("extends", None)
+    if not isinstance(exts, list) or not exts:
+        return prof
+    m: dict[str, Any] = {"drift": prof.get("drift", "0.2"), "profile": prof.get("profile", prof_ref)}
+    vw, vt, prm, pw, pt, req, cs, dc = [], [], {}, {}, {}, {}, {}, {}
+    rk_ord = {"bound": 1, "verified": 2, "killed": 3}
+    for r in [*exts, prof_ref]:
+        bp = prof if r == prof_ref else (tomllib.loads(p.read_text(encoding="utf-8")) if (p := profiles_dir / f"{r}.toml").is_file() else {})
+        bv = bp.get("vocabulary") if isinstance(bp.get("vocabulary"), dict) else {}
+        vw.extend(w for w in bv.get("when", []) if w not in vw)
+        vt.extend(t for t in bv.get("then", []) if t not in vt)
+        for s, d in (("params", prm), ("cases", cs), ("decisions", dc)):
+            if isinstance(bp.get(s), dict):
+                d.update(bp[s])
+        if isinstance(bpr := bp.get("projections"), dict):
+            pw.update(bpr["when"] if isinstance(bpr.get("when"), dict) else {})
+            pt.update(bpr["then"] if isinstance(bpr.get("then"), dict) else {})
+            for pk, pv in bpr.items():
+                if pk not in ("when", "then") and isinstance(pv, str):
+                    (pt if pk in vt else pw)[pk] = pv
+        if isinstance(bp.get("requires"), dict):
+            for k, v in bp["requires"].items():
+                if k != "proof" or "proof" not in req or rk_ord.get(str(v), 0) > rk_ord.get(str(req["proof"]), 0):
+                    req[k] = v
+        if "kit" in bp:
+            m["kit"] = bp["kit"]
+    m["vocabulary"] = {"when": vw, "then": vt}
+    for k, v in (("params", prm), ("requires", req), ("cases", cs), ("decisions", dc)):
+        if v: m[k] = v
+    if pw or pt: m["projections"] = {**({"when": pw} if pw else {}), **({"then": pt} if pt else {})}
+    return m
+
+
+def _strip_outside_digest(cases: dict[str, Any], decs: Any) -> None:
+    for cm in (cases or {}).values():
+        if isinstance(cm, dict): cm.pop("note", None)
+    if isinstance(decs, dict):
+        for dm in decs.values():
+            if isinstance(dm, dict):
+                dm.pop("owner", None)
+                dm.pop("note", None)
+                if dm.get("evidence") == "observed" and _is_unanchored_prose_source(str(dm.get("source", ""))): dm.pop("source", None)
 
 
 def verify_contract_toml(path: Path, profiles_dir: Path) -> dict[str, Any]:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    cid = raw.get("id", path.stem)
-    appr = raw.pop("approval", None)
+    cid, appr = raw.get("id", path.stem), raw.pop("approval", None)
     raw.pop("note", None)
     if isinstance(raw.get("scope"), dict):
         raw["scope"] = {k: v for k, v in raw["scope"].items() if k not in ("code", "max_lines", "forbid_imports")}
     cases = raw.get("cases", {})
-    for cm in cases.values():
-        if isinstance(cm, dict):
-            cm.pop("note", None)
-    if isinstance(raw.get("decisions"), dict):
-        for dm in raw["decisions"].values():
-            if isinstance(dm, dict):
-                dm.pop("owner", None)
-                dm.pop("note", None)
-                if dm.get("evidence") == "observed" and _is_unanchored_prose_source(str(dm.get("source", ""))):
-                    dm.pop("source", None)
+    _strip_outside_digest(cases, raw.get("decisions"))
     if isinstance(raw.get("open"), dict):
         for qm in raw["open"].values():
-            if isinstance(qm, dict):
-                qm.pop("owner", None)
-    used_w = {k for cm in cases.values() if isinstance(cm, dict) for k in cm.get("when", {})}
-    used_t = {k for cm in cases.values() if isinstance(cm, dict) for k in cm.get("then", {})}
+            if isinstance(qm, dict): qm.pop("owner", None)
     use_tbl = raw.get("use")
-    if isinstance(use_tbl, dict) and isinstance(use_tbl.get("vocabulary"), dict):
-        uv = use_tbl["vocabulary"]
-        nw = [w for w in uv.get("when", []) if w in used_w]
-        nt = [t for t in uv.get("then", []) if t in used_t]
-        nvoc: dict[str, Any] = {}
-        if nw:
-            nvoc["when"] = nw
-        if nt:
-            nvoc["then"] = nt
-        if nvoc:
-            use_tbl["vocabulary"] = nvoc
-        else:
-            use_tbl.pop("vocabulary", None)
     prof_ref = use_tbl.get("profile", "") if isinstance(use_tbl, dict) else ""
-    prof_path = profiles_dir / f"{prof_ref}.toml"
-    prof = tomllib.loads(prof_path.read_text(encoding="utf-8")) if (prof_ref and prof_path.is_file()) else {}
-    prof.pop("extends", None)
+    prof = _load_merged_profile(prof_ref, profiles_dir)
+    waived = use_tbl.get("waive", {}) if isinstance(use_tbl, dict) and isinstance(use_tbl.get("waive"), dict) else {}
+    _strip_outside_digest(prof.get("cases", {}), prof.get("decisions"))
+    own_w = {k for cm in cases.values() if isinstance(cm, dict) for k in cm.get("when", {})}
+    own_t = {k for cm in cases.values() if isinstance(cm, dict) for k in cm.get("then", {})}
+    inh_cases = {k: cm for k, cm in (prof.get("cases") or {}).items() if k not in waived and isinstance(cm, dict)}
+    used_w, used_t = own_w | {k for cm in inh_cases.values() for k in cm.get("when", {})}, own_t | {k for cm in inh_cases.values() for k in cm.get("then", {})}
+    if isinstance(use_tbl, dict) and isinstance(uv := use_tbl.get("vocabulary"), dict):
+        nw, nt = [w for w in uv.get("when", []) if w in own_w], [t for t in uv.get("then", []) if t in own_t]
+        nvoc = {**({"when": nw} if nw else {}), **({"then": nt} if nt else {})}
+        if nvoc: use_tbl["vocabulary"] = nvoc
+        else: use_tbl.pop("vocabulary", None)
     profile_proof = ""
     if isinstance(prof.get("requires"), dict):
         profile_proof = str(prof["requires"].get("proof", ""))
         req_trim = {k: v for k, v in prof["requires"].items() if k not in ("max_lines", "forbid_imports")}
-        if req_trim:
-            prof["requires"] = req_trim
-        else:
-            prof.pop("requires", None)
+        if req_trim: prof["requires"] = req_trim
+        else: prof.pop("requires", None)
     if "vocabulary" in prof:
-        prof["vocabulary"] = {
-            "when": [w for w in prof["vocabulary"].get("when", []) if w in used_w],
-            "then": [t for t in prof["vocabulary"].get("then", []) if t in used_t],
-        }
+        prof["vocabulary"] = {"when": [w for w in prof["vocabulary"].get("when", []) if w in used_w], "then": [t for t in prof["vocabulary"].get("then", []) if t in used_t]}
+    if isinstance(raw_proj := prof.get("projections"), dict):
+        pw_map = {k: v for k, v in (raw_proj.get("when") or {}).items() if k in used_w} if isinstance(raw_proj.get("when"), dict) else {}
+        pt_map = {k: v for k, v in (raw_proj.get("then") or {}).items() if k in used_t} if isinstance(raw_proj.get("then"), dict) else {}
+        for k, v in raw_proj.items():
+            if k not in ("when", "then") and not isinstance(v, dict):
+                if k in used_t and k not in pt_map: pt_map[k] = v
+                elif k in used_w and k not in pw_map: pw_map[k] = v
+        nproj = {**({"when": pw_map} if pw_map else {}), **({"then": pt_map} if pt_map else {})}
+        if nproj: prof["projections"] = nproj
+        else: prof.pop("projections", None)
     dig = dr1_digest({"contract": raw, "profiles": ({prof_ref: prof} if prof_ref else {})})
-    appr_state = "absent"
-    approver = ""
-    if isinstance(appr, dict) and appr.get("ref"):
-        appr_state = "current" if appr["ref"] == dr1_ref(dig) else "stale"
-        approver = str(appr.get("by", ""))
-    return {
-        "id": cid,
-        "digest": dig,
-        "ref": dr1_ref(dig),
-        "approval": appr_state,
-        "approver": approver,
-        "profile_proof": profile_proof,
-        "cases": cases,
-    }
+    blocked = _has_approval_blocker(raw, prof)
+    appr_state = "blocked" if blocked else ("current" if isinstance(appr, dict) and appr.get("ref") == dr1_ref(dig) else ("stale" if isinstance(appr, dict) and appr.get("ref") else "absent"))
+    approver = str(appr.get("by", "")) if isinstance(appr, dict) and appr.get("ref") else ""
+    open_m = raw.get("open") if isinstance(raw.get("open"), dict) else {}
+    own_decs = [dm for dm in (raw.get("decisions") or {}).values() if isinstance(dm, dict)] if isinstance(raw.get("decisions"), dict) else []
+    decs_l = [dm for s in (raw.get("decisions"), prof.get("decisions")) if isinstance(s, dict) for dm in s.values() if isinstance(dm, dict)]
+    open_cnt = len(open_m) + sum(1 for dm in own_decs if dm.get("pick", "") == "")
+    exec_blk = any(isinstance(qm, dict) and qm.get("blocks") == "execution" for qm in open_m.values()) or any(dm.get("pick", "") == "" and dm.get("decide_by") == "execution" for dm in decs_l)
+    rel_blk = any(isinstance(qm, dict) and qm.get("blocks") == "release" for qm in open_m.values()) or any(dm.get("pick", "") == "" and dm.get("decide_by") == "release" for dm in decs_l) or any(isinstance(cm, dict) and cm.get("status") == "deferred" for cm in cases.values())
+    return {"id": cid, "digest": dig, "ref": dr1_ref(dig), "approval": appr_state, "approver": approver, "profile_proof": profile_proof, "cases": {**inh_cases, **cases}, "open_cnt": open_cnt, "exec_blk": exec_blk, "rel_blk": rel_blk}
 
 
 def load_proof_events(events_paths: list[Path]) -> tuple[list[dict[str, Any]], dict[str, int], int, list[str]]:
-    shards: list[Path] = []
-    for p in events_paths:
-        if p.is_dir():
-            shards.extend(sorted(p.glob("*.jsonl")))
-        elif p.is_file():
-            shards.append(p)
-    events: list[dict[str, Any]] = []
-    gone_by_contract: dict[str, int] = {}
-    incomplete_shards = 0
-    errors: list[str] = []
+    shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() else []))]
+    events, gone_by_contract, incomplete_shards, errors = [], {}, 0, []
     for sf in shards:
-        meta_path = sf.with_suffix(".meta.json")
-        has_inv = meta_path.is_file()
-        c_set, t_set, snap = set(), set(), ""
+        mp = sf.with_suffix(".meta.json")
+        has_inv, c_set, t_set, snap = mp.is_file(), set(), set(), ""
         if has_inv:
             try:
-                inv = validate_inventory_sidecar(meta_path)
+                inv = validate_inventory_sidecar(mp)
                 c_set, t_set, snap = inv["classes"], inv["tests"], inv["snapshot"]
             except Exception as exc:
-                errors.append(f"{meta_path.name}: {exc}")
+                errors.append(f"{mp.name}: {exc}")
                 continue
-        shard_ev_count = 0
+        ev_cnt = 0
         for idx, line in enumerate(sf.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                ev = validate_event_line(line)
+            if not line.strip(): continue
+            try: ev = validate_event_line(line)
             except Exception as exc:
                 errors.append(f"events:{sf.name}:{idx}: DR-E701 {exc}")
                 continue
-            shard_ev_count += 1
+            ev_cnt += 1
             tid = ev["test"].split("[", 1)[0]
             cls = tid.split("#", 1)[0] if "#" in tid else ""
             if not has_inv or cls not in c_set or tid not in t_set:
-                cid = ev["contract"]
-                gone_by_contract[cid] = gone_by_contract.get(cid, 0) + 1
-                continue
-            events.append(ev)
-        if has_inv and snap != "" and len(t_set) > 0 and shard_ev_count == 0:
-            incomplete_shards += 1
+                gone_by_contract[ev["contract"]] = gone_by_contract.get(ev["contract"], 0) + 1
+            else: events.append(ev)
+        if has_inv and snap and t_set and ev_cnt == 0: incomplete_shards += 1
     return events, gone_by_contract, incomplete_shards, errors
 
 
 def _proof_rank(floor: str) -> int:
-    return {"verified": 2, "bound": 1}.get(floor, 0)
+    return {"killed": 3, "verified": 2, "bound": 1}.get(floor, 0)
 
 
-def evaluate_contract(contract: dict[str, Any], cfg_state: str, events: list[dict[str, Any]], gone: int, incomplete_shards: int, ev_errors: list[str], policy: dict[str, Any] | None = None, min_proof: str = "verified") -> dict[str, Any]:
-    cid, dig = contract["id"], contract["digest"]
-    pol = policy or {}
+def evaluate_contract(contract: dict[str, Any], cfg_state: str, events: list[dict[str, Any]], gone: int, incomplete_shards: int, ev_errors: list[str], policy: dict[str, Any] | None = None, min_proof: str = "verified", phase: str = "", total_open: int | None = None) -> dict[str, Any]:
+    cid, dig, pol = contract["id"], contract["digest"], policy or {}
     pol_active = pol.get("pack") == "core@1"
-    matching: list[dict[str, Any]] = []
-    ignored = 0
+    matching, ignored = [], 0
     for ev in events:
-        if ev["contract"] != cid:
-            continue
-        if digest_matches(ev["digest"], dig):
-            matching.append(ev)
-        else:
-            ignored += 1
-    latest_by_test: dict[str, dict[str, Any]] = {}
+        if ev["contract"] == cid:
+            if digest_matches(ev["digest"], dig):
+                matching.append(ev)
+            else:
+                ignored += 1
+    latest: dict[str, dict[str, Any]] = {}
     superseded = 0
     for ev in matching:
-        tid = ev["test"]
-        if tid in latest_by_test:
-            superseded += 1
-        latest_by_test[tid] = ev
-    active_events = list(latest_by_test.values())
+        superseded += 1 if ev["test"] in latest else 0
+        latest[ev["test"]] = ev
+    active = list(latest.values())
     results: list[dict[str, Any]] = []
     for case_id in sorted(contract["cases"]):
         cm = contract["cases"][case_id]
-        levels = cm.get("at") or ["*"]
-        for lv in levels:
-            cov = [ev for ev in active_events if case_id in ev["cases"] and (lv == "*" or ev["level"] == lv)]
-            if not cov:
-                state = "missing"
-            elif any(ev["outcome"] != "passed" for ev in cov):
-                state = "red"
-            elif any(case_id in ev["read"] for ev in cov):
-                state = "verified"
-            else:
-                state = "bound"
-            results.append({"case": case_id, "level": lv, "state": state})
+        if isinstance(cm, dict) and "status" in cm:
+            continue
+        for lv in (cm.get("at") or ["*"]):
+            cov = [ev for ev in active if case_id in ev["cases"] and (lv == "*" or ev["level"] == lv)]
+            st = "missing" if not cov else ("red" if any(ev["outcome"] != "passed" for ev in cov) else ("verified" if any(case_id in ev["read"] for ev in cov) else "bound"))
+            results.append({"case": case_id, "level": lv, "state": st})
     reasons: list[str] = []
-    if cfg_state == "missing":
-        reasons.append("config.missing")
-    elif cfg_state != "current":
-        if cfg_state == "stale":
-            reasons.append("config.findings")
-        reasons.append(f"config.approval.{cfg_state}")
-    if contract["approval"] != "current":
-        if contract["approval"] == "stale":
-            reasons.append("contract.findings")
-        reasons.append(f"contract.approval.{contract['approval']}")
-    elif pol_active and isinstance(pol.get("approvers"), list) and pol["approvers"]:
-        if contract.get("approver", "") not in pol["approvers"]:
-            reasons.append("contract.approval.unlisted")
-    if ev_errors:
-        reasons.append("events.invalid")
-    if incomplete_shards > 0:
-        reasons.append("shard.incomplete")
-    pol_floor = str(pol.get("proof", "")) if pol_active else ""
-    prof_floor = str(contract.get("profile_proof", ""))
-    eff_rank = max(_proof_rank(min_proof), _proof_rank(pol_floor), _proof_rank(prof_floor))
-    allowed_states = ("verified",) if eff_rank >= 2 else ("verified", "bound")
-    if gone > 0 or incomplete_shards > 0 or not results or any(r["state"] not in allowed_states for r in results):
-        reasons.append("proof.not_green")
-    return {
-        "id": cid,
-        "digest": dig,
-        "ref": contract["ref"],
-        "approval": contract["approval"],
-        "ok": len(reasons) == 0,
-        "reasons": reasons,
-        "ignored": ignored,
-        "superseded": superseded,
-        "gone": gone,
-        "results": results,
-    }
+    if cfg_state == "missing": reasons.append("config.missing")
+    elif cfg_state != "current": reasons.extend((["config.findings"] if cfg_state == "stale" else []) + [f"config.approval.{cfg_state}"])
+    if contract["approval"] != "current": reasons.extend((["contract.findings"] if contract["approval"] == "stale" else []) + [f"contract.approval.{contract['approval']}"])
+    elif pol_active and isinstance(pol.get("approvers"), list) and pol["approvers"] and contract.get("approver", "") not in pol["approvers"]: reasons.append("contract.approval.unlisted")
+    tot_open = contract.get("open_cnt", 0) if total_open is None else total_open
+    if pol_active and isinstance(pol.get("max_open"), int) and not isinstance(pol.get("max_open"), bool) and pol["max_open"] > 0 and contract.get("open_cnt", 0) > 0 and tot_open > pol["max_open"]: reasons.append("policy.max_open")
+    if contract.get("exec_blk"): reasons.append("contract.blocked.execution")
+    if phase == "release" and contract.get("rel_blk"): reasons.append("contract.blocked.release")
+    if ev_errors: reasons.append("events.invalid")
+    if incomplete_shards > 0: reasons.append("shard.incomplete")
+    eff_rank = max(_proof_rank(min_proof), _proof_rank(str(pol.get("proof", "")) if pol_active else ""), _proof_rank(str(contract.get("profile_proof", ""))))
+    allowed = ("verified",) if eff_rank >= 2 else ("verified", "bound")
+    if gone > 0 or incomplete_shards > 0 or not results or any(r["state"] not in allowed for r in results): reasons.append("proof.not_green")
+    return {"id": cid, "digest": dig, "ref": contract["ref"], "approval": contract["approval"], "ok": not reasons, "reasons": reasons, "ignored": ignored, "superseded": superseded, "gone": gone, "results": results}
 
 
 def run_self_test() -> int:
-    assert canonical_json(-0.0) == "0"
-    assert canonical_json(1e21) == "1e+21"
-    assert canonical_json(1e-6) == "0.000001"
-    assert canonical_json(1e-7) == "1e-7"
+    assert canonical_json(-0.0) == "0" and canonical_json(1e21) == "1e+21" and canonical_json(1e-6) == "0.000001" and canonical_json(1e-7) == "1e-7"
     assert canonical_json({"\ue000": 1, "\U0001f600": 2}) == '{"\U0001f600":2,"\ue000":1}'
     for bad in (1 << 53, -(1 << 53), float("nan"), float("inf")):
         try:
@@ -471,22 +402,14 @@ def run_self_test() -> int:
         '{"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"}',
         '{"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"}',
         '{"test":"t#1","contract":"a","cases":["c"],"level":"unit","outcome":"passed","digest":"dr1:UPPER0000000"}',
+        '{"a":' * 65 + '1' + '}' * 65,
     ):
         try:
             validate_event_line(bad_ev)
             raise AssertionError(f"expected ValueError for {bad_ev}")
         except ValueError:
             pass
-    valid_inv = json.dumps({
-        "version": 1,
-        "classes": ["a.mjs", "b.mjs"],
-        "tests": ["a.mjs#t1", "b.mjs#t2"],
-        "snapshot": "0123456789abcdef0123456789abcdef01234567",
-        "pack_ref": "dr1:0123456789ab",
-        "touched": ["src/a.mjs", "src/b.mjs"],
-        "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}},
-        "env": {"toolchain": "v1", "deps": "d1", "config": "c1", "runner": "r1", "drift": "0.3.0", "adapter": "js", "policy": "none"},
-    })
+    valid_inv = json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0123456789abcdef0123456789abcdef01234567", "pack_ref": "dr1:0123456789ab", "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": {"toolchain": "v1", "deps": "d1", "config": "c1", "runner": "r1", "drift": "0.3.0", "adapter": "js", "policy": "none"}})
     assert len(validate_inventory_text(valid_inv)["tests"]) == 2
     for bad_inv in (
         '{"version":2,"classes":[],"tests":[]}',
@@ -507,9 +430,10 @@ def run_self_test() -> int:
             raise AssertionError(f"expected ValueError for {bad_inv}")
         except ValueError:
             pass
-    assert _is_unanchored_prose_source("observed in legacy prod traffic") is True
-    assert _is_unanchored_prose_source("src/main/java/example/items/ItemServer.java") is False
-    assert _is_unanchored_prose_source("ADR-0012") is False
+    assert _is_unanchored_prose_source("observed in legacy prod traffic") and _is_unanchored_prose_source("SPEC.md#D209")
+    assert not _is_unanchored_prose_source("src/main/java/example/items/ItemServer.java") and not _is_unanchored_prose_source("ADR-0012")
+    assert _has_approval_blocker({"open": {"q": {"ask": "?", "blocks": "approval"}}}, {}) and not _has_approval_blocker({"open": {"q": {"ask": "?", "blocks": "execution"}}}, {})
+    assert _has_approval_blocker({"scope": {"indirect": "unknown"}}, {}) and _has_approval_blocker({"cases": {"c": {"then": {"x": "todo"}}}}, {})
     print("drift_verify.py self-test: ok (RFC 8785 JCS, event & full inventory schema vectors passed)")
     return 0
 
@@ -523,6 +447,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--profiles", type=Path)
     ap.add_argument("--events", type=Path, action="append", required=True)
     ap.add_argument("--min-proof", choices=("bound", "verified"), default="verified")
+    ap.add_argument("--phase", choices=("execution", "release"), default="")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -532,7 +457,12 @@ def main(argv: list[str]) -> int:
     for t in args.targets:
         contracts_files.extend(sorted(t.glob("*.toml")) if t.is_dir() else [t])
     events, gone_map, inc_shards, ev_errors = load_proof_events(args.events)
-    verdicts = [evaluate_contract(verify_contract_toml(cf, profiles_dir), cfg_state, events, gone_map.get(cf.stem, 0), inc_shards, ev_errors, pol, args.min_proof) for cf in contracts_files]
+    by_contract: dict[str, list[dict[str, Any]]] = {}
+    for ev in events:
+        by_contract.setdefault(ev["contract"], []).append(ev)
+    parsed_contracts = [verify_contract_toml(cf, profiles_dir) for cf in contracts_files]
+    tot_open = sum(c.get("open_cnt", 0) for c in parsed_contracts)
+    verdicts = [evaluate_contract(c, cfg_state, by_contract.get(c["id"], []), gone_map.get(c["id"], 0), inc_shards, ev_errors, pol, args.min_proof, args.phase, tot_open) for c in parsed_contracts]
     all_ok = bool(verdicts) and all(v["ok"] for v in verdicts)
     if args.json:
         print(json.dumps({"ok": all_ok, "contracts": verdicts}, indent=2, sort_keys=True))

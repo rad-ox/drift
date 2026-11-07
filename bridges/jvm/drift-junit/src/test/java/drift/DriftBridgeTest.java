@@ -161,6 +161,7 @@ class DriftBridgeTest {
 
     @AfterEach
     void restore() {
+        Drift.end();
         Drift.clearViews();
         saved.forEach((k, v) -> {
             if (v == null) {
@@ -327,7 +328,7 @@ class DriftBridgeTest {
         assertEquals(snap, metadata.get("snapshot"));
         @SuppressWarnings("unchecked")
         Map<String, Object> env = (Map<String, Object>) metadata.get("env");
-        assertEquals("drift-junit@0.3.0", env.get("adapter"));
+        assertEquals("drift-junit@0.3.1", env.get("adapter"));
         assertEquals("junit-platform", env.get("runner"));
     }
 
@@ -398,9 +399,16 @@ class DriftBridgeTest {
                 Map.of("pct", 101L, "maxPct", 100L, "items", List.of("x"), "tier", "a")));
         assertThrows(AssertionError.class, () -> relCase.checkProjection(
                 Map.of("pct", 85L, "maxPct", 80L, "items", List.of("x"), "tier", "a")));
-        assertThrows(AssertionError.class, () -> Drift.withMutation(
+        Drift.withMutation(
                 "bridge", "part", "/cases/part/then/pct/max", 101L,
+                () -> relCase.checkProjection(validPayload));
+        assertThrows(AssertionError.class, () -> Drift.withMutation(
+                "bridge", "part", "/cases/part/then/pct/max", 79L,
                 () -> relCase.checkProjection(validPayload)));
+        assertEquals(8, Drift.cartesianDomain(Map.of(
+                "b1", Drift.boolDomain(),
+                "b2", Drift.boolDomain(),
+                "b3", Drift.boolDomain())).size());
         Drift.Case extCase = new Drift.Case(
                 "bridge",
                 "ext",
@@ -448,5 +456,112 @@ class DriftBridgeTest {
                 Map.of("sub", 100L, "tax", 22L, "total", 122L, "roles", List.of("user"), "code", "INV-1-IT")));
         assertThrows(AssertionError.class, () -> extCase.checkProjection(
                 Map.of("sub", 100L, "tax", 22L, "total", 122L, "roles", List.of("admin"), "code", "ORD-1-IT")));
+        Drift.Case uiCase = new Drift.Case(
+                "bridge",
+                "ui",
+                Map.of(),
+                Map.of("min_target_px", 24L));
+        Drift.withMutation("bridge", "ui", "/cases/ui/then/min_target_px", 25L, () -> {
+            uiCase.checkView(Map.of("min_target_px", 44L));
+            assertThrows(AssertionError.class, () -> uiCase.checkView(Map.of("min_target_px", 24L)));
+            AssertionError bErr = assertThrows(AssertionError.class, () ->
+                    uiCase.checkBounds(Drift.intDomain(1, 100), Map.of(
+                            "min_target_px", (v, sample) -> assertTrue(sample < 100 || v.equals(24L)))));
+            assertTrue(bErr.getMessage().contains("[counterexample: 100]"));
+        });
+    }
+
+    public static final class ScalaTuple {
+        private final Object k;
+        private final Object v;
+
+        public ScalaTuple(Object k, Object v) {
+            this.k = k;
+            this.v = v;
+        }
+
+        public Object _1() {
+            return k;
+        }
+
+        public Object _2() {
+            return v;
+        }
+    }
+
+    public static final class ScalaProductRow {
+        private final long status;
+        private final String name;
+
+        public ScalaProductRow(long status, String name) {
+            this.status = status;
+            this.name = name;
+        }
+
+        public int productArity() {
+            return 2;
+        }
+
+        public String productElementName(int n) {
+            return n == 0 ? "status" : "name";
+        }
+
+        public Object productElement(int n) {
+            return n == 0 ? status : name;
+        }
+    }
+
+    static class UnannotatedClosureSample {
+        @Test
+        void munitStyleTest() {
+            Drift.Case c = Drift.expect("bridge", "part", "http");
+            c.verify(new ScalaTuple("status", 200L), new ScalaTuple("name", "ok"));
+        }
+    }
+
+    @Test
+    void closureSuitesAutoBindExpectAndVerifyScalaTuplesAndProducts() throws Exception {
+        Path closureEv = dir.resolve("closure-events.jsonl");
+        System.setProperty(DriftListener.EVENTS, closureEv.toString());
+        LauncherFactory.create().execute(LauncherDiscoveryRequestBuilder.request()
+                .selectors(selectClass(UnannotatedClosureSample.class)).build());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ev = (Map<String, Object>) Json.parse(Files.readAllLines(closureEv).get(0));
+        assertEquals("passed", ev.get("outcome"));
+        assertEquals("http", ev.get("level"));
+        assertEquals(List.of("part"), ev.get("read"));
+        Map<String, Object> meta = inventory(dir.resolve("closure-events.meta.json"));
+        assertEquals(List.of(UnannotatedClosureSample.class.getName()), meta.get("classes"));
+        assertEquals(List.of(UnannotatedClosureSample.class.getName() + "#munitStyleTest"), meta.get("tests"));
+
+        Drift.end();
+        Path standaloneEv = dir.resolve("standalone.jsonl");
+        System.setProperty(DriftListener.EVENTS, standaloneEv.toString());
+        Drift.Case c = Drift.expect("bridge", "part", "http");
+        c.verify(new ScalaProductRow(200L, "ok"));
+        assertThrows(AssertionError.class, () -> c.verify(new ScalaTuple("status", 500L), new ScalaTuple("name", "ok")));
+        Drift.flushEvents();
+        List<String> lines = Files.readAllLines(standaloneEv);
+        assertEquals(2, lines.size());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> passEv = (Map<String, Object>) Json.parse(lines.get(0));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> failEv = (Map<String, Object>) Json.parse(lines.get(1));
+        assertEquals("passed", passEv.get("outcome"));
+        assertEquals(List.of("part"), passEv.get("read"));
+        assertEquals("failed", failEv.get("outcome"));
+
+        Drift.Case typed = new Drift.Case(
+                "bridge",
+                "typed",
+                Map.of("safe", Boolean.TRUE, "limit", 10L),
+                Map.of("ok", Boolean.TRUE, "count", 42L, "items", List.of("a"), "meta", Map.of("k", "v")));
+        assertTrue(typed.whenBoolean("safe"));
+        assertEquals(10, typed.whenInt("limit"));
+        assertTrue(typed.thenBoolean("ok"));
+        assertEquals(42L, typed.thenLong("count"));
+        assertEquals(List.of("a"), typed.thenList("items"));
+        assertEquals(Map.of("k", "v"), typed.thenMap("meta"));
     }
 }
+

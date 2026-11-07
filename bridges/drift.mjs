@@ -107,10 +107,10 @@ function resolveEnv() {
   const key = `${pk}\u0000${raw}`;
   if (envCache && envCache.key === key) return envCache.value;
   const base = {
-    adapter: 'drift.mjs@0.3.0',
+    adapter: 'drift.mjs@0.3.1',
     config: 'default',
     deps: 'none',
-    drift: '0.3.0',
+    drift: '0.3.1',
     policy: 'core@1',
     runner: 'node:test',
     toolchain: `node@${process.versions.node}`,
@@ -169,8 +169,11 @@ function autoResolve(id, targetJson = '') {
 function resolveStubContract(idOrRes, caseId, base = {}) {
   const up = findUpstreamContract(idOrRes, process.cwd(), fs, path);
   const curCtx = CTX_ALS.getStore();
-  if (up && curCtx && up.file) curCtx.recordInput(up.file);
+  if (up && curCtx && up.file && idOrRes !== curCtx.contractId) curCtx.recordInput(up.file);
   const v = up ? up.view : loadView(idOrRes);
+  if (curCtx && (idOrRes === curCtx.contractId || (!up && v.id === curCtx.contractId))) {
+    curCtx.recordInput(`.drift/self-stub/${curCtx.contractId}`, 'sha256:self-stub');
+  }
   const resolvedId = resolveStubCaseId(v, idOrRes, caseId, base, err);
   return [v, resolvedId];
 }
@@ -380,6 +383,25 @@ export function mutationDepth() {
   return (MUT_ALS.getStore() || []).length;
 }
 
+export function observe(rec) {
+  const tgt = (process.env.DRIFT_OBSERVE || '').trim();
+  if (!tgt || !isObj(rec) || !isObj(rec.then)) return false;
+  const out = tgt.endsWith('.jsonl') ? tgt : path.join(tgt, `trace-${process.pid}.jsonl`);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  const row = {
+    kind: 'trace',
+    version: 1,
+    ...(isStr(rec.contract) && rec.contract ? { contract: rec.contract } : {}),
+    ...(isStr(rec.case) && rec.case ? { case: rec.case } : {}),
+    ...(isStr(rec.test) && rec.test ? { test: rec.test } : {}),
+    ...(Array.isArray(rec.at) && rec.at.length ? { at: rec.at } : {}),
+    when: isObj(rec.when) ? rec.when : {},
+    then: rec.then,
+  };
+  fs.appendFileSync(out, JSON.stringify(row) + '\n', 'utf8');
+  return true;
+}
+
 export async function withMutation(target, fn) {
   if (!isObj(target) || !isStr(target.contract) || !isStr(target.case) || !isStr(target.path)) {
     err('invalid mutation target');
@@ -492,12 +514,13 @@ export class DriftContext {
   }
 
   recordInput(filePath, pre = null) {
-    const abs = path.resolve(process.cwd(), String(filePath));
-    const relRaw = path.relative(process.cwd(), abs).split(path.sep).join('/');
+    const isSelf = pre === 'sha256:self-stub';
+    const abs = isSelf ? String(filePath) : path.resolve(process.cwd(), String(filePath));
+    const relRaw = isSelf ? abs : path.relative(process.cwd(), abs).split(path.sep).join('/');
     const rel = relRaw && !relRaw.startsWith('..') ? relRaw : String(filePath).split(path.sep).join('/');
-    const dig = inputDigest(abs, pre);
+    const dig = isSelf ? pre : inputDigest(abs, pre);
     if (!this.mutationOverride) {
-      this.inputFiles.set(abs, { rel, dig });
+      if (!isSelf) this.inputFiles.set(abs, { rel, dig });
       const out = resolveEventsFile();
       if (out) {
         recordDiscovery(this.testId, out);
@@ -547,19 +570,18 @@ export class DriftContext {
 
   async checkBounds(caseId, domain, checks) {
     this._tag(caseId);
-    const samples = expandDomain(domain, Boolean(this.mutationOverride));
+    const samples = expandDomain(domain, false);
     const seen = this.reads.get(caseId);
     const list = [];
     for (const [k, exp] of Object.entries(this._tt(caseId))) {
       const fn = isObj(checks) ? checks[k] : undefined;
       if (typeof fn !== 'function') aErr(`${this.contractId}.${caseId}: no check for then.${k}`);
-      seen.add(k);
       list.push([k, exp, fn]);
     }
     for (const s of samples) {
       for (const [k, exp, fn] of list) {
         try {
-          await fn(exp, s);
+          await invokeVerifiedCallback(fn, this.contractId, caseId, k, exp, s);
         } catch (e) {
           if (isAssertErr(e) && !String(e.message || '').includes('[counterexample:')) {
             aErr(`${this.contractId}.${caseId}.then.${k} failed [counterexample: ${JSON.stringify(s)}]: ${e.message}`);
@@ -568,6 +590,7 @@ export class DriftContext {
         }
       }
     }
+    for (const [k] of list) seen.add(k);
   }
 
   _domSpec(p) {
@@ -609,6 +632,7 @@ export class DriftContext {
 
   buildOutput(caseId, base = {}) {
     this._tag(caseId);
+    this.recordInput(`.drift/self-stub/${this.contractId}`, 'sha256:self-stub');
     return synthesizeViewOutput(this.view, caseId, base, this._tt(caseId));
   }
 

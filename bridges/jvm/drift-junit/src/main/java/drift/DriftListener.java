@@ -45,16 +45,39 @@ public final class DriftListener implements TestExecutionListener {
     private static final int BUFFER_FLUSH_THRESHOLD = 8192;
     private static final Map<MethodSource, Optional<DriftCase>> SOURCE_TAGS = new ConcurrentHashMap<>();
 
+    private static volatile boolean standaloneHookRegistered;
+
     @Override
     public void executionStarted(TestIdentifier id) {
         if (id.isTest()) {
             DriftCase tag = tagOf(id);
-            if (tag == null && (id.getSource().isEmpty() || !(id.getSource().get() instanceof MethodSource))) {
+            if (tag == null && id.getSource().isEmpty()) {
                 Drift.end();
+            } else if (tag == null && isClosureSource(id)) {
+                Drift.begin(DriftVerify.closureSlot());
             } else {
                 Drift.begin(tag);
             }
         }
+    }
+
+    private static boolean isClosureSource(TestIdentifier id) {
+        if (id.getSource().isEmpty()) {
+            return false;
+        }
+        var src = id.getSource().get();
+        if (src instanceof ClassSource) {
+            return true;
+        }
+        if (src instanceof MethodSource ms) {
+            try {
+                ms.getJavaMethod();
+                return false;
+            } catch (RuntimeException e) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -104,9 +127,20 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     private static void write(TestIdentifier id, String outcome, DriftCase tag) {
-        String file = System.getProperty(EVENTS);
-        if (file == null || file.isBlank() || tag == null
-                || id.getSource().isEmpty() || !(id.getSource().get() instanceof MethodSource ms)) {
+        String file = eventsTarget();
+        if (file == null || file.isBlank() || tag == null || tag.contract().isEmpty() || id.getSource().isEmpty()) {
+            return;
+        }
+        String className;
+        String methodName;
+        var src = id.getSource().get();
+        if (src instanceof MethodSource ms) {
+            className = ms.getClassName();
+            methodName = ms.getMethodName();
+        } else if (src instanceof ClassSource cs) {
+            className = cs.getClassName();
+            methodName = id.getDisplayName();
+        } else {
             return;
         }
         String resolvedDir = System.getProperty(Drift.RESOLVED);
@@ -126,11 +160,15 @@ public final class DriftListener implements TestExecutionListener {
                 }
             }
         }
-        String canonicalTest = ms.getClassName() + "#" + ms.getMethodName();
+        String canonicalTest = className + "#" + methodName;
         String test = canonicalTest + ordinal(id);
         Map<String, String> inputs = Drift.recordedInputs();
-        if (!inputs.isEmpty()) {
-            synchronized (DriftListener.class) {
+        synchronized (DriftListener.class) {
+            if (DriftVerify.isDynamicTag(tag)) {
+                DISCOVERED_CLASSES.add(className);
+                DISCOVERED_TESTS.computeIfAbsent(className, ignored -> new TreeSet<>()).add(canonicalTest);
+            }
+            if (!inputs.isEmpty()) {
                 RECORDED_INPUTS.computeIfAbsent(canonicalTest, ignored -> new TreeMap<>()).putAll(inputs);
             }
         }
@@ -149,6 +187,77 @@ public final class DriftListener implements TestExecutionListener {
         }
         line.append("}\n");
         append(Path.of(file), line.toString());
+    }
+
+    private static String eventsTarget() {
+        String prop = System.getProperty(EVENTS);
+        if (prop != null && !prop.isBlank()) {
+            return prop;
+        }
+        String env = System.getenv("DRIFT_EVENTS");
+        return env != null && !env.isBlank() ? env : null;
+    }
+
+    static synchronized void recordStandaloneEvent(
+            String canonicalTest,
+            String contract,
+            List<String> cases,
+            String level,
+            String outcome,
+            List<String> read) {
+        String file = eventsTarget();
+        if (file == null || file.isBlank()) {
+            return;
+        }
+        if (!standaloneHookRegistered) {
+            standaloneHookRegistered = true;
+            Runtime.getRuntime().addShutdownHook(new Thread(DriftListener::flushStandaloneEvents));
+        }
+        int hash = canonicalTest.indexOf('#');
+        String className = hash > 0 ? canonicalTest.substring(0, hash) : canonicalTest;
+        DISCOVERED_CLASSES.add(className);
+        DISCOVERED_TESTS.computeIfAbsent(className, ignored -> new TreeSet<>()).add(canonicalTest);
+        Map<String, String> inputs = Drift.recordedInputs();
+        if (!inputs.isEmpty()) {
+            RECORDED_INPUTS.computeIfAbsent(canonicalTest, ignored -> new TreeMap<>()).putAll(inputs);
+        }
+        StringBuilder line = new StringBuilder("{");
+        Json.field(line, "test", canonicalTest).append(',');
+        Json.field(line, "contract", contract).append(',');
+        Json.field(line, "cases", cases).append(',');
+        Json.field(line, "level", level).append(',');
+        Json.field(line, "outcome", outcome);
+        if (!read.isEmpty()) {
+            Json.field(line.append(','), "read", read);
+        }
+        String digest = Drift.digest(contract);
+        if (digest != null) {
+            Json.field(line.append(','), "digest", digest);
+        }
+        line.append("}\n");
+        append(Path.of(file), line.toString());
+    }
+
+    static synchronized void flushStandaloneEvents() {
+        for (Map.Entry<Path, StringBuilder> entry : BUFFERS.entrySet()) {
+            if (entry.getValue().length() > 0) {
+                flushBuffer(entry.getKey(), entry.getValue());
+            }
+        }
+        BUFFERS.clear();
+        for (FileChannel channel : OPEN.values()) {
+            try {
+                channel.close();
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot close an events file", e);
+            }
+        }
+        OPEN.clear();
+        writeInventory();
+        PLAN_FILE.clear();
+        DISCOVERED_CLASSES.clear();
+        DISCOVERED_TESTS.clear();
+        RECORDED_INPUTS.clear();
     }
 
     /**
@@ -305,7 +414,7 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     private static void writeInventory() {
-        String target = System.getProperty(EVENTS);
+        String target = eventsTarget();
         if (target == null || target.isBlank()) {
             return;
         }
@@ -417,10 +526,10 @@ public final class DriftListener implements TestExecutionListener {
             return null;
         }
         Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.3.0");
+        base.put("adapter", "drift-junit@0.3.1");
         base.put("config", "default");
         base.put("deps", "none");
-        base.put("drift", "0.3.0");
+        base.put("drift", "0.3.1");
         base.put("policy", "core@1");
         base.put("runner", "junit-platform");
         base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));

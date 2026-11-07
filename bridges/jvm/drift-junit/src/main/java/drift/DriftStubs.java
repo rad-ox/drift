@@ -153,7 +153,7 @@ final class DriftStubs {
                     }
                 }
                 if (allFound) {
-                    Number sumN = allInt ? (Number) Long.valueOf(intSum) : (Number) Double.valueOf(dblSum);
+                    Number sumN = allInt ? (Number) Long.valueOf(intSum) : (Number) Double.valueOf(Math.round(dblSum * 1e12) / 1e12);
                     lo = maxNum(lo, sumN);
                     hi = minNum(hi, sumN);
                 }
@@ -201,13 +201,17 @@ final class DriftStubs {
 
     static Map<String, Object> resolveStubView(String contractOrResource, boolean inTest) {
         DriftInternal.UpstreamMatch up = DriftInternal.findUpstreamContract(contractOrResource);
+        DriftCase tag = inTest ? Drift.tag() : null;
         if (up != null) {
-            if (inTest && !Drift.mutationRun() && up.file() != null) {
+            if (inTest && !Drift.mutationRun() && up.file() != null && (tag == null || !tag.contract().equals(contractOrResource))) {
                 Drift.recordInput(up.file());
             }
+            if (tag != null && tag.contract().equals(contractOrResource)) Drift.recordSelfStub(tag.contract());
             return up.view();
         }
-        return Drift.view(contractOrResource);
+        Map<String, Object> v = Drift.view(contractOrResource);
+        if (tag != null && (tag.contract().equals(contractOrResource) || tag.contract().equals(v.get("id")))) Drift.recordSelfStub(tag.contract());
+        return v;
     }
 
     static Map<String, String> extractProjectionMap(Map<String, Object> v, String side) {
@@ -385,10 +389,18 @@ final class DriftStubs {
         return verifyStub(contractOrResource, caseId, payload, inTest);
     }
 
-    static Map<String, Object> buildStub(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
-        Map<String, Object> v = resolveStubView(contractOrResource, inTest);
+    static Map<String, Object> requireActiveCase(Map<String, Object> v, String contractOrResource, String caseId) {
         Map<String, Object> cases = DriftInternal.map(v.get("cases"), contractOrResource + ".cases");
         Map<String, Object> cm = DriftInternal.map(cases.get(caseId), contractOrResource + ".cases." + caseId);
+        if (cm.containsKey("status")) {
+            throw new IllegalStateException("DRIFT: case \"" + caseId + "\" of contract \"" + contractOrResource + "\" is " + cm.get("status") + " and cannot be stubbed");
+        }
+        return cm;
+    }
+
+    static Map<String, Object> buildStub(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
+        Map<String, Object> v = resolveStubView(contractOrResource, inTest);
+        Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
         Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
         Map<String, String> whenProjections = extractProjectionMap(v, "when");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");
@@ -398,8 +410,7 @@ final class DriftStubs {
 
     static List<Map<String, Object>> buildStubVariants(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
-        Map<String, Object> cases = DriftInternal.map(v.get("cases"), contractOrResource + ".cases");
-        Map<String, Object> cm = DriftInternal.map(cases.get(caseId), contractOrResource + ".cases." + caseId);
+        Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
         Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
         Map<String, String> whenProjections = extractProjectionMap(v, "when");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");
@@ -414,34 +425,27 @@ final class DriftStubs {
             varsByKey.add(vars);
             cur.put(k, vars.get(0));
         }
-        int maxExcursions = d >= 3 ? 2 : d;
         List<Map<String, Object>> outList = new ArrayList<>();
-        collectStubVariants(keys, varsByKey, 0, 0, maxExcursions, cur, peerIdx, whenProjections, thenProjections, base, outList);
+        collectStubVariants(keys, varsByKey, 0, 0, d >= 3 ? 2 : d, cur, whenMap, thenMap, whenProjections, thenProjections, base, outList);
         return outList;
     }
 
-    private static void collectStubVariants(
-            List<String> keys,
-            List<List<Object>> varsByKey,
-            int pos,
-            int exc,
-            int maxExcursions,
-            Map<String, Object> cur,
-            Map<String, Object> peerIdx,
-            Map<String, String> whenProjections,
-            Map<String, String> thenProjections,
-            Map<String, Object> base,
-            List<Map<String, Object>> outList) {
-        if (pos == keys.size() || exc >= maxExcursions) {
-            outList.add(synthesizeMap(cur, peerIdx, whenProjections, thenProjections, base, false));
+    private static void collectStubVariants(List<String> keys, List<List<Object>> varsByKey, int pos, int exc, int maxExc, Map<String, Object> cur, Map<String, Object> whenMap, Map<String, Object> specTbl, Map<String, String> whenProj, Map<String, String> thenProj, Map<String, Object> base, List<Map<String, Object>> outList) {
+        if (pos == keys.size() || exc >= maxExc) {
+            Map<String, Object> eff = new LinkedHashMap<>(cur);
+            for (int i = 0; i < keys.size(); i++) {
+                String k = keys.get(i);
+                if (relPeerRank(specTbl.get(k)) > 0 && Json.valuesEqual(eff.get(k), varsByKey.get(i).get(0))) eff.put(k, specTbl.get(k));
+            }
+            outList.add(synthesizeMap(eff, buildPeerIndex(whenMap, eff, whenProj, thenProj), whenProj, thenProj, base, true));
             return;
         }
-        collectStubVariants(keys, varsByKey, pos + 1, exc, maxExcursions, cur, peerIdx, whenProjections, thenProjections, base, outList);
+        collectStubVariants(keys, varsByKey, pos + 1, exc, maxExc, cur, whenMap, specTbl, whenProj, thenProj, base, outList);
         List<Object> vars = varsByKey.get(pos);
         String k = keys.get(pos);
         for (int i = 1; i < vars.size(); i++) {
             cur.put(k, vars.get(i));
-            collectStubVariants(keys, varsByKey, pos + 1, exc + 1, maxExcursions, cur, peerIdx, whenProjections, thenProjections, base, outList);
+            collectStubVariants(keys, varsByKey, pos + 1, exc + 1, maxExc, cur, whenMap, specTbl, whenProj, thenProj, base, outList);
         }
         cur.put(k, vars.get(0));
     }

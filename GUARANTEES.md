@@ -18,7 +18,7 @@ DRIFT is designed for **epistemic honesty**: it never claims that a green gate p
 | **4. Test passes without checking all `then.*` fields** | **Yes** | **`bound` only (or `AssertionError` in `d.check`)** | Direct observation matching `d.check(case, { key: actual })` fails immediately if any `then.<key>` is omitted or mismatches. |
 | **5. Callback ignores expected value (`() => {}` / `lambda v: None`)** | **Yes** | **Blocked (`AssertionError`)** | Prefer declarative observation matching `d.check(case, { key: actual })`. Legacy callbacks are checked for no-op bodies and `false` returns; full assertion discrimination is proven by `proof = "killed"` (`drift mutants`, **Enterprise**). |
 | **6. Forged `[approval].by` or unreviewed `scope.code` change** | **Requires VCS / Policy** | **Blocked in PR / Enterprise** | In **Free**, protect `.drift/**` with GitHub `CODEOWNERS` + signed commits (`git commit -S`). In **Enterprise**, `[policy] approvers` (`DR-E603`) + Ed25519 attestations (`drift gate --attest`) enforce this in the gate. |
-| **7. Test never invokes the real application (mocked constants)** | **Out of static scope** | **Requires integration level / mutants** | Bind tests at `at = ["http"]` / `at = ["e2e"]` against the real handler and use `drift mutants` (**Enterprise**) for mutation adequacy. |
+| **7. Test feeds contract's own stub into `checkProjection` or never calls real code** | **Yes (`oracle.self_stubbed`)** | **Surfaced in `review` / `gate --explain`; blocked by `proof = "killed"`** | Bridges record self-contract `buildOutput` / `buildStub` calls in `.meta.json` (`oracle.self_stubbed`); bind integration tests at `at = ["http"]` / `at = ["e2e"]` and enforce `drift mutants` (**Enterprise**). |
 
 ---
 

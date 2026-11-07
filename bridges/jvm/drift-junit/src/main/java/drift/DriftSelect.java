@@ -181,9 +181,6 @@ public final class DriftSelect implements PostDiscoveryFilter {
         if (min > max) {
             throw new IllegalArgumentException("invalid int domain [" + min + ", " + max + "]");
         }
-        if (Drift.mutationRun()) {
-            return List.of(min < 0 && max > 0 ? 0L : min);
-        }
         long mid = (min / 2) + (max / 2) + ((min % 2 + max % 2) / 2);
         List<Long> pts = new ArrayList<>(6);
         if (min < 0 && max > 0) {
@@ -205,15 +202,60 @@ public final class DriftSelect implements PostDiscoveryFilter {
         if (values == null || values.length == 0) {
             throw new IllegalArgumentException("enum domain must not be empty");
         }
-        if (Drift.mutationRun()) {
-            return List.of(values[0]);
-        }
         LinkedHashSet<String> pts = new LinkedHashSet<>(List.of(values));
         return List.copyOf(pts);
     }
 
     static List<Boolean> boolDomain() {
-        return Drift.mutationRun() ? List.of(Boolean.FALSE) : List.of(Boolean.FALSE, Boolean.TRUE);
+        return List.of(Boolean.FALSE, Boolean.TRUE);
+    }
+
+    private static void writeJsonVal(StringBuilder b, Object v) {
+        if (v == null) b.append("null");
+        else if (v instanceof Boolean || v instanceof Number) b.append(v);
+        else if (v instanceof String s) Json.quote(b, s);
+        else if (v instanceof List<?> l) {
+            b.append('[');
+            for (int i = 0; i < l.size(); i++) {
+                if (i > 0) b.append(',');
+                writeJsonVal(b, l.get(i));
+            }
+            b.append(']');
+        } else if (v instanceof Map<?, ?> m) {
+            b.append('{');
+            boolean first = true;
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (!first) b.append(',');
+                first = false;
+                Json.quote(b, String.valueOf(e.getKey())).append(':');
+                writeJsonVal(b, e.getValue());
+            }
+            b.append('}');
+        } else Json.quote(b, String.valueOf(v));
+    }
+
+    static boolean observe(String contract, String caseId, String test, Map<String, Object> when, Map<String, Object> then) {
+        String tgt = System.getProperty("drift.observe", System.getenv("DRIFT_OBSERVE") == null ? "" : System.getenv("DRIFT_OBSERVE")).trim();
+        if (tgt.isEmpty() || then == null || then.isEmpty()) return false;
+        Path out = tgt.endsWith(".jsonl") ? Path.of(tgt) : Path.of(tgt, "trace-" + ProcessHandle.current().pid() + ".jsonl");
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("kind", "trace");
+        row.put("version", 1L);
+        if (contract != null && !contract.isEmpty()) row.put("contract", contract);
+        if (caseId != null && !caseId.isEmpty()) row.put("case", caseId);
+        if (test != null && !test.isEmpty()) row.put("test", test);
+        row.put("when", when == null ? Map.of() : when);
+        row.put("then", then);
+        StringBuilder sb = new StringBuilder();
+        writeJsonVal(sb, row);
+        sb.append('\n');
+        try {
+            if (out.getParent() != null) java.nio.file.Files.createDirectories(out.getParent());
+            java.nio.file.Files.writeString(out, sb.toString(), java.nio.charset.StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            return true;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     static List<Map<String, Object>> cartesianDomain(Map<String, ? extends List<?>> domains) {
@@ -221,20 +263,10 @@ public final class DriftSelect implements PostDiscoveryFilter {
             throw new IllegalArgumentException("Cartesian domain map must not be empty");
         }
         List<String> keys = domains.keySet().stream().sorted().toList();
-        if (Drift.mutationRun()) {
-            Map<String, Object> first = new LinkedHashMap<>(keys.size());
-            for (String key : keys) {
-                List<?> vals = domains.get(key);
-                if (vals == null || vals.isEmpty()) {
-                    throw new IllegalArgumentException("domain for key " + key + " must not be empty");
-                }
-                first.put(key, vals.get(0));
-            }
-            return List.of(Collections.unmodifiableMap(first));
-        }
         int d = keys.size();
         List<List<?>> valsByKey = new ArrayList<>(d);
         Map<String, Object> cur = new LinkedHashMap<>(d);
+        long prod = 1L;
         for (String key : keys) {
             List<?> vals = domains.get(key);
             if (vals == null || vals.isEmpty()) {
@@ -242,8 +274,11 @@ public final class DriftSelect implements PostDiscoveryFilter {
             }
             valsByKey.add(vals);
             cur.put(key, vals.get(0));
+            if (prod <= 16L) {
+                prod *= vals.size();
+            }
         }
-        int maxExcursions = d >= 3 ? 2 : d;
+        int maxExcursions = prod <= 16L ? d : (d >= 3 ? 2 : d);
         List<Map<String, Object>> out = new ArrayList<>();
         collectSkeletonTuples(keys, valsByKey, 0, 0, maxExcursions, cur, out);
         return List.copyOf(out);

@@ -109,6 +109,7 @@ function resolveRelPeerBounds(val, peerFn) {
       sum += pr.value;
     }
     if (ok) {
+      sum = Number.isInteger(sum) ? sum : Math.round(sum * 1e12) / 1e12;
       lo = lo === undefined ? sum : Math.max(lo, sum);
       hi = hi === undefined ? sum : Math.min(hi, sum);
     }
@@ -194,15 +195,6 @@ export function extractProjectionMap(view, side) {
   return out;
 }
 
-function writeTupleOutput(tbl, thenProjections, base) {
-  let out = cloneJson(isObj(base) ? base : {});
-  for (const [k, w] of Object.entries(tbl)) {
-    if (k in thenProjections) out = writePointer(out, thenProjections[k], w);
-    else if (isObj(out)) out[k] = cloneJson(w);
-  }
-  return out;
-}
-
 const HOMOLOGOUS_PAIRS = new Set([
   '1:2', '2:1', 'a:b', 'b:a', 'x:y', 'y:x', 'left:right', 'right:left',
   'src:dst', 'dst:src', 'source:target', 'target:source', 'from:to', 'to:from',
@@ -237,7 +229,7 @@ export function synthesizeViewOutput(view, caseId, base = {}, thenMap = null) {
   const rawThen = tightenThenMapBySumResiduals(whenMap, view?.cases?.[caseId]?.then || {}, whenProjections, thenProjections);
   const tbl = thenMap ? tightenThenMapBySumResiduals(whenMap, thenMap, whenProjections, thenProjections) : rawThen;
   let out = cloneJson(isObj(base) ? base : {});
-  const peerIdx = buildPeerIndex(whenMap, rawThen, whenProjections, thenProjections);
+  const peerIdx = buildPeerIndex(whenMap, tbl, whenProjections, thenProjections);
   const peerFn = (ref) => resolveStubPeer(ref, out, peerIdx, whenProjections, thenProjections);
   const entries = Object.entries(tbl).sort((a, b) => (relPeerRank(a[1]) - relPeerRank(b[1])) || a[0].localeCompare(b[0]));
   const resolved = new Map();
@@ -281,7 +273,9 @@ function lookupWhenInput(whenInput, wk, whenProjections) {
 
 export function resolveStubCaseId(view, idOrRes, caseIdOrWhen, base, errFn) {
   if (isStr(caseIdOrWhen)) {
-    if (!view?.cases || !(caseIdOrWhen in view.cases)) errFn(`contract "${idOrRes}" has no case "${caseIdOrWhen}"`);
+    const cm = view?.cases?.[caseIdOrWhen];
+    if (!isObj(cm)) errFn(`contract "${idOrRes}" has no case "${caseIdOrWhen}"`);
+    if ('status' in cm) errFn(`case "${caseIdOrWhen}" of contract "${idOrRes}" is ${cm.status} and cannot be stubbed`);
     return caseIdOrWhen;
   }
   if (!isObj(caseIdOrWhen) || !isObj(view?.cases)) errFn(`contract "${idOrRes}" has no case matching when input`);
@@ -355,7 +349,8 @@ export function synthesizeViewVariants(view, caseId, base = {}) {
   const out = [];
   const dfs = (pos, exc) => {
     if (pos === d || exc >= maxExcursions) {
-      out.push(writeTupleOutput(cur, thenProjections, base));
+      const eff = Object.fromEntries(keys.map((k, i) => [k, relPeerRank(tbl[k]) > 0 && cur[k] === varsByKey[i][0] ? tbl[k] : cur[k]]));
+      out.push(synthesizeViewOutput(view, caseId, base, eff));
       return;
     }
     dfs(pos + 1, exc);

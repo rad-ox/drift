@@ -304,6 +304,7 @@ def _resolve_rel_bounds(val: Mapping[str, Any], peer_fn: Callable[[Any], tuple[b
                 break
             s_val = s_val + sv
         if all_ok:
+            if isinstance(s_val, float): s_val = round(s_val, 12)
             lo = s_val if lo is None or s_val > lo else lo
             hi = s_val if hi is None or s_val < hi else hi
     return (False, None, lo, hi)
@@ -341,14 +342,6 @@ def witness_variants(val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any
     return [clone_fn(val)]
 
 
-def _write_tuple_output(tbl: Mapping[str, Any], tp: Mapping[str, str], base: Mapping[str, Any] | None, write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any]) -> Any:
-    out = clone_fn(base if isinstance(base, Mapping) else {})
-    for k, w in tbl.items():
-        if k in tp: out = write_ptr_fn(out, tp[k], w)
-        elif isinstance(out, dict): out[k] = clone_fn(w)
-    return out
-
-
 _HOMOLOGOUS_PAIRS = frozenset({
     '1:2', '2:1', 'a:b', 'b:a', 'x:y', 'y:x', 'left:right', 'right:left',
     'src:dst', 'dst:src', 'source:target', 'target:source', 'from:to', 'to:from',
@@ -373,7 +366,7 @@ def synthesize_view_output(view: Mapping[str, Any], case_id: str, base: Mapping[
     raw_then = _tighten_then_by_sum_residuals(when_map, raw_then_0, wp, tp, rk)
     tbl = _tighten_then_by_sum_residuals(when_map, then_map, wp, tp, rk) if then_map is not None else raw_then
     out = clone_fn(base if isinstance(base, Mapping) else {})
-    peer_idx = _build_peer_index(when_map, raw_then, wp, tp, rk)
+    peer_idx = _build_peer_index(when_map, tbl, wp, tp, rk)
     peer_fn = lambda ref: _resolve_stub_peer(ref, out, peer_idx, wp, tp, rk)
     resolved: dict[str, Any] = {}
     for k, v in sorted(tbl.items(), key=lambda e: (_rel_peer_rank(e[1], rk), e[0])):
@@ -407,7 +400,9 @@ def _lookup_when_input(when_input: Mapping[str, Any], wk: str, wp: Mapping[str, 
 def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: str | Mapping[str, Any], base: Mapping[str, Any] | None, extract_proj_fn: Callable[[Mapping[str, Any], str], dict[str, str]], write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any], rk: frozenset[str]) -> str:
     cases = view.get('cases') if isinstance(view, Mapping) else None
     if isinstance(case_or_when, str):
-        if not isinstance(cases, Mapping) or case_or_when not in cases: raise KeyError(f'contract "{id_or_res}" has no case "{case_or_when}"')
+        cm = cases.get(case_or_when) if isinstance(cases, Mapping) else None
+        if not isinstance(cm, Mapping): raise KeyError(f'contract "{id_or_res}" has no case "{case_or_when}"')
+        if 'status' in cm: raise ValueError(f'case "{case_or_when}" of contract "{id_or_res}" is {cm["status"]} and cannot be stubbed')
         return case_or_when
     if not isinstance(case_or_when, Mapping) or not isinstance(cases, Mapping): raise KeyError(f'contract "{id_or_res}" has no case matching when input')
     wp, tp, best_score, best_cases = extract_proj_fn(view, 'when'), extract_proj_fn(view, 'then'), 0, []
@@ -455,7 +450,8 @@ def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mappin
 
     def dfs(pos: int, exc: int) -> None:
         if pos == d or exc >= max_exc:
-            out.append(_write_tuple_output(cur, tp, base, write_ptr_fn, clone_fn))
+            eff = {k: (tbl[k] if _rel_peer_rank(tbl[k], rk) > 0 and cur[k] == vars_by_key[i][0] else cur[k]) for i, k in enumerate(keys)}
+            out.append(synthesize_view_output(view, case_id, base, eff, extract_proj_fn, write_ptr_fn, clone_fn, rk))
             return
         dfs(pos + 1, exc)
         vars_p, k = vars_by_key[pos], keys[pos]

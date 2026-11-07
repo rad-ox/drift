@@ -74,13 +74,13 @@ final class DriftViewChecks {
         String pfx = c.contract() + "." + c.id();
         if (exp.containsKey("min")) {
             if (!(actual instanceof Number actN) || !(exp.get("min") instanceof Number minN)
-                    || actN.doubleValue() < minN.doubleValue()) {
+                    || actN.doubleValue() + 1e-9 < minN.doubleValue()) {
                 throw new AssertionError(pfx + ": expected then." + key + ">=" + exp.get("min") + ", got " + actual);
             }
         }
         if (exp.containsKey("max")) {
             if (!(actual instanceof Number actN) || !(exp.get("max") instanceof Number maxN)
-                    || actN.doubleValue() > maxN.doubleValue()) {
+                    || actN.doubleValue() - 1e-9 > maxN.doubleValue()) {
                 throw new AssertionError(pfx + ": expected then." + key + "<=" + exp.get("max") + ", got " + actual);
             }
         }
@@ -120,8 +120,8 @@ final class DriftViewChecks {
                 ok = Json.valuesEqual(actual, peer.value());
             } else if (actual instanceof Number aN && peer.value() instanceof Number pN) {
                 ok = "<=".equals(op)
-                        ? aN.doubleValue() <= pN.doubleValue()
-                        : aN.doubleValue() >= pN.doubleValue();
+                        ? aN.doubleValue() - 1e-9 <= pN.doubleValue()
+                        : aN.doubleValue() + 1e-9 >= pN.doubleValue();
             } else {
                 ok = false;
             }
@@ -169,9 +169,6 @@ final class DriftViewChecks {
             if (!(actual instanceof String s) || !s.endsWith(wantSfx)) {
                 throw new AssertionError(pfx + ": expected then." + key + " to end with \"" + wantSfx + "\", got " + actual);
             }
-        }
-        if (Drift.isMutatingThen(c.contract(), c.id(), key)) {
-            throw new AssertionError(pfx + ": relational bound mutated on then." + key);
         }
         return true;
     }
@@ -300,7 +297,7 @@ final class DriftViewChecks {
                     double vpW = v.get("viewportWidth") instanceof Number n ? n.doubleValue() : 0.0;
                     double overflow = Math.max(0.0, docW - vpW);
                     double want = expected instanceof Number n ? n.doubleValue() : -1.0;
-                    if (overflow > want || (Drift.mutationRun() && Double.compare(overflow, want) != 0)) {
+                    if (overflow > want) {
                         throw new AssertionError(contract + "." + id
                                 + ": expected horizontal_overflow_px<=" + expected + ", got " + overflow);
                     }
@@ -319,7 +316,7 @@ final class DriftViewChecks {
                         minRatio = v.get("min_contrast_ratio") instanceof Number n ? n.doubleValue() : 21.0;
                     }
                     double want = expected instanceof Number n ? n.doubleValue() : 21.0;
-                    if (minRatio < want || (Drift.mutationRun() && Double.compare(minRatio, want) != 0)) {
+                    if (minRatio < want) {
                         throw new AssertionError(contract + "." + id
                                 + ": expected min_contrast_ratio>=" + expected + ", got " + minRatio);
                     }
@@ -341,7 +338,7 @@ final class DriftViewChecks {
                         minPx = v.get("min_target_px") instanceof Number n ? n.doubleValue() : 44.0;
                     }
                     double want = expected instanceof Number n ? n.doubleValue() : 24.0;
-                    if (minPx < want || (Drift.mutationRun() && Double.compare(minPx, want) != 0)) {
+                    if (minPx < want) {
                         throw new AssertionError(contract + "." + id
                                 + ": expected min_target_px>=" + expected + ", got " + minPx);
                     }

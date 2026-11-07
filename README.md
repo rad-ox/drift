@@ -16,7 +16,8 @@
   <a href="GUIDE.md">Guide (EN)</a> ·
   <a href="GUIDE.it.md">Guida (IT)</a> ·
   <a href="INSTALL.md">Install (EN)</a> ·
-  <a href="INSTALL.it.md">Installa (IT)</a>
+  <a href="INSTALL.it.md">Installa (IT)</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -156,9 +157,9 @@ drift new .drift/contracts/health-check.toml --profile http-json@1 --intent "Rep
 
 ## Polyglot Test Bridges
 
-DRIFT ships with first-class, zero-lock-in bridges for **Java / JVM**, **JavaScript / TypeScript**, and **Python 3**. Expected values live once—in the `.toml` contract—and tests read them at runtime.
+DRIFT ships with first-class, zero-lock-in bridges for **Java / Scala / JVM**, **JavaScript / TypeScript**, and **Python 3**. Expected values live once—in the `.toml` contract—and tests read them at runtime.
 
-### Java & Maven (`drift-junit` + `drift-maven-plugin`)
+### Java, Scala & Maven (`drift-junit` + `drift-maven-plugin`)
 
 With the Maven plugin configured in `pom.xml`, `mvn verify` automatically exports contracts, runs JUnit 5 tests, records proof shards, and enforces the gate:
 
@@ -177,6 +178,16 @@ class ItemHttpTest {
         assertEquals(c.thenInt("status"), response.statusCode());
         assertEquals(c.thenMap("body").get("name"), response.json().get("name"));
     }
+}
+```
+
+In closure-based JVM suites (such as **Scala 3 / MUnit** `FunSuite`), call `Drift.expect(contract, caseId, level)` directly inside the test body and verify tuples, maps, records, or Scala products with `verify(...)`:
+
+```scala
+test("returns existing item") {
+  val c = Drift.expect("item-get", "found", "http")
+  val res = send(c.whenString("request"))
+  c.verify("status", res.status, "name", res.name)
 }
 ```
 
@@ -297,7 +308,8 @@ See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, siblin
 | **[GUIDE.md](GUIDE.md)** · **[GUIDE.it.md](GUIDE.it.md)** | Step-by-step practical guide from first contract (L0) to mutation-backed policies (L3), in English and Italian |
 | **[INSTALL.md](INSTALL.md)** · **[INSTALL.it.md](INSTALL.it.md)** | Installation, verification, Maven/Node/Python bridge wiring, and troubleshooting for Linux, macOS, and Windows |
 | **[EDITIONS.md](EDITIONS.md)** | Complete comparison of **Free**, **Pro**, and **Enterprise** commands, flags, skills, and hooks |
-| **[GUARANTEES.md](GUARANTEES.md)** | Epistemic guarantee & threat matrix, normative `dr1:` / `.jsonl` proof protocol, and 5 adversarial CI scenarios |
+| **[GUARANTEES.md](GUARANTEES.md)** | Epistemic guarantee & threat matrix, normative `dr1:` / `.jsonl` proof protocol, and adversarial CI scenarios |
+| **[CHANGELOG.md](CHANGELOG.md)** | Concise release notes and user-visible capabilities by version |
 | **`verifier/drift_verify.py`** | Independent, open-source (**MIT**) reference proof verifier in pure Python 3.11+ stdlib (`tomllib` + `hashlib`) |
 | **`skill/drift/`** | Agent Skill (`SKILL.md` + `references/`) for GitHub Copilot CLI, Claude Code, Codex, Cursor, and Pi |
 | **`bridges/`** | Zero-dependency test bridges for JavaScript/TypeScript (`drift.mjs`) and Python 3 (`drift.py`) |

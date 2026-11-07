@@ -143,7 +143,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.3.0</version>
+    <version>0.3.1</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -153,7 +153,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.3.0</version>
+      <version>0.3.1</version>
       <executions>
         <execution>
           <goals>
@@ -186,21 +186,20 @@ Then run:
 mvn verify
 ```
 
-- **`verified` vs `bound`**: When your test reads **every** `then` field of a case through `Drift.expect`, the case reaches **`verified`**. If the test runs and passes without reading all `then` fields, it is recorded as **`bound`**.
+- **`verified` vs `bound`**: When your test reads **every** `then` field of a case through `Drift.expect` (or verifies them with `c.verify(...)` in closure-based suites like **Scala 3 / MUnit**), the case reaches **`verified`**. If the test runs and passes without reading all `then` fields, it is recorded as **`bound`**.
 
 ### Option B: JavaScript / TypeScript (`bridges/drift.mjs`)
 
 ```js
 import { test } from 'node:test';
-import assert from 'node:assert/strict';
 import { runDriftCase } from './drift.mjs';
 
 test('returns existing item', async (t) => {
   await runDriftCase({ contract: 'item-get', t, cases: ['found'], level: 'http' }, async (d) => {
     const res = await send(d.when('found', 'request'));
     await d.check('found', {
-      status: (v) => assert.equal(res.status, v),
-      name:   (v) => assert.equal(res.body.name, v),
+      status: res.status,
+      name:   res.body.name,
     });
   });
 });
@@ -219,18 +218,16 @@ drift gate .drift/contracts --events .drift/events
 import drift
 
 def test_found():
+    def verify(d):
+        res = send(d.when("found", "request"))
+        d.check("found", {"status": res.status, "name": res.name})
+
     drift.run_drift_case(
         contract="item-get",
         test="test_items.py#test_found",
         cases=["found"],
         level="http",
-        fn=lambda d: d.check(
-            "found",
-            {
-                "status": lambda v: assert_eq(send(d.when("found", "request")).status, v),
-                "name":   lambda v: assert_eq(send(d.when("found", "request")).name, v),
-            },
-        ),
+        fn=verify,
     )
 ```
 
@@ -252,8 +249,9 @@ drift select .drift/contracts --events .drift/events --changed src/items.js --fi
 # Reuse prior passing proofs for untouched contracts on a green gate
 drift gate .drift/contracts --events .drift/events --base HEAD --changed src/items.js
 
-# Inspect blast radius or query compact @recall context capsules
+# Inspect blast radius, L0 domain maps (@tree), or compact @recall context capsules
 drift impact .drift --writes items --transitive
+drift impact .drift --recall "@tree"
 drift impact .drift --recall "item lookup #getItem /800t"
 ```
 

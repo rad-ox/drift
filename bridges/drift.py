@@ -95,22 +95,13 @@ def _input_digest(abs_p: Path, pre: bytes | None = None) -> str:
 
 def _resolve_env() -> dict[str, str] | None:
     global _env_cache
-    raw = os.environ.get('DRIFT_ENV', '').strip()
-    pk = os.environ.get('DRIFT_PROOF_KEY', '').strip()
+    raw, pk = os.environ.get('DRIFT_ENV', '').strip(), os.environ.get('DRIFT_PROOF_KEY', '').strip()
     if not raw and pk not in ('1', 'true'):
         return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key:
         return _env_cache[1]
-    base = {
-        'adapter': 'drift.py@0.3.0',
-        'config': 'default',
-        'deps': 'none',
-        'drift': '0.3.0',
-        'policy': 'core@1',
-        'runner': 'python-unittest',
-        'toolchain': f'python@{platform.python_version()}',
-    }
+    base = {'adapter': 'drift.py@0.3.1', 'config': 'default', 'deps': 'none', 'drift': '0.3.1', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -164,13 +155,13 @@ def _auto_resolve(contract_id: str, target_json: Path | None = None) -> dict[str
 
 
 def _resolve_stub_contract(id_or_res: str, case_id: str | Mapping[str, Any], base: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], str]:
-    up = _checks.find_upstream_contract(id_or_res)
-    cur_ctx = _CTX_VAR.get()
-    if up is not None and cur_ctx is not None:
-        cur_ctx.record_input(up[1])
+    up, cur = _checks.find_upstream_contract(id_or_res), _CTX_VAR.get()
+    if up is not None and cur is not None and id_or_res != cur.contract_id:
+        cur.record_input(up[1])
     v = up[0] if up is not None else _load_view(id_or_res)
-    resolved_id = _checks.resolve_stub_case_id(v, id_or_res, case_id, base)
-    return (v, resolved_id)
+    if cur is not None and (id_or_res == cur.contract_id or (up is None and v.get('id') == cur.contract_id)):
+        cur.record_input(f'.drift/self-stub/{cur.contract_id}', 'sha256:self-stub')
+    return (v, _checks.resolve_stub_case_id(v, id_or_res, case_id, base))
 
 
 def build_stub(id_or_res: str, case_id: str | Mapping[str, Any], base: Mapping[str, Any] | None = None) -> Any:
@@ -284,17 +275,7 @@ def _resolve_events_file() -> str:
 
 
 def _ensure_inventory(out: str) -> dict[str, Any]:
-    inv = _INVS.get(out)
-    if inv is None:
-        inv = {
-            'classes': set(_DISC_CLASSES),
-            'tests': set(_DISC_TESTS),
-            'inputs': {},
-            'dirty': True,
-            'flushed': False,
-        }
-        _INVS[out] = inv
-    return inv
+    return _INVS.setdefault(out, {'classes': set(_DISC_CLASSES), 'tests': set(_DISC_TESTS), 'inputs': {}, 'dirty': True, 'flushed': False})
 
 
 def _record_discovery(test_id: str, active_out: str = '') -> None:
@@ -303,14 +284,8 @@ def _record_discovery(test_id: str, active_out: str = '') -> None:
     if not tgt:
         return
     h = test_id.find('#') if isinstance(test_id, str) else -1
-    cls = test_id[:h] if h > 0 else ''
-    mth = (test_id[h + 1:] if h > 0 else '').split('[', 1)[0]
-    if (
-        not cls
-        or not mth
-        or any(c.isspace() or c in _BAD_CLS for c in cls)
-        or any(c.isspace() or c in _BAD_MTH for c in mth)
-    ):
+    cls, mth = (test_id[:h] if h > 0 else ''), (test_id[h + 1:] if h > 0 else '').split('[', 1)[0]
+    if not cls or not mth or any(c.isspace() or c in _BAD_CLS for c in cls) or any(c.isspace() or c in _BAD_MTH for c in mth):
         raise ValueError(f'DRIFT_EVENTS requires a test id in Class#method form: "{test_id}"')
     canon = f'{cls}#{mth}'
     _DISC_CLASSES.add(cls)
@@ -347,8 +322,7 @@ def _write_event(ev: dict[str, Any]) -> None:
 
 def _load_mutants() -> dict[str, Any] | None:
     global _mut_cache
-    mf = os.environ.get('DRIFT_MUTANTS', '').strip()
-    out_t = os.environ.get('DRIFT_MUTATION_EVENTS', '').strip()
+    mf, out_t = os.environ.get('DRIFT_MUTANTS', '').strip(), os.environ.get('DRIFT_MUTATION_EVENTS', '').strip()
     if not mf and not out_t:
         return None
     if not mf or not out_t:
@@ -356,9 +330,7 @@ def _load_mutants() -> dict[str, Any] | None:
     if _mut_cache is not None and _mut_cache['file'] == mf and _mut_cache['out_t'] == out_t:
         return _mut_cache
     raw = Path(mf).read_bytes()
-    manifest = json.loads(_strip_bom(raw.decode('utf-8')))
-    manifest_id = f'sha256:{hashlib.sha256(raw).hexdigest()}'
-    _mut_cache = _checks.parse_mutation_manifest_doc(mf, out_t, manifest_id, manifest)
+    _mut_cache = _checks.parse_mutation_manifest_doc(mf, out_t, f'sha256:{hashlib.sha256(raw).hexdigest()}', json.loads(_strip_bom(raw.decode('utf-8'))))
     return _mut_cache
 
 
@@ -379,13 +351,20 @@ def mutation_depth() -> int:
     return len(_MUT_VAR.get())
 
 
+def observe(contract: str = '', case: str = '', test: str = '', when: Mapping[str, Any] | None = None, then: Mapping[str, Any] | None = None, at: list[str] | tuple[str, ...] | None = None) -> bool:
+    tgt = os.environ.get('DRIFT_OBSERVE', '').strip()
+    if not tgt or not isinstance(then, Mapping) or not then:
+        return False
+    out = Path(tgt) if tgt.endswith('.jsonl') else Path(tgt) / f'trace-{os.getpid()}.jsonl'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    row: dict[str, Any] = {'kind': 'trace', 'version': 1, **({k: v for k, v in (('contract', contract), ('case', case), ('test', test)) if v}), **({'at': list(at)} if at else {}), 'when': dict(when) if isinstance(when, Mapping) else {}, 'then': dict(then)}
+    with _IO_LOCK, out.open('a', encoding='utf-8') as fh:
+        fh.write(_dump_json(row) + '\n')
+    return True
+
+
 def with_mutation(target: Mapping[str, Any], fn: Callable[[], Any]) -> Any:
-    if (
-        not isinstance(target, Mapping)
-        or not isinstance(target.get('contract'), str)
-        or not isinstance(target.get('case'), str)
-        or not isinstance(target.get('path'), str)
-    ):
+    if not isinstance(target, Mapping) or not all(isinstance(target.get(k), str) for k in ('contract', 'case', 'path')):
         raise ValueError('invalid mutation target')
     tok = _MUT_VAR.set((*_MUT_VAR.get(), dict(target)))
     try:
@@ -494,16 +473,18 @@ class DriftContext:
         self._require_tagged(c)
         return ThenView(self._then_table(c), self.reads[c])
 
-    def record_input(self, fp: str | Path, pre: bytes | None = None) -> str:
+    def record_input(self, fp: str | Path, pre: bytes | str | None = None) -> str:
+        is_self = isinstance(pre, str)
         cwd = Path(os.path.normpath(os.getcwd()))
-        abs_p = Path(os.path.normpath(cwd / fp))
+        abs_p = Path(fp) if is_self else Path(os.path.normpath(cwd / fp))
         try:
-            rel = abs_p.relative_to(cwd).as_posix()
+            rel = str(fp) if is_self else abs_p.relative_to(cwd).as_posix()
         except ValueError:
             rel = Path(fp).as_posix()
-        dig = _input_digest(abs_p, pre)
+        dig = pre if is_self else _input_digest(abs_p, pre)
         if self.mutation_override is None:
-            self._input_files[abs_p] = (rel, dig)
+            if not is_self:
+                self._input_files[abs_p] = (rel, dig)
             out = _resolve_events_file()
             if out:
                 _record_discovery(self.test_id, out)
@@ -548,6 +529,7 @@ class DriftContext:
 
     def build_output(self, case_id: str, base: Mapping[str, Any] | None = None) -> Any:
         self._require_tagged(case_id)
+        self.record_input(f'.drift/self-stub/{self.contract_id}', 'sha256:self-stub')
         return _checks.build_projected_output(self.view, case_id, base, self._then_table(case_id))
 
     def check_projection(self, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:

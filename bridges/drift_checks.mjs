@@ -87,6 +87,23 @@ export function cloneJson(val) {
   return val;
 }
 
+export function valuesEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  if (typeof a === 'number' && typeof b === 'number') {
+    return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-9;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
+  }
+  if (isObj(a) && isObj(b)) {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => k in b && valuesEqual(a[k], b[k]));
+  }
+  return false;
+}
+
 export function writePointer(target, rawPtr, value) {
   const [, ptr] = splitResourcePointer(rawPtr);
   if (ptr === '') return cloneJson(value);
@@ -187,9 +204,13 @@ export function expandDomain(domain, first = false) {
     return vals;
   });
   const cur = {};
-  for (let i = 0; i < d; i++) cur[keys[i]] = valsByKey[i][0];
+  let prod = 1;
+  for (let i = 0; i < d; i++) {
+    cur[keys[i]] = valsByKey[i][0];
+    if (prod <= 16) prod *= valsByKey[i].length;
+  }
   if (first) return [cur];
-  const maxExcursions = d >= 3 ? 2 : d;
+  const maxExcursions = prod <= 16 ? d : (d >= 3 ? 2 : d);
   const out = [];
   const dfs = (pos, exc) => {
     if (pos === d || exc >= maxExcursions) {
@@ -221,10 +242,10 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     return isObj(payload) && ref in payload ? { found: true, value: payload[ref] } : { found: false };
   };
   const actLen = (isStr(act) || Array.isArray(act)) ? act.length : (isObj(act) ? Object.keys(act).length : -1);
-  if ('min' in exp && (typeof act !== 'number' || act < Number(exp.min))) {
+  if ('min' in exp && (typeof act !== 'number' || act + 1e-9 < Number(exp.min))) {
     throwAssertionError(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
   }
-  if ('max' in exp && (typeof act !== 'number' || act > Number(exp.max))) {
+  if ('max' in exp && (typeof act !== 'number' || act - 1e-9 > Number(exp.max))) {
     throwAssertionError(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
   }
   if ('min_len' in exp && (actLen < 0 || actLen < Number(exp.min_len))) {
@@ -241,13 +262,13 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     const pr = peerOf(exp[fk]);
     if (!pr.found) throwAssertionError(`${pfx}: missing peer "${exp[fk]}" for then.${key}.${fk}`);
     const ok = op === '=='
-      ? JSON.stringify(act) === JSON.stringify(pr.value)
-      : (typeof act === 'number' && typeof pr.value === 'number' && (op === '<=' ? act <= pr.value : act >= pr.value));
+      ? valuesEqual(act, pr.value)
+      : (typeof act === 'number' && typeof pr.value === 'number' && (op === '<=' ? act - 1e-9 <= pr.value : act + 1e-9 >= pr.value));
     if (!ok) {
       throwAssertionError(`${pfx}: expected then.${key} ${op} ${exp[fk]} (${JSON.stringify(pr.value)}), got ${JSON.stringify(act)}`);
     }
   }
-  if ('in' in exp && (!Array.isArray(exp.in) || !exp.in.some((x) => JSON.stringify(x) === JSON.stringify(act)))) {
+  if ('in' in exp && (!Array.isArray(exp.in) || !exp.in.some((x) => valuesEqual(act, x)))) {
     throwAssertionError(`${pfx}: expected then.${key} in ${JSON.stringify(exp.in)}, got ${JSON.stringify(act)}`);
   }
   if ('sum_fields' in exp) {
@@ -267,7 +288,7 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     }
   }
   if ('contains' in exp) {
-    if (!Array.isArray(act) || !Array.isArray(exp.contains) || !exp.contains.every((req) => act.some((x) => JSON.stringify(x) === JSON.stringify(req)))) {
+    if (!Array.isArray(act) || !Array.isArray(exp.contains) || !exp.contains.every((req) => act.some((x) => valuesEqual(x, req)))) {
       throwAssertionError(`${pfx}: expected then.${key} to contain ${JSON.stringify(exp.contains)}, got ${JSON.stringify(act)}`);
     }
   }
@@ -276,10 +297,6 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
   }
   if ('suffix' in exp && (!isStr(act) || !act.endsWith(String(exp.suffix)))) {
     throwAssertionError(`${pfx}: expected then.${key} to end with ${JSON.stringify(exp.suffix)}, got ${JSON.stringify(act)}`);
-  }
-  const mp = `/cases/${escapePointer(caseId)}/then/${escapePointer(key)}`;
-  if (mutationOverride && isStr(mutationOverride.path) && (mutationOverride.path === mp || mutationOverride.path.startsWith(`${mp}/`))) {
-    throwAssertionError(`${pfx}: relational bound mutated at ${mutationOverride.path}`);
   }
   return true;
 }
@@ -291,14 +308,14 @@ export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, 
     const res = readPointer(payload, ptr);
     if (!res.found) throwAssertionError(`${pfx}: missing projected path "${ptr}" for then.${key}`);
     if (checkRelationalLeaf(contractId, caseId, key, exp, res.value, payload, proj, mutationOverride)) return;
-    if (JSON.stringify(res.value) !== JSON.stringify(exp)) {
+    if (!valuesEqual(res.value, exp)) {
       throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}${withAt ? ` at "${ptr}"` : ''}, got ${JSON.stringify(res.value)}`);
     }
     return;
   }
   if (isObj(payload) && key in payload) {
     if (checkRelationalLeaf(contractId, caseId, key, exp, payload[key], payload, proj, mutationOverride)) return;
-    if (JSON.stringify(payload[key]) !== JSON.stringify(exp)) {
+    if (!valuesEqual(payload[key], exp)) {
       throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(payload[key])}`);
     }
     return;
@@ -333,7 +350,7 @@ export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, e
   }
   const res = await fn(exp, extra);
   if (res === false) throwAssertionError(`${contractId}.${caseId}: check for then.${key} returned false`);
-  if (res === undefined && !/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?/u.test(body)) {
+  if (res !== true && !/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(body)) {
     throwAssertionError(`${contractId}.${caseId}: check for then.${key} must inspect and assert the expected value`);
   }
 }
@@ -346,7 +363,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
     if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`);
   };
   const assertBound = (k, op, exp, act) => {
-    if ((op === '<=' ? act > Number(exp) : act < Number(exp)) || (isMut && act !== Number(exp))) {
+    if (op === '<=' ? act > Number(exp) : act < Number(exp)) {
       throwAssertionError(`${pfx}: expected ${k}${op}${exp}, got ${act}`);
     }
   };

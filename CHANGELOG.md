@@ -1,0 +1,110 @@
+# Changelog
+
+User-visible changes and capabilities by release.
+
+## 0.3.1
+
+- Release `0.3.1`; support Scala/MUnit closure tests and `Drift.Case.verify` in `drift-junit`, Scala source/import indexing, and OpenAPI 3.2 `QUERY`.
+- Verify cross-service FSM transitions, Saga compensation and duplicate delivery against `--upstream` boundary bundles in `sweep --flow`.
+- Resolve multi-hop internal resource chains and `sum_fields` bounds in `@tree` domain envelopes and `--pack` worker scopes.
+- Accept version-bound `*.model.json` formal verification receipts (`tlc`, `cbmc`, `alloy`, `spin`) in `prove` and `gate --explain`.
+- Enforce inherited profile cases, `proof = "killed"`, `policy.max_open` and `self_stubbed` checks in the standalone `drift_verify.py` verifier.
+- Align JVM, JS and Python bridges on key-order-independent object equality, `1e-9` float tolerance, `sum_fields` rounding and `null` vs absent fields.
+- Detect tests that feed a contract's own stub into `checkProjection` and report `oracle.self_stubbed` in `review --brief` and `gate --explain`.
+- Widen `select --changed` with `code.dynamic_import` when a runtime family contains unresolved dynamic imports or reflection.
+- Support custom `role = "state" | "delivery_attempt"` protocol parameters in profiles for domain-specific `sweep --flow` checks.
+- Filter `show --boundary` to active cases, bind post-states in `new --from-upstream`, and evaluate state transitions in `review`, `sweep` and `select`.
+- Block unimplemented `deferred` cases in `gate --phase release`, keep active test selection unaffected by deferred edits, and track 2-hop Saga rollbacks.
+- Detect state deadlocks, missing Saga compensations, unhandled duplicate deliveries and dynamic imports in `sweep`.
+- Add `@tree` domain lenses, `branch:<id>` recall filters, private branch leak checks in `sweep --flow`, and consumer-projected worker pack refs.
+- Add `schedule.what_if` bottleneck analysis, 3-service domain conflict checks in `sweep --flow`, and `causal_suspects` ranking in `select --explain`.
+- Scaffold contracts from runtime JSONL traces in `new --from-upstream`, add contract-free bridge `observe()`, and enforce `DR-E602` in `drift_verify.py`.
+- Evaluate relational mutants by semantic satisfaction, include boundary `witness` values in `mutants`, and deduplicate `coupling_culprits` test counts.
+- Prioritize `impact --schedule` waves by downstream unlock density, detect 3-contract serial bottlenecks in `sweep`, and report queue load in `stats`.
+
+## 0.3.0
+
+- Speed up `--base approved` lookups by batching Git history queries and skipping Git when no contract is stale.
+- Emit optional `suggested_ignores` for unowned test, coverage and tool-config harness files in `drift sweep --root`.
+- Distinguish `source` `#<fragment>` anchors from `D<digits>` decision references in `sweep --simplify`.
+- Support the reserved `approved` baseline token in `diff`, `review`, `select`, `prove` and `gate` to compare against each contract's approved commit.
+- Prevent `sweep --sync-scope` from absorbing test harnesses, sibling areas or top-level shared folders into contract `scope.code`.
+- Merge `scope.code`, `scope.forbid_imports` and `use.vocabulary` cleanly in `drift merge` while preserving valid approvals across non-digest edits.
+- Release `0.3.0`.
+- Group `review --base --delta` wave plans by domain hierarchy, flag uniform `then` cases, and include scope limits in `--pack`.
+- The drift skill keeps experiments in their own slice, binds tests before implementing and starts the full check from the first integrated commit.
+- Markdown review shows open questions and marks missing comparison, selection and impact evaluations instead of implying empty results.
+- `status` reports configuration blockers in exceptions and exits 1 even without events.
+- Proof JSON rejects nesting beyond 64 containers before decoding: DR-E701/events.invalid for events, usage errors for inventory sidecars, without crashing.
+- Recorded inputs union across retained invocations and shard input lookup; any changed input blocks canonical-test base reuse.
+- Every command supports early `--help`/`-h` and `help <cmd>` from one synopsis catalogue.
+- `new --area NAME [dir]` writes an unsigned core@1 area; never overwrites it.
+- DR-E401 names the searched profiles directory using the CLI's relative display convention.
+- DR-E001 reports the original text's 1-based EOF line while preserving the reader's syntax-error excerpt.
+- `impact --recall` supports typed selectors, negation, AND and OR queries.
+- Base proofs of parameterized tests reuse canonical inventory inputs when disjoint from changed files; changed inputs still block reuse.
+- Gate filters versions before effective-shard selection: obsolete reruns cannot erase `shard.scope_escape` or `shard.stale_pack` fences.
+- Proof events reject malformed JSON with DR-E701/events.invalid; malformed inventory sidecars remain usage errors, including trailing delimiters.
+- Required option values reject a following option before writes; `new` names extra positionals and explains repeated one-value options.
+- `status`, `review` and `gate` add `--as summary`: scoped output, one next action and honest proof/Git labels; legacy formats stay unchanged.
+- `gate` logs its elapsed `ms` in `.drift-work/ops.jsonl`; `cli` cases record the `at` and `ms` integers of a captured ops log as `"<int>"`.
+- `review --brief`, `approve`, `gate` and `stats` search for `.drift-work/ops.jsonl` only up to the nearest directory holding `.drift/`.
+- Add coupled numeric mutants, stub desymmetrization and `sweep --simplify --apply`, per-method JUnit mutant runs in `gate`, and `#<prefix>*` symbol globs.
+- Detect symmetric cases (`case.symmetric_witness`) and peer-swap mutants, isolate per-case mutant runs, report `coupling_culprits`, and emit `assurance_card`.
+- Tighten integer relational bounds and prioritize boundary-central mutants in `mutants --budget`.
+- Propagate consumer relational constraints across shared resources in `sweep` and eliminate redundant relational bounds.
+- Tighten multi-hop relay bounds and bridge stubs, validate multi-field `sum_fields` invariants, and improve `sweep --promote` grouping.
+- Prune duplicate predicates in `sweep --promote --apply`, check joint producer-consumer boundaries, and report peer-coupling changes in `review`.
+- Synthesize valid multi-field `sum_fields` stubs across bridges and refine `mutants --budget` scheduling.
+- Support cold-area `status`/`impact`, `new --from-recall --code` and `select <base> --changed`; add `sum_fields`, `contains`, `prefix` and `suffix` (`DR-E003`) and `sweep --apply`.
+- Distinguish necessary vs sufficient `boundary_impact` changes, diversify `--query`/`--recall` results, and surface `latent_consumers`.
+- Expand multi-parameter bridge boundary domains and wave-concentration checks; add diagonal `mutants --when` and multi-hop relay `select`.
+- Add precedent checks and `max_open` limits in `review`, `priority_tests`/`flaky`/`triage` in `gate`, crash-safe `schedule --events`, and `by_profile` `stats` flow.
+- Add delta `review --base [--delta]` and `wave_plan`, `pack_ref`/`touched` shard fencing, and `stats --ops` flow telemetry.
+- Tighten relay bounds in `review --base`, narrow hop-1 `select` per resource, and group cross-contract `sweep --promote` candidates.
+- Heal moved directories/globs in `sweep --sync-scope`, resolve TypeScript ESM imports, track `git mv` in `impact`, and isolate monorepo `--changed` runs.
+- Check `scope.code` continuity, detect `code.circular_import` cycles, enforce `max_lines` and `forbid_imports` (`DR-E003`, `DR-E105`, `DR-E202`, `DR-E406`), and parse Python imports.
+- Propagate multi-hop boundary bounds, schedule conflict-free wave lanes, and support `<path>#<symbol>` code anchors.
+- Support coupled relational boundary domains and `mutants --when`; add dirty-worktree JS/Py `DRIFT_SNAPSHOT`, `case.fragile_ui_text` and DOM pointers.
+- Add positional `impact <chunk>` with `test_files`, partial-run `.meta.json` merging, `mutants --changed` and `new --code`; add `drift status` and `new --from`.
+- Add symbolic context capsules (`impact --recall [--share]`), auto-stamped symbol hashes, `new --from-recall` and `sweep --recall`.
+- Expand pairwise boundary coverage for 3+ parameters, merge multi-key relational cases and profile promotions, and add `when` boundary mutants.
+- Report `resource.unobserved_fiber`, `projection.folded` and `resource.ambiguous_projection` in `sweep`; support Git refs in `--base` and `fmt --sync-vocab`.
+- Support inverse-`when` boundaries and 8-level peers (`DR-E003`, D108), polarity-safe `new --from-upstream` and `<res>:/...` hop-1 `select`, and contiguous integer joins.
+- Export boundary bundles (`show --boundary`), verify `--upstream` consumers, scaffold with `new --from-upstream`, and synthesize upstream bridge stubs.
+- Add priority-tiered `mutants --budget`, peer-resolved relational bounds (`DR-E003`), `case.flopped` tracking, and `impact --schedule` safety guards.
+- Detect `code.unowned_import` and `code.coarsenable` globs, add `sweep --sync-scope`, and bootstrap `.drift-work` automatically.
+- Add relational `then` constraints (`min`, `max`, `min_len`, `max_len`, `non_empty`, `le_field`, `ge_field`, `eq_field`, `in`, `DR-E003`), `boundary_impact`, and `select --files`.
+- Normalize projected partitions, narrow hop-1 `select` and `sweep --promote`, track `case.split`/`case.merged`, and localize decision options.
+- Add decision risk signals (`assumed-high-leverage`, `high-risk-one-way`), `case.untracked_deferred`, `rework_share`, and bottleneck bridge guards.
+- Reuse base proofs via `.meta.json` `inputs`, narrow hop-1 `replayed_cases` in `select`, add `mutants --budget` and `shard.incomplete` checks, and rank `unblock_share`.
+- Keep `dr1` digests invariant across `extends`, unused `[use.vocabulary]` and prose `note` edits, and flag boolean-only `then` cases in `review`.
+- Add outside-digest `note` fields, profile `[projections]` (`DR-E003`, `DR-E101`, `DR-E105`), tiered `sweep --simplify`, and `core@1` `sweep = "soundness"`.
+- Release `0.2.1`; profile `extends` (`DR-E105`), `[use.vocabulary]`, `<path>#<symbol>` & `<resource>#<partition>` anchors, and `.drift/events` auto-discovery.
+
+## 0.2.0
+
+- `review --base` `migrated` (`case.split`, `case.merged`) & `coarsened`, `--schedule` anti-chaining guard, and `sweep --simplify` `case.incomplete_partition`/`subsumed`/`coarsenable`.
+- Epistemic card signals (`assumed-one-way`, `assumed-high-confidence`, `high-complexity-low-leverage`, `pick-sensitive`), `revisit_triggered`, `notify_owners`, and `perturb-case-when`.
+- `gate --phase execution|release`, `stats --compare` `dropped`/`inconclusive`/`mutant_shortfall`, and decision `deps` co-optimization with Hasse reduction.
+- `sweep --promote` `disposition`/`waivers`, `sweep --simplify` hygiene audit, `--explain` `exclusive_test` & `shared_test_share`, and `sweep --flow` `resource.dead_write`.
+- `impact --schedule --pack` worker packets, `gate --compare-before` F2P verification, `mutants --when` `swap-case-when`, and `stale_cause` in `review --base`.
+- Bounded domain probing (`checkBounds`, `param_specs`, `checkProfileBounds`, D66, D69), `impact --schedule --events` wave readiness, and intra/inter-contract conflicts in `sweep`.
+- Bridge `readFixture`/`recordInput` & `DRIFT_ENV`, `new --from-intent`, `review --as md` bounds/signals, and Maven `at`/`attest`/`explain` forwarding.
+- Bridge auto-resolve, `checkView` & `resource.projection_conflict`, `@sha256` source pins & `new --case`, `intent-untested`, bounded `params` (`DR-E003`, D57), and `--at`.
+- `.meta.json` `inputs`/`env`, `prove.compare_keys` & `proof_key_verified`, hybrid `select`, `evidence_matrix`, `snapshot_verified`, and Python bridge `drift.py`.
+- `sweep` `surface.status_missing` & `promotion_conflicts`, `impact` `mandatory_leaves`, `gate --attest`, JS `d.check`/mutants, `--explain`, and semantic `merge`.
+- Editor schemas match SPEC §§2–6, §17 (`43-spec-json-schemas`, D42); `impact --code` `unmatched_code` (`15-impact`, D41); `drift version` build id; `DR-E406` single-line formatting.
+- `GUIDE.md` adoption levels L0–L3; `make b` and `make e` evidence logs; M3 stage rules (`R3`); `review --as md` English sections (`39-review-baseline-diff`, D5); FNV-1a project-name guard (`R1`).
+- `impact --schedule` cohesion-aware DAG, `slack_w`, `dispatch_order`, `max_workers` and wave `topology` (`50-impact-schedule`, D39).
+- Outside-digest `open.<id>.owner`, profile `requires.proof`, `sweep --promote` and `stats --compare` (`49-sdd-harness`, D38).
+- `impact --toc`, `--query TEXT [--top N]` and `--depth N` (`47-impact-toc-query`, `48-impact-multi-hop`, D37); `DR-E602` blocks any remaining `todo` value (`08-approve`, `17-new`).
+- Inventory Git `snapshot` & Maven `-Ddrift.changed=auto` (`46-snapshot-fast-proof`, D36); `sweep --openapi` (`45-sweep-openapi`); `stats` `radar` ratios (`14-stats`, `44-stats-radar`, D14).
+- Mutation analysis `drift mutants` and `core@1` `proof = "killed"` (`40-mutation-testing`, D33); opt-in `core@1` policy pack and `DR-E603` (`e603-approver-unknown`, D34).
+- `review --brief --base` & `--as md` (`39-review-baseline-diff`, D32); `impact` (`15-impact`, D24); inventory sidecars & `gone` (`31`–`36`); hop-1 resource `select` (`38-select-resource-hop`).
+- Area-wide ownership across `select`, `prove --base`, `impact --code` and `sweep` (`13-select`, `16-sweep`, `17-new`, `18`–`30`, D25–D27); JS bridge `integrations/js/drift.mjs`.
+- `merge` refuses comments (`DR-E004`, D22); directory targets; `select --changed` matches `scope.code`; unused vocab & `owner` outside digest (`03-canonical`, D20).
+- Short refs `dr1:<12hex>` & `[approval].ref` (`DR-E003`, `DR-E102`, `DR-E104`, `DR-E601`, `01`–`13`, D16, D19); test reruns & supersession (`04`, `05`, `12`, D15); CRLF invariance (`07-fmt`, D18).
+- Linux x86-64 and Windows x64 release archives and installers (`make dist`, `make i`); M2 `select` and `DriftSelect` (`13-select`, `make s`, D13); proof event `digest` validation (`DR-E701`).
+- M1 `gate` (`12-gate`, D12), JVM JUnit bridge (`@DriftCase`, `Drift.expect`, `DriftListener`, `D17`, `make j`), signed `.drift/config.toml` (`10-config`, D6, D11), and `review --brief` (`11-review`).
+- M0 kernel (`check`, `show`, `fmt`, `diff`, `approve`, `prove`, `explain`, `version`; `drift/0.2`, `dr1`, `DR-E001`–`DR-E702`, cases `01`–`09`, D1–D10).

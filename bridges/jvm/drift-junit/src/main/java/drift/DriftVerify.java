@@ -1,0 +1,375 @@
+package drift;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Supports closure-based JVM suites (such as Scala 3 MUnit {@code FunSuite}) and tuple, map,
+ * iterable, record or Scala {@code Product} verification without external runtime dependencies (D229).
+ */
+final class DriftVerify {
+    private static final ThreadLocal<String> STANDALONE_TEST_ID = new ThreadLocal<>();
+    private static final ThreadLocal<String> STANDALONE_LEVEL = new ThreadLocal<>();
+
+    private DriftVerify() {}
+
+    static final class DynamicDriftCase implements DriftCase {
+        private final String contract;
+        private final String[] cases;
+        private final String level;
+
+        DynamicDriftCase(String contract, String[] cases, String level) {
+            this.contract = contract;
+            this.cases = cases;
+            this.level = level;
+        }
+
+        @Override
+        public String contract() {
+            return contract;
+        }
+
+        @Override
+        public String[] cases() {
+            return cases;
+        }
+
+        @Override
+        public String level() {
+            return level;
+        }
+
+        @Override
+        public Class<? extends Annotation> annotationType() {
+            return DriftCase.class;
+        }
+    }
+
+    static boolean isDynamicTag(DriftCase tag) {
+        return tag instanceof DynamicDriftCase && !tag.contract().isEmpty();
+    }
+
+    static DriftCase closureSlot() {
+        return new DynamicDriftCase("", new String[0], "");
+    }
+
+    static void preCheckExpect(
+            boolean inTest,
+            DriftCase existing,
+            String contract,
+            String caseId,
+            String level) {
+        if (!inTest) {
+            return;
+        }
+        if (existing == null) {
+            if (level == null || level.isBlank()) {
+                throw new IllegalStateException("the running test has no @DriftCase and cannot read "
+                        + contract + "." + caseId);
+            }
+            return;
+        }
+        if (!(existing instanceof DynamicDriftCase)) {
+            if (!existing.contract().equals(contract) || !List.of(existing.cases()).contains(caseId)) {
+                throw new IllegalStateException("the running test is tagged " + existing.contract() + " "
+                        + List.of(existing.cases()) + " and cannot read " + contract + "." + caseId);
+            }
+        }
+    }
+
+    static String inferLevel(String explicitLevel, DriftCase currentTag, Map<String, Object> caseMap) {
+        if (explicitLevel != null && !explicitLevel.isBlank()) {
+            return explicitLevel.trim();
+        }
+        if (caseMap.get("at") instanceof List<?> atList
+                && !atList.isEmpty()
+                && atList.get(0) instanceof String firstAt
+                && !firstAt.isBlank()) {
+            return firstAt;
+        }
+        if (currentTag != null && currentTag.level() != null && !currentTag.level().isBlank()) {
+            return currentTag.level();
+        }
+        return "unit";
+    }
+
+    static void bindExpect(
+            boolean inTest,
+            ThreadLocal<DriftCase> tagLocal,
+            String contract,
+            String caseId,
+            String level,
+            Map<String, Object> caseMap) {
+        DriftCase existing = tagLocal.get();
+        if (inTest && existing != null && !(existing instanceof DynamicDriftCase)) {
+            return;
+        }
+        String effLevel = inferLevel(level, existing, caseMap);
+        if (existing instanceof DynamicDriftCase dyn && dyn.contract().equals(contract)) {
+            Set<String> merged = new LinkedHashSet<>(Arrays.asList(dyn.cases()));
+            merged.add(caseId);
+            tagLocal.set(new DynamicDriftCase(contract, merged.toArray(String[]::new), effLevel));
+        } else {
+            tagLocal.set(new DynamicDriftCase(contract, new String[] {caseId}, effLevel));
+        }
+        STANDALONE_LEVEL.set(effLevel);
+        if (!inTest && STANDALONE_TEST_ID.get() == null) {
+            STANDALONE_TEST_ID.set(resolveCallerTestId(caseId));
+        }
+    }
+
+    static void clearStandalone() {
+        STANDALONE_TEST_ID.remove();
+        STANDALONE_LEVEL.remove();
+    }
+
+    private static String resolveCallerTestId(String fallbackCaseId) {
+        return StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+                .walk(frames -> frames
+                        .filter(f -> !f.getClassName().startsWith("drift.")
+                                && !f.getClassName().startsWith("java.")
+                                && !f.getClassName().startsWith("jdk.")
+                                && !f.getClassName().startsWith("org.junit."))
+                        .findFirst()
+                        .map(f -> {
+                            String cls = f.getClassName();
+                            if (cls.endsWith("$")) {
+                                cls = cls.substring(0, cls.length() - 1);
+                            }
+                            String m = f.getMethodName();
+                            if (m == null || m.isEmpty() || "<init>".equals(m)
+                                    || m.contains("$anonfun") || m.contains("lambda$")) {
+                                m = fallbackCaseId;
+                            }
+                            return cls + "#" + m;
+                        })
+                        .orElse("ScalaSuite#" + fallbackCaseId));
+    }
+
+    static void verify(Drift.Case c, Object... entries) {
+        Map<String, Object> payload = toPayloadMap(entries);
+        Map<String, String> thenProj = c.projectionMap("then");
+        Map<String, Object> rawThen = c.thenRaw();
+        boolean standalone = !Boolean.TRUE.equals(Drift.inTest()) && !Drift.mutationRun();
+        String testId = standalone
+                ? (STANDALONE_TEST_ID.get() != null ? STANDALONE_TEST_ID.get() : resolveCallerTestId(c.id()))
+                : null;
+        String level = STANDALONE_LEVEL.get() != null ? STANDALONE_LEVEL.get() : "unit";
+        try {
+            for (Map.Entry<String, Object> e : rawThen.entrySet()) {
+                String key = e.getKey();
+                Object expected = e.getValue();
+                Drift.mark(c.contract(), c.id(), key);
+                if (thenProj.containsKey(key) && Json.readJsonPointer(payload, thenProj.get(key)).found()) {
+                    DriftViewChecks.checkProjectedLeaf(
+                            c, key, expected, payload, thenProj, true, "no check or projection for");
+                } else if (payload.containsKey(key)) {
+                    DriftViewChecks.checkProjectedLeaf(
+                            c, key, expected, payload, Map.of(), false, "no check or projection for");
+                } else {
+                    DriftViewChecks.checkProjectedLeaf(
+                            c, key, expected, payload, thenProj, true, "no check or projection for");
+                }
+            }
+            if (standalone) {
+                DriftListener.recordStandaloneEvent(
+                        testId, c.contract(), List.of(c.id()), level, "passed", List.of(c.id()));
+            }
+        } catch (Throwable err) {
+            if (standalone) {
+                DriftListener.recordStandaloneEvent(
+                        testId, c.contract(), List.of(c.id()), level, "failed", List.of());
+            }
+            throw err;
+        }
+    }
+
+    static Map<String, Object> toPayloadMap(Object... entries) {
+        if (entries == null || entries.length == 0) {
+            return Map.of();
+        }
+        if (entries.length == 1 && !isPairLike(entries[0])) {
+            Object single = normalizeValue(entries[0]);
+            if (single instanceof Map<?, ?> m) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> e : m.entrySet()) {
+                    out.put(String.valueOf(e.getKey()), e.getValue());
+                }
+                return out;
+            }
+            throw new IllegalArgumentException("verify expects key-value pairs, a Map, or a Product/Record");
+        }
+        boolean allPairs = true;
+        for (Object item : entries) {
+            if (!isPairLike(item)) {
+                allPairs = false;
+                break;
+            }
+        }
+        if (allPairs) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Object item : entries) {
+                Object[] kv = extractPair(item);
+                out.put(String.valueOf(kv[0]), normalizeValue(kv[1]));
+            }
+            return out;
+        }
+        if (entries.length % 2 == 0) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (int i = 0; i < entries.length; i += 2) {
+                out.put(String.valueOf(entries[i]), normalizeValue(entries[i + 1]));
+            }
+            return out;
+        }
+        throw new IllegalArgumentException("verify expects (key -> value) tuples, a Map/Product, or even key/value arguments");
+    }
+
+    private static boolean isPairLike(Object obj) {
+        if (obj == null) {
+            return false;
+        }
+        if (obj instanceof Map.Entry<?, ?>) {
+            return true;
+        }
+        Class<?> cls = obj.getClass();
+        try {
+            cls.getMethod("_1");
+            cls.getMethod("_2");
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
+    }
+
+    private static Object[] extractPair(Object obj) {
+        if (obj instanceof Map.Entry<?, ?> e) {
+            return new Object[] {e.getKey(), e.getValue()};
+        }
+        try {
+            Class<?> cls = obj.getClass();
+            Object k = cls.getMethod("_1").invoke(obj);
+            Object v = cls.getMethod("_2").invoke(obj);
+            return new Object[] {k, v};
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException("cannot read tuple (_1, _2) from " + obj, e);
+        }
+    }
+
+    static Object normalizeValue(Object val) {
+        if (val == null || val instanceof String || val instanceof Number || val instanceof Boolean) {
+            return val;
+        }
+        if (val instanceof Map<?, ?> m) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                out.put(String.valueOf(e.getKey()), normalizeValue(e.getValue()));
+            }
+            return out;
+        }
+        if (val instanceof Iterable<?> it) {
+            return normalizeIterator(it.iterator());
+        }
+        Class<?> cls = val.getClass();
+        if (cls.isRecord()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            try {
+                for (RecordComponent rc : cls.getRecordComponents()) {
+                    out.put(rc.getName(), normalizeValue(rc.getAccessor().invoke(val)));
+                }
+                return out;
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalArgumentException("cannot inspect record " + cls.getName(), e);
+            }
+        }
+        try {
+            Method iterMethod = cls.getMethod("iterator");
+            Object iterObj = iterMethod.invoke(val);
+            if (iterObj instanceof Iterator<?> it) {
+                return normalizeIterator(it);
+            }
+            if (iterObj != null) {
+                Method hasNext = iterObj.getClass().getMethod("hasNext");
+                Method next = iterObj.getClass().getMethod("next");
+                List<Object> items = new ArrayList<>();
+                while (Boolean.TRUE.equals(hasNext.invoke(iterObj))) {
+                    items.add(next.invoke(iterObj));
+                }
+                return normalizeItems(items);
+            }
+        } catch (ReflectiveOperationException ignored) {
+        }
+        if (!isPairLike(val)) {
+            try {
+                Method arityM = cls.getMethod("productArity");
+                Method nameM = cls.getMethod("productElementName", int.class);
+                Method elemM = cls.getMethod("productElement", int.class);
+                int n = (int) arityM.invoke(val);
+                Map<String, Object> out = new LinkedHashMap<>();
+                for (int i = 0; i < n; i++) {
+                    String name = String.valueOf(nameM.invoke(val, i));
+                    out.put(name, normalizeValue(elemM.invoke(val, i)));
+                }
+                return out;
+            } catch (ReflectiveOperationException ignored) {
+            }
+        }
+        return val;
+    }
+
+    private static Object normalizeIterator(Iterator<?> it) {
+        List<Object> items = new ArrayList<>();
+        while (it.hasNext()) {
+            items.add(it.next());
+        }
+        return normalizeItems(items);
+    }
+
+    private static Object normalizeItems(List<Object> items) {
+        if (!items.isEmpty() && items.stream().allMatch(DriftVerify::isPairLike)) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            for (Object item : items) {
+                Object[] kv = extractPair(item);
+                map.put(String.valueOf(kv[0]), normalizeValue(kv[1]));
+            }
+            return map;
+        }
+        List<Object> out = new ArrayList<>(items.size());
+        for (Object item : items) {
+            out.add(normalizeValue(item));
+        }
+        return out;
+    }
+
+    static Map<String, String> projectionMap(String contract, String side) {
+        Object raw = Drift.view(contract).get("projections");
+        if (!(raw instanceof Map<?, ?> rawMap)) {
+            return Map.of();
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : rawMap.entrySet()) {
+            if (e.getKey() instanceof String k
+                    && !"when".equals(k)
+                    && !"then".equals(k)
+                    && e.getValue() instanceof String v) {
+                out.put(k, v);
+            }
+        }
+        if (rawMap.get(side) instanceof Map<?, ?> sideMap) {
+            for (Map.Entry<?, ?> e : sideMap.entrySet()) {
+                if (e.getKey() instanceof String k && e.getValue() instanceof String v) {
+                    out.put(k, v);
+                }
+            }
+        }
+        return out;
+    }
+}

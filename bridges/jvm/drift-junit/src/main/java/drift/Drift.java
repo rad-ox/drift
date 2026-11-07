@@ -54,24 +54,20 @@ public final class Drift {
 
     /** Returns one case of the contract; the read is recorded for the running test. */
     public static Case expect(String contract, String caseId) {
-        if (Boolean.TRUE.equals(IN_TEST.get())) {
-            DriftCase tag = TAG.get();
-            if (tag == null) {
-                throw new IllegalStateException("the running test has no @DriftCase and cannot read "
-                        + contract + "." + caseId);
-            }
-            if (!tag.contract().equals(contract) || !List.of(tag.cases()).contains(caseId)) {
-                throw new IllegalStateException("the running test is tagged " + tag.contract() + " "
-                        + List.of(tag.cases()) + " and cannot read " + contract + "." + caseId);
-            }
-        }
+        return expect(contract, caseId, null);
+    }
+
+    /** Returns one case of the contract at an explicit level; auto-binds unannotated/closure tests (D229). */
+    public static Case expect(String contract, String caseId, String level) {
+        DriftVerify.preCheckExpect(Boolean.TRUE.equals(IN_TEST.get()), TAG.get(), contract, caseId, level);
         Map<String, Object> cases = DriftInternal.map(view(contract).get("cases"), contract + ".cases");
         Object c = cases.get(caseId);
         if (c == null) {
             throw new IllegalArgumentException("contract " + contract + " has no case " + caseId);
         }
-        READS.get().add(contract + "\u0000" + caseId);
         Map<String, Object> m = DriftInternal.map(c, contract + ".cases." + caseId);
+        DriftVerify.bindExpect(Boolean.TRUE.equals(IN_TEST.get()), TAG, contract, caseId, level, m);
+        READS.get().add(contract + "\u0000" + caseId);
         Map<String, Object> when = DriftInternal.map(m.getOrDefault("when", Map.of()), "when");
         Map<String, Object> then = DriftInternal.map(m.getOrDefault("then", Map.of()), "then");
         DriftInternal.MutationOverride override = activeMutation(contract, caseId);
@@ -194,6 +190,12 @@ public final class Drift {
         return new TreeMap<>(TEST_INPUTS.get());
     }
 
+    static void recordSelfStub(String contract) {
+        if (Boolean.TRUE.equals(IN_TEST.get()) && !mutationRun()) {
+            TEST_INPUTS.get().put(".drift/self-stub/" + contract, "sha256:self-stub");
+        }
+    }
+
     /** A test starts on this thread; a null tag marks an untagged test. */
     static void begin(DriftCase tag) {
         READS.get().clear();
@@ -212,10 +214,20 @@ public final class Drift {
         return TAG.get();
     }
 
+    static Boolean inTest() {
+        return IN_TEST.get();
+    }
+
+    /** Flushes any standalone programmatic proof events and inventory sidecars to disk (D229). */
+    public static void flushEvents() {
+        DriftListener.flushStandaloneEvents();
+    }
+
     /** No test runs on this thread any more; its reads stay until the next begin. */
     static void end() {
         TAG.remove();
         IN_TEST.remove();
+        DriftVerify.clearStandalone();
     }
 
     static void setMutation(String contract, String caseId, String path, Object value) {
@@ -351,6 +363,10 @@ public final class Drift {
         return DriftStubs.verifyStubByWhen(contractOrResource, whenInput, payload, Boolean.TRUE.equals(IN_TEST.get()));
     }
 
+    public static boolean observe(String contract, String caseId, String test, Map<String, Object> when, Map<String, Object> then) {
+        return DriftSelect.observe(contract, caseId, test, when, then);
+    }
+
     static Map<String, Object> view(String contract) {
         Path override = MUTATION_RESOLVED.get();
         String dir = override == null ? System.getProperty(RESOLVED) : override.toString();
@@ -416,12 +432,43 @@ public final class Drift {
             return (String) when(key);
         }
 
+        public boolean whenBoolean(String key) {
+            return (Boolean) when(key);
+        }
+
+        public int whenInt(String key) {
+            return Math.toIntExact(((Number) when(key)).longValue());
+        }
+
         public String thenString(String key) {
             return (String) then(key);
         }
 
+        public boolean thenBoolean(String key) {
+            return (Boolean) then(key);
+        }
+
         public int thenInt(String key) {
-            return Math.toIntExact((Long) then(key));
+            return Math.toIntExact(((Number) then(key)).longValue());
+        }
+
+        public long thenLong(String key) {
+            return ((Number) then(key)).longValue();
+        }
+
+        @SuppressWarnings("unchecked")
+        public List<Object> thenList(String key) {
+            return (List<Object>) then(key);
+        }
+
+        @SuppressWarnings("unchecked")
+        public Map<String, Object> thenMap(String key) {
+            return (Map<String, Object>) then(key);
+        }
+
+        /** Verifies every {@code then} predicate against tuple, map, iterable, or product entries (D229). */
+        public void verify(Object... entries) {
+            DriftVerify.verify(this, entries);
         }
 
         /**
@@ -431,13 +478,13 @@ public final class Drift {
          * serve every case of a profile.
          */
         public void check(Map<String, ? extends Consumer<Object>> checks) {
-            for (Map.Entry<String, Object> e : then.entrySet()) {
+            for (Map.Entry<String, Object> e : thenRaw().entrySet()) {
                 Consumer<Object> check = checks.get(e.getKey());
                 if (check == null) {
                     throw new AssertionError(contract + "." + id + ": no check for then." + e.getKey());
                 }
-                Drift.mark(contract, id, e.getKey());
                 check.accept(e.getValue());
+                Drift.mark(contract, id, e.getKey());
             }
         }
 
@@ -450,18 +497,16 @@ public final class Drift {
             if (domain == null || domain.isEmpty()) {
                 throw new IllegalArgumentException("domain must not be empty");
             }
-            List<Map.Entry<String, Object>> entries = new ArrayList<>(then.entrySet());
+            List<Map.Entry<String, Object>> entries = new ArrayList<>(thenRaw().entrySet());
             List<BiConsumer<Object, S>> boundChecks = new ArrayList<>(entries.size());
             for (Map.Entry<String, Object> e : entries) {
                 BiConsumer<Object, S> check = checks == null ? null : checks.get(e.getKey());
                 if (check == null) {
                     throw new AssertionError(contract + "." + id + ": no check for then." + e.getKey());
                 }
-                Drift.mark(contract, id, e.getKey());
                 boundChecks.add(check);
             }
-            List<S> activeSamples = Drift.mutationRun() ? List.of(domain.get(0)) : domain;
-            for (S sample : activeSamples) {
+            for (S sample : domain) {
                 for (int i = 0; i < entries.size(); i++) {
                     Map.Entry<String, Object> e = entries.get(i);
                     try {
@@ -475,6 +520,9 @@ public final class Drift {
                         throw err;
                     }
                 }
+            }
+            for (Map.Entry<String, Object> e : entries) {
+                Drift.mark(contract, id, e.getKey());
             }
         }
 
@@ -491,27 +539,7 @@ public final class Drift {
         }
 
         Map<String, String> projectionMap(String side) {
-            Object raw = Drift.view(contract).get("projections");
-            if (!(raw instanceof Map<?, ?> rawMap)) {
-                return Map.of();
-            }
-            Map<String, String> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> e : rawMap.entrySet()) {
-                if (e.getKey() instanceof String k
-                        && !"when".equals(k)
-                        && !"then".equals(k)
-                        && e.getValue() instanceof String v) {
-                    out.put(k, v);
-                }
-            }
-            if (rawMap.get(side) instanceof Map<?, ?> sideMap) {
-                for (Map.Entry<?, ?> e : sideMap.entrySet()) {
-                    if (e.getKey() instanceof String k && e.getValue() instanceof String v) {
-                        out.put(k, v);
-                    }
-                }
-            }
-            return out;
+            return DriftVerify.projectionMap(contract, side);
         }
 
         /** Synthesizes an input map via {@code projections.when} RFC 6901 JSON Pointers (D86). */
@@ -544,13 +572,13 @@ public final class Drift {
         /** Synthesizes an output map over {@code base} via {@code projections.then} RFC 6901 JSON Pointers (D104). */
         @SuppressWarnings("unchecked")
         public Map<String, Object> buildOutput(Map<String, Object> base) {
+            Drift.recordSelfStub(contract);
             Map<String, String> whenProj = projectionMap("when");
             Map<String, String> thenProj = projectionMap("then");
             Map<String, Object> peerIdx = DriftStubs.buildPeerIndex(when, then, whenProj, thenProj);
             Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
             for (Map.Entry<String, Object> e : then.entrySet()) {
                 String key = e.getKey();
-                Drift.mark(contract, id, key);
                 Object w = DriftStubs.witnessVariants(e.getValue(), out, peerIdx, whenProj, thenProj).get(0);
                 if (thenProj.containsKey(key)) {
                     out = Json.writeJsonPointer(out, thenProj.get(key), w);
@@ -569,7 +597,7 @@ public final class Drift {
         /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} and custom checks (D86). */
         public void checkProjection(Object payload, Map<String, ? extends Consumer<Object>> checks) {
             Map<String, String> thenProj = projectionMap("then");
-            for (Map.Entry<String, Object> e : then.entrySet()) {
+            for (Map.Entry<String, Object> e : thenRaw().entrySet()) {
                 String key = e.getKey();
                 Object expected = e.getValue();
                 Drift.mark(contract, id, key);
@@ -596,7 +624,8 @@ public final class Drift {
         }
 
         Map<String, Object> thenRaw() {
-            return then;
+            DriftInternal.MutationOverride ov = activeMutation(contract, id);
+            return ov != null && !ov.isWhen() ? ov.apply(then) : then;
         }
 
         private Object need(Map<String, Object> m, String table, String key) {
