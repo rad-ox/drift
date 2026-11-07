@@ -25,6 +25,8 @@ param(
     [string]$MavenRepo,
     [switch]$Hooks,
     [switch]$NoHooks,
+    [switch]$UpdateCheck,
+    [switch]$NoUpdateCheck,
     [switch]$NoSkill,
     [switch]$NoMaven,
     [switch]$NoPath,
@@ -200,6 +202,8 @@ Opzioni:
   -Hooks            installa gli hook automatici per gli agenti rilevati
                     (pi, copilot, claude, codex, cursor, gemini)
   -NoHooks          non installa gli hook automatici
+  -UpdateCheck      installa anche il controllo opzionale delle release GitHub
+  -NoUpdateCheck    omette o rimuove solo il controllo delle release
   -HooksDir DIR     installa l'hook automatico in DIR\drift.json
   -MavenRepo DIR    repository Maven locale (predefinito: quello di
                     .m2\settings.xml, altrimenti %USERPROFILE%\.m2\repository)
@@ -226,6 +230,8 @@ Options:
   -Hooks            install automatic hooks for detected agents
                     (pi, copilot, claude, codex, cursor, gemini)
   -NoHooks          do not install automatic hooks
+  -UpdateCheck      also install optional GitHub release checks
+  -NoUpdateCheck    omit or remove only the release-check component
   -HooksDir DIR     install the automatic hook into DIR\drift.json
   -MavenRepo DIR    local Maven repository (default: the one in
                     .m2\settings.xml, else %USERPROFILE%\.m2\repository)
@@ -246,6 +252,10 @@ $pause = $false
 
 try {
     if ($Help) { Show-Usage; exit 0 }
+    if (-not $Uninstall -and $UpdateCheck -and ($NoUpdateCheck -or $NoHooks)) {
+        Stop-Install 'Conflicting -UpdateCheck and -NoUpdateCheck/-NoHooks options.' `
+            'Opzioni -UpdateCheck e -NoUpdateCheck/-NoHooks in conflitto.'
+    }
     $pause = Test-FromExplorer
     if (-not $onWindows -and -not $testMode) {
         Stop-Install 'This installer is for Windows; on Linux use install.sh.' `
@@ -260,8 +270,8 @@ try {
     if (-not $prefixSet -and (Test-Path -LiteralPath (Join @($here, 'manifest.txt')))) { $Prefix = $here }
     $skillsSet = [bool]$SkillsDir
     if (-not $SkillsDir) { $SkillsDir = Join @([string]$HOME, '.copilot', 'skills') }
-    $withHooks = [bool]$Hooks -or [bool]$HooksDir
-    $hooksSet = [bool]$Hooks -or [bool]$NoHooks -or [bool]$HooksDir
+    $withHooks = [bool]$Hooks -or [bool]$HooksDir -or [bool]$UpdateCheck
+    $hooksSet = [bool]$Hooks -or [bool]$NoHooks -or [bool]$HooksDir -or [bool]$UpdateCheck
     if ($NoHooks) { $withHooks = $false }
     $bin = Join @($Prefix, 'bin')
     $exe = Join @($bin, 'drift.exe')
@@ -528,8 +538,12 @@ try {
         Invoke-Step "copy schemas to $Prefix" { Copy-Item -LiteralPath (Join @($here, 'schemas')) -Destination (Join @($Prefix, 'schemas')) -Recurse -Force }
     }
     if (Test-Path -LiteralPath (Join @($here, 'hooks'))) {
-        Remove-Safely (Join @($Prefix, 'hooks')) 'hooks'
-        Invoke-Step "copy hooks to $Prefix" { Copy-Item -LiteralPath (Join @($here, 'hooks')) -Destination (Join @($Prefix, 'hooks')) -Recurse -Force }
+        Invoke-Step "copy hooks to $Prefix" {
+            New-Item -ItemType Directory -Force -Path (Join @($Prefix, 'hooks')) | Out-Null
+            foreach ($name in @('drift-hook.sh', 'drift-hook.ps1', 'drift-pi.ts')) {
+                Copy-Item -LiteralPath (Join @($here, 'hooks', $name)) -Destination (Join @($Prefix, 'hooks', $name)) -Force
+            }
+        }
     }
     if ($onWindows) {
         Invoke-Step 'unblock the installed files' {
@@ -551,10 +565,39 @@ try {
             $agLabel = if ($detectedAgents.Count -gt 0) { $detectedAgents -join ', ' } else { 'pi, copilot, agents' }
             $promptMsg = T "  ? Install automatic DRIFT hooks for agents ($agLabel)? [Y/n] " `
                 "  ? Installare gli hook automatici di DRIFT per gli agenti ($agLabel)? [S/n] "
-            $ans = [Console]::In.ReadLine()
             Write-Host $promptMsg -NoNewline
+            $ans = [Console]::In.ReadLine()
             if ($null -eq $ans) { $ans = '' } else { $ans = $ans.Trim() }
             if ($ans -match '^(?i)(|y|yes|s|si|sì)$') { $withHooks = $true } else { $withHooks = $false }
+        }
+    }
+
+    $releaseDir = Join @($Prefix, 'hooks', 'release')
+    $withUpdateCheck = Test-Path -LiteralPath $releaseDir -PathType Container
+    if ($UpdateCheck) { $withUpdateCheck = $true }
+    if ($NoUpdateCheck -or -not $withHooks) { $withUpdateCheck = $false }
+    if ($withHooks -and -not $UpdateCheck -and -not $NoUpdateCheck -and -not $DryRun -and
+        ($env:DRIFT_ASSUME_TTY -eq '1' -or (-not $testMode -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected))) {
+        Write-Host (T '  ? Install optional GitHub release checks at session start? [Y/n] ' `
+            '  ? Installare il controllo opzionale delle release GitHub a inizio sessione? [S/n] ') -NoNewline
+        $answer = [Console]::In.ReadLine()
+        if ($null -ne $answer) { $withUpdateCheck = $answer.Trim() -match '^(?i)(|y|yes|s|si)$' }
+        else { Note 'No installation answer; preserving the existing release-check choice.' 'Nessuna risposta; mantengo la scelta precedente.' }
+    }
+    if ($withUpdateCheck) {
+        Invoke-Step "install optional release checks to $releaseDir" {
+            New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+            foreach ($name in @('check.py', 'check.ps1', 'release-policy.json')) {
+                Copy-Item -LiteralPath (Join @($here, 'release', $name)) -Destination (Join @($releaseDir, $name)) -Force
+            }
+        }
+    } elseif (Test-Path -LiteralPath $releaseDir) {
+        Invoke-Step "remove optional release checks from $releaseDir" {
+            foreach ($name in @('check.py', 'check.ps1', 'release-policy.json')) {
+                $file = Join @($releaseDir, $name)
+                if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+            }
+            [IO.Directory]::Delete($releaseDir)
         }
     }
 
@@ -618,6 +661,19 @@ try {
     }
 
     $newHooks = [System.Collections.Generic.List[string]]::new()
+    function Write-PiExtension([string]$Target) {
+        Invoke-Step "copy Pi extension to $Target" {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
+            $template = Get-Content -LiteralPath (Join @($here, 'hooks', 'drift-pi.ts')) -Raw
+            $marker = 'const releaseDirectory = "";'
+            if (($template.Split(@($marker), [StringSplitOptions]::None)).Count -ne 2) {
+                throw 'Pi release component marker missing or ambiguous'
+            }
+            $directory = if ($withUpdateCheck) { $releaseDir } else { '' }
+            $replacement = 'const releaseDirectory = ' + (ConvertTo-Json -InputObject $directory -Compress) + ';'
+            [IO.File]::WriteAllText($Target, $template.Replace($marker, $replacement))
+        }
+    }
     function Write-DropinHook([string]$TargetFile) {
         $hookPs1 = (Join @($Prefix, 'hooks', 'drift-hook.ps1')) -replace '\\', '\\'
         $json = @"
@@ -661,10 +717,7 @@ try {
             if ((Test-Path -LiteralPath (Join @([string]$HOME, '.pi'))) -or (Test-Path -LiteralPath $piDir)) {
                 $anyAgent = $true
                 $piExt = Join @($piDir, 'extensions', 'drift.ts')
-                Invoke-Step "copy Pi extension to $piExt" {
-                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $piExt) | Out-Null
-                    Copy-Item -LiteralPath (Join @($here, 'hooks', 'drift-pi.ts')) -Destination $piExt -Force
-                }
+                Write-PiExtension $piExt
                 $newHooks.Add($piExt)
                 Ok "Pi extension -> $(Show-Path $piExt)" "estensione Pi -> $(Show-Path $piExt)"
             }
@@ -678,10 +731,7 @@ try {
             }
             if (-not $anyAgent) {
                 $piExt = Join @($piDir, 'extensions', 'drift.ts')
-                Invoke-Step "copy Pi extension to $piExt" {
-                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $piExt) | Out-Null
-                    Copy-Item -LiteralPath (Join @($here, 'hooks', 'drift-pi.ts')) -Destination $piExt -Force
-                }
+                Write-PiExtension $piExt
                 $newHooks.Add($piExt)
                 Ok "Pi extension -> $(Show-Path $piExt)" "estensione Pi -> $(Show-Path $piExt)"
                 Write-DropinHook (Join @([string]$HOME, '.copilot', 'hooks', 'drift.json'))

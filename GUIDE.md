@@ -54,7 +54,7 @@ Each level delivers standalone value—stop where the cost stops paying, or clim
 Bootstrap a `.drift` area in your project root (or copy a profile from `example/.drift/profiles/http-json@1.toml`):
 
 ```bash
-drift new --area catalog-service .
+drift init catalog-service .
 drift approve .drift/config.toml --by alice
 ```
 
@@ -122,6 +122,8 @@ drift review .drift/contracts/item-get.toml --brief   # Prints cases + decision 
 drift approve .drift/contracts/item-get.toml --by alice
 ```
 
+For a version-bound handoff, request `drift review <file|dir> --detail guided --as json` and retain the returned JSON in the host session. Approve it with `drift approve --reviewed FILE --expect-review REF --by OWNER`, where `REF` is the exact `review_snapshot.review_ref` shown in that JSON. The snapshot binds the area, selectors, targets, policy and decision context; it is not a signature or proof of who consented. Legacy `approve` remains available for explicit approvals without snapshot protection.
+
 If `drift check` reports a finding, run `drift explain <code>` (for example `drift explain DR-E601`) to see the exact cause and fix.
 
 ---
@@ -143,7 +145,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.3.1</version>
+    <version>0.3.2</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -153,7 +155,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.3.1</version>
+      <version>0.3.2</version>
       <executions>
         <execution>
           <goals>
@@ -251,8 +253,9 @@ drift gate .drift/contracts --events .drift/events --base HEAD --changed src/ite
 
 # Inspect blast radius, L0 domain maps (@tree), or compact @recall context capsules
 drift impact .drift --writes items --transitive
-drift impact .drift --recall "@tree"
-drift impact .drift --recall "item lookup #getItem /800t"
+drift recall query "@tree" .drift
+drift recall query "item lookup #getItem /800t" .drift
+drift plan .drift/contracts --pack ready
 ```
 
 In Maven projects, `-Ddrift.changed=auto` captures a Git tree snapshot during `prepare` and reuses unchanged test shards automatically while keeping `gate` active.

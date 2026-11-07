@@ -140,7 +140,8 @@ class DriftBridgeTest {
     @BeforeEach
     void isolate() throws Exception {
         Drift.clearViews();
-        for (String p : List.of(Drift.RESOLVED, DriftListener.EVENTS, DriftListener.SNAPSHOT, DriftSelect.SELECT)) {
+        for (String p : List.of(Drift.RESOLVED, DriftListener.EVENTS, DriftListener.SNAPSHOT, DriftSelect.SELECT,
+                DriftListener.EXECUTION_REF)) {
             saved.put(p, System.getProperty(p));
         }
         Path resolved = Files.createDirectories(dir.resolve("resolved"));
@@ -328,8 +329,19 @@ class DriftBridgeTest {
         assertEquals(snap, metadata.get("snapshot"));
         @SuppressWarnings("unchecked")
         Map<String, Object> env = (Map<String, Object>) metadata.get("env");
-        assertEquals("drift-junit@0.3.1", env.get("adapter"));
+        assertEquals("drift-junit@0.3.2", env.get("adapter"));
         assertEquals("junit-platform", env.get("runner"));
+    }
+
+    @Test
+    void anExecutionRefMakesTheSidecarVersionTwo() throws Exception {
+        String ref = "sha256:" + "a".repeat(64);
+        System.setProperty(DriftListener.EXECUTION_REF, ref);
+        run();
+        run();
+        Map<String, Object> m = inventory(dir.resolve("events.meta.json"));
+        assertEquals(List.of(2L, ref, List.of()),
+                List.of(m.get("version"), m.get("execution_ref"), m.get("touched")));
     }
 
     @Test
@@ -399,6 +411,14 @@ class DriftBridgeTest {
                 Map.of("pct", 101L, "maxPct", 100L, "items", List.of("x"), "tier", "a")));
         assertThrows(AssertionError.class, () -> relCase.checkProjection(
                 Map.of("pct", 85L, "maxPct", 80L, "items", List.of("x"), "tier", "a")));
+        for (double bad : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            assertTrue(!Json.valuesEqual(200L, bad));
+            assertTrue(!Json.valuesEqual(bad, bad));
+            assertThrows(AssertionError.class, () -> relCase.checkProjection(
+                    Map.of("pct", bad, "maxPct", 80L, "items", List.of("x"), "tier", "a")));
+            assertThrows(AssertionError.class, () -> relCase.checkProjection(
+                    Map.of("pct", 50L, "maxPct", bad, "items", List.of("x"), "tier", "a")));
+        }
         Drift.withMutation(
                 "bridge", "part", "/cases/part/then/pct/max", 101L,
                 () -> relCase.checkProjection(validPayload));
@@ -452,6 +472,10 @@ class DriftBridgeTest {
         assertEquals(10L, d150B.get("max"));
         assertThrows(AssertionError.class, () -> extCase.checkProjection(
                 Map.of("sub", 100L, "tax", 22L, "total", 120L, "roles", List.of("admin"), "code", "INV-1-IT")));
+        assertThrows(AssertionError.class, () -> extCase.checkProjection(
+                Map.of("sub", 100L, "tax", 22L, "total", Double.NaN, "roles", List.of("admin"), "code", "INV-1-IT")));
+        assertThrows(AssertionError.class, () -> extCase.checkProjection(
+                Map.of("sub", Double.NaN, "tax", 22L, "total", 122L, "roles", List.of("admin"), "code", "INV-1-IT")));
         assertThrows(AssertionError.class, () -> extCase.checkProjection(
                 Map.of("sub", 100L, "tax", 22L, "total", 122L, "roles", List.of("user"), "code", "INV-1-IT")));
         assertThrows(AssertionError.class, () -> extCase.checkProjection(

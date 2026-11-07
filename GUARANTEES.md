@@ -17,7 +17,7 @@ DRIFT is designed for **epistemic honesty**: it never claims that a green gate p
 | **3. Deleted or unexecuted test (`gone`)** | **Yes** | **Blocked (`proof.not_green`)** | Active when the test bridge writes the `.meta.json` discovery inventory sidecar alongside `.jsonl` events. |
 | **4. Test passes without checking all `then.*` fields** | **Yes** | **`bound` only (or `AssertionError` in `d.check`)** | Direct observation matching `d.check(case, { key: actual })` fails immediately if any `then.<key>` is omitted or mismatches. |
 | **5. Callback ignores expected value (`() => {}` / `lambda v: None`)** | **Yes** | **Blocked (`AssertionError`)** | Prefer declarative observation matching `d.check(case, { key: actual })`. Legacy callbacks are checked for no-op bodies and `false` returns; full assertion discrimination is proven by `proof = "killed"` (`drift mutants`, **Enterprise**). |
-| **6. Forged `[approval].by` or unreviewed `scope.code` change** | **Requires VCS / Policy** | **Blocked in PR / Enterprise** | In **Free**, protect `.drift/**` with GitHub `CODEOWNERS` + signed commits (`git commit -S`). In **Enterprise**, `[policy] approvers` (`DR-E603`) + Ed25519 attestations (`drift gate --attest`) enforce this in the gate. |
+| **6. Forged `[approval].by` or unreviewed `scope.code` change** | **Requires VCS / Policy** | **Blocked in PR / Enterprise** | In **Free**, protect `.drift/**` with GitHub `CODEOWNERS` + signed commits (`git commit -S`). In **Enterprise**, `[policy] approvers` (`DR-E603`) + deterministic RFC 8785 attestations (`drift gate --attest`, unsigned by default unless paired with optional OpenSSH signature verification and a verifier-pinned `--trust-root`) enforce this in the gate. |
 | **7. Test feeds contract's own stub into `checkProjection` or never calls real code** | **Yes (`oracle.self_stubbed`)** | **Surfaced in `review` / `gate --explain`; blocked by `proof = "killed"`** | Bridges record self-contract `buildOutput` / `buildStub` calls in `.meta.json` (`oracle.self_stubbed`); bind integration tests at `at = ["http"]` / `at = ["e2e"]` and enforce `drift mutants` (**Enterprise**). |
 
 ---
@@ -84,16 +84,17 @@ Alongside `<shard>.jsonl`, the bridge writes the discovery sidecar **`<shard>.me
 
 Every `<shard>.meta.json` sidecar is validated against the `$defs.inventorySidecar` schema in [`schemas/drift-proof-event-0.2.schema.json`](schemas/drift-proof-event-0.2.schema.json):
 
-- `version`: must be the integer `1` (booleans and strings rejected).
+- `version`: must be the integer `1` or `2` (booleans and strings rejected; `2` binds `execution_ref` under `drift.execution-context/1`).
 - `classes`: sorted, unique array of non-empty class/file names (no `#`, whitespace, `/`, `\`, `[`, `]`).
 - `tests`: sorted, unique array of `<class>#<method>` identifiers where `<class>` is present in `classes`.
 - `snapshot` *(optional)*: 40-char (SHA-1) or 64-char (SHA-256) lowercase hex Git tree/commit OID. When `snapshot` is set and `tests` is non-empty, an empty `<shard>.jsonl` is flagged as `shard.incomplete`.
 - `pack_ref` *(optional)*: `dr1:<12-hex>` schedule pack reference.
+- `execution_ref` *(optional, v2)*: `sha256:<64-hex>` complete execution-context identity.
 - `touched` *(optional)*: sorted, unique array of normalized relative paths (no leading `/`, no `\`, no `.` or `..` segments).
 - `inputs` *(optional)*: map from `<test>` (must be in `tests`) to `{ "<relative_path>": "<digest>" }`.
 - `env` *(optional)*: object with the exact 7 required non-empty string keys `["toolchain", "deps", "config", "runner", "drift", "adapter", "policy"]`.
 
-**Proof Coherence vs. Trusted Execution Provenance:** A standalone verifier (`drift_verify.py` or `drift gate`) proves that the supplied `.jsonl` events and `.meta.json` sidecars are schema-valid, match the approved `dr1:` contract digest, and cover every required `(case, level)`. Because `.jsonl` files are plain JSON text, proving that those events were genuinely produced by executing the test suite on a specific commit requires running the test suite and verifier inside a trusted CI runner (or verifying signed release attestations via `drift gate --attest` in **Enterprise**).
+**Proof Coherence vs. Trusted Execution Provenance:** A standalone verifier (`drift_verify.py` or `drift gate`) proves that the supplied `.jsonl` events and `.meta.json` sidecars are schema-valid, match the approved `dr1:` contract digest, and cover every required `(case, level)`. Because `.jsonl` files and default `drift gate --attest` RFC 8785 bundles are plain JSON text (not cryptographically signed unless paired with optional OpenSSH `ssh-keygen -Y sign/verify` and a verifier-pinned `--trust-root`), proving that those events were genuinely produced by executing the test suite on a specific commit requires running the test suite and verifier inside a trusted CI runner or verifying an externally signed attestation against a verifier-pinned trust root.
 
 ---
 

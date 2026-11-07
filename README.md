@@ -148,7 +148,7 @@ drift explain DR-E601
 ### Bootstrap a New Project Area
 
 ```bash
-drift new --area my-service .
+drift init my-service .
 drift approve .drift/config.toml --by alice
 drift new .drift/contracts/health-check.toml --profile http-json@1 --intent "Report service readiness."
 ```
@@ -256,22 +256,27 @@ Exit codes are uniform across every command: **`0`** = OK / Gate Green, **`1`** 
 
 | Command | Tier | Purpose |
 |---|---|---|
-| `drift new <file> [--profile REF]` | **Free** | Scaffold a new contract, area (`--area NAME`), or `.drift/config.toml` |
-| `drift fmt <file\|dir>... [--check]` | **Free** | Format TOML contracts and configs into canonical order |
-| `drift check [<file\|dir>...]` | **Free** | Validate syntax, schema, profile vocabulary, scopes, and approval hashes |
+| `drift init <owner> [dir]` | **Free** | Initialize a new `.drift/config.toml` area configuration |
+| `drift new <file> [--profile REF]` | **Free** *(+Pro)* | Scaffold a new contract or profile (`--openapi`, `--from-recall` in **Pro**) |
+| `drift case add <file> [<id>] --ask TEXT` | **Free** *(+Pro)* | Append a draft case or question (`--from-intent` in **Pro**) |
+| `drift fmt <file\|dir>... [--check]` | **Free** | Format TOML contracts and configs into canonical order (`--sync-vocab`) |
+| `drift check [<file\|dir>...]` | **Free** | Validate syntax, schema, profile vocabulary, budgets, security, and approval hashes |
 | `drift diff <a> <b> [--json]` | **Free** | Compute structural and semantic differences between two contracts |
-| `drift review [<file\|dir>...] --brief` | **Free** *(+Pro)* | Render an owner review brief (`--base`, `--delta`, `--as md` in **Pro**) |
+| `drift review [<file\|dir>...] [--brief]` | **Free** *(+Pro)* | Render an owner review brief (`--base`, `--delta`, `--measurements`, `--as md` in **Pro**) |
 | `drift approve <file\|dir>... --by OWNER` | **Free** | Seal approved contract or config versions with `dr1:<hash>` |
-| `drift show [<file\|dir>...] --as json` | **Free** | Export resolved contract views for test bridges |
-| `drift prove [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Evaluate runtime proof states (`bound`, `verified`, `missing`, `red`) |
-| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, and proof events |
+| `drift show [<file\|dir>...] [--as json]` | **Free** *(+Pro)* | Export resolved contract views for test bridges (`--boundary` in **Pro**) |
+| `drift export views\|boundary --out PATH` | **Free / Pro** | Export resolved contract views (**Free**) or area boundary bundles (**Pro**) |
+| `drift prove [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Evaluate runtime proof states, `--measurements` budgets, and `*.security.json` receipts |
+| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, proof events, budgets, and security |
 | `drift status [<file\|dir>...]` | **Free** | Summarize area approval and proof state at a glance |
-| `drift explain <DR-Exxx>` | **Free** | Explain the cause and exact fix for any diagnostic code |
-| `drift select [<base>] --events DIR` | **Pro** | Select only tests affected by changed files or coupled resources |
-| `drift impact [<dir>] [--recall EXPR]` | **Pro** | Blast-radius analysis, dependency lanes, and `@recall` context capsules |
+| `drift explain <DR-Exxx>` | **Free** | Explain the cause and exact fix for any diagnostic code or reason token |
+| `drift select [<base>] --events DIR` | **Pro** | Select only tests and performance budgets affected by changed files or coupled resources |
+| `drift impact [<dir>]` | **Pro** | Blast-radius analysis, lexical search, and transitive dependency graph |
+| `drift plan [<dir>] [--pack GROUP\|ready]` | **Pro** | Wave DAG scheduling, `what_if` cuts, and parallel worker bundles |
+| `drift recall query\|sync [<dir>]` | **Pro** | Symbolic `@recall` context capsules and dual-ring maintenance |
 | `drift merge <base> <ours> <theirs>` | **Pro** | Three-way semantic merge for concurrent contract branches |
-| `drift mutants [<dir>] --out FILE` | **Enterprise** | Generate in-process contract mutants to verify `proof = "killed"` |
-| `drift sweep [<dir>] [--flow] [--simplify]` | **Pro / Ent** | Area ownership audit (`--root` in **Pro**; `--flow`, `--simplify`, `--promote` in **Ent**) |
+| `drift mutants [<dir>] --out FILE` | **Enterprise** | Generate in-process contract mutants (`--budget` with `[policy].priority_weights`) |
+| `drift sweep [check\|sync-scope\|simplify\|promote]` | **Pro / Ent** | Area ownership audit (`check`, `sync-scope`, `--root` in **Pro**; `--flow`, `simplify`, `promote` in **Ent**) |
 | `drift stats [<dir>] [--compare ...]` | **Enterprise** | Area footprint, risk radar, and multi-version evaluation ranking |
 
 ---
@@ -282,19 +287,20 @@ DRIFT follows a clean **3-tier progressive architecture**. Each higher edition i
 
 | Capability | **DRIFT Free** (`drift`) | **DRIFT Pro** (`drift-pro`) | **DRIFT Enterprise** (`drift-enterprise`) |
 |---|:---:|:---:|:---:|
-| TOML Contracts, Profiles & Decision Cards | ✅ | ✅ | ✅ |
+| TOML Contracts, Profiles, Decision Cards, `[budgets.<id>]` & `[requires].security` | ✅ | ✅ | ✅ |
 | Static Check (`check`), Canonical Formatter (`fmt`) & Diff (`diff`) | ✅ | ✅ | ✅ |
 | Owner Review (`review --brief`) & Cryptographic Seal (`approve`) | ✅ | ✅ | ✅ |
-| Resolved Views (`show`), Proof Engine (`prove`) & Release Gate (`gate`) | ✅ | ✅ | ✅ |
-| JUnit 5 Bridge, Maven Plugin, Node.js (`drift.mjs`) & Python (`drift.py`) Bridges | ✅ | ✅ | ✅ |
+| Resolved Views (`show`, `export views`), Proof Engine (`prove`) & Release Gate (`gate`) | ✅ | ✅ | ✅ |
+| JUnit 5, Maven Plugin, Node.js (`drift.mjs`), Python (`drift.py`), V (`drift_v.v`) & Rust (`drift_rs`) Bridges | ✅ | ✅ | ✅ |
+| Local Performance (`--measurements`) & Security Receipt (`*.security.json`) Verification | ✅ | ✅ | ✅ |
 | Editor JSON Schemas (`schemas/*.schema.json`) & Guardrail Hooks | ✅ | ✅ | ✅ |
-| Change-Based Test Selection (`drift select`) & Proof Reuse (`gate --base --changed`) | — | ✅ | ✅ |
-| Blast-Radius Analysis, Wave Scheduling & `@recall` Capsules (`drift impact`) | — | ✅ | ✅ |
-| 3-Way Semantic Contract Merge (`drift merge`) & Baseline Delta Reviews (`review --base`) | — | ✅ | ✅ |
-| OpenAPI & Recall Scaffolding (`new --openapi`, `new --from-recall`) | — | ✅ | ✅ |
-| Contract Mutation Testing (`drift mutants`, `proof = "killed"`) | — | — | ✅ |
+| Change-Based Test & Budget Selection (`drift select`) & Proof Reuse (`gate --base --changed`) | — | ✅ | ✅ |
+| Blast-Radius (`impact`), Wave Scheduling (`plan`) & `@recall` Capsules (`recall`) | — | ✅ | ✅ |
+| 3-Way Semantic Contract Merge (`drift merge`) & Baseline/Measurement Reviews (`review --base`, `--measurements`) | — | ✅ | ✅ |
+| OpenAPI, Boundary & Recall Scaffolding (`new --openapi`, `new --from-recall`, `export boundary`) | — | ✅ | ✅ |
+| Contract Mutation Testing (`drift mutants`, `proof = "killed"`, `[policy].priority_weights`) | — | — | ✅ |
 | Cryptographic Gate Attestations (`gate --attest`) & JUnit CI XML (`gate --as junit`) | — | — | ✅ |
-| Fleet Area Hygiene, Dataflow Audit & Vocabulary Promotion (`sweep --flow --simplify --promote`) | — | — | ✅ |
+| Fleet Dataflow, Budget & Security Boundary Audits (`sweep --flow --simplify --promote`) | — | — | ✅ |
 | Multi-Version Benchmarking & Radar Analytics (`drift stats`) | — | — | ✅ |
 
 See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, sibling binary delegation, and `DRIFT_EDITION` environment pinning.

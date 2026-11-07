@@ -11,14 +11,20 @@ from typing import Any
 
 try:
     from . import drift_upstream as _up
+    from . import drift_security as _sec
 except ImportError:
     try:
         import drift_upstream as _up  # type: ignore[no-redef]
+        import drift_security as _sec  # type: ignore[no-redef]
     except ImportError:
         _up_spec = importlib.util.spec_from_file_location('drift_upstream', Path(__file__).with_name('drift_upstream.py'))
         assert _up_spec is not None and _up_spec.loader is not None
         _up = importlib.util.module_from_spec(_up_spec)
         _up_spec.loader.exec_module(_up)
+        _sec_spec = importlib.util.spec_from_file_location('drift_security', Path(__file__).with_name('drift_security.py'))
+        assert _sec_spec is not None and _sec_spec.loader is not None
+        _sec = importlib.util.module_from_spec(_sec_spec)
+        _sec_spec.loader.exec_module(_sec)
 
 REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'sum_fields', 'contains', 'prefix', 'suffix'))
 NON_VERIFIED_OP_STATES = frozenset((
@@ -33,6 +39,7 @@ COMPARATIVE_BASELINE_RE = re.compile(r'^(?:invariato|unchanged|same|nessuna vari
 escape_pointer = _up._cli.escape_pointer
 unescape_pointer = _up._cli.unescape_pointer
 is_array_index = _up._cli.is_array_index
+is_finite_num = _up._cli.is_finite_num
 values_mismatch = _up._cli.values_mismatch
 read_pointer = _up.read_pointer
 clone_json = _up.clone_json
@@ -66,7 +73,7 @@ def run_simple_checks(contract_id: str, case_id: str, then_table: Mapping[str, A
         fn = checks[k]
         if callable(fn):
             invoke_verified_callback(fn, contract_id, case_id, k, exp)
-        elif values_mismatch(fn, exp):
+        elif not check_relational_leaf(contract_id, case_id, k, exp, fn, checks, {}, None) and values_mismatch(fn, exp):
             raise AssertionError(f'{contract_id}.{case_id}: expected then.{k}={exp!r}, got {fn!r}')
         seen.add(k)
 
@@ -197,7 +204,7 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
     if not isinstance(exp, Mapping) or not exp or not all(rk in REL_KEYS for rk in exp):
         return False
     pfx = f'{contract_id}.{case_id}'
-    is_num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    is_num = is_finite_num
     act_len = len(act) if isinstance(act, (str, list, tuple, Mapping)) else -1
 
     def peer_of(ref: Any) -> tuple[bool, Any]:
@@ -211,9 +218,9 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             return (True, payload[ref])
         return (False, None)
 
-    if 'min' in exp and (not is_num(act) or float(act) + 1e-9 < float(exp['min'])):
+    if 'min' in exp and (not is_num(act) or not is_num(exp['min']) or float(act) + 1e-9 < float(exp['min'])):
         raise AssertionError(f"{pfx}: exp then.{key}>={exp['min']}, got {act!r}")
-    if 'max' in exp and (not is_num(act) or float(act) - 1e-9 > float(exp['max'])):
+    if 'max' in exp and (not is_num(act) or not is_num(exp['max']) or float(act) - 1e-9 > float(exp['max'])):
         raise AssertionError(f"{pfx}: exp then.{key}<={exp['max']}, got {act!r}")
     if 'min_len' in exp and (act_len < 0 or act_len < int(exp['min_len'])):
         raise AssertionError(f"{pfx}: exp len(then.{key})>={exp['min_len']}, got {act_len}")
@@ -244,7 +251,7 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             if not found or not is_num(pv):
                 raise AssertionError(f'{pfx}: missing numeric peer "{ref}" for then.{key}.sum_fields')
             total += float(pv)
-        if not is_num(act) or abs(float(act) - total) > 1e-9:
+        if not is_num(act) or not is_num(total) or abs(float(act) - total) > 1e-9:
             raise AssertionError(f'{pfx}: exp then.{key} == sum({exp["sum_fields"]!r}) ({total}), got {act!r}')
     if 'contains' in exp:
         if not isinstance(act, (list, tuple)) or not isinstance(exp['contains'], (list, tuple)) or not all(any(not values_mismatch(x, req) for x in act) for req in exp['contains']):
@@ -308,6 +315,8 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
             raise AssertionError(f'{pfx}: exp {key}={exp}, got {act}')
 
     def assert_bound(key: str, op: str, exp: Any, act: float) -> None:
+        if not is_finite_num(exp) or not is_finite_num(act):
+            raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
         target = float(exp)
         failed = act > target if op == '<=' else act < target
         if failed:
@@ -465,64 +474,18 @@ def run_drift_cli(argv: list[str]) -> int:
     return _up._cli.run_drift_cli_runner(argv, resolve_selected_files)
 
 
+def sidecar_head(environ: Mapping[str, str], classes: Any, tests: Any) -> dict[str, Any]:
+    return _sec.sidecar_head(environ, classes, tests)
+
+
 def merge_prior_inventory(out: str, inv: dict[str, Any], is_shard: bool, root_dir: Path) -> None:
-    merged_cls: set[str] = inv.setdefault('merged_classes', set())
-    if is_shard and inv['classes'] and all(c in merged_cls for c in inv['classes']):
-        return
-    if not is_shard and inv.get('merged_single'):
-        return
-    self_meta = Path(out[:-6] + '.meta.json')
-    d = self_meta.parent
-    files = ([p for p in sorted(d.glob('*.meta.json'), reverse=True) if p != self_meta] if d.is_dir() else []) if is_shard else ([self_meta] if self_meta.is_file() else [])
-    if not files:
-        return
-    pending = {c for c in inv['classes'] if c not in merged_cls} if is_shard else None
-    cls_ok: dict[str, bool] = {}
-
-    def has_cls(cls: str) -> bool:
-        if cls not in cls_ok:
-            cls_ok[cls] = len(resolve_selected_files({'all': False, 'tests': [f'{cls}#_']}, root_dir)) > 0
-        return cls_ok[cls]
-
-    raw_in = inv.setdefault('inputs', {})
-    for mf in files:
-        if pending is not None and not pending:
-            break
-        try:
-            m = json.loads(mf.read_text(encoding='utf-8').lstrip('\ufeff'))
-            if not isinstance(m, Mapping):
-                continue
-            m_classes = [c for c in (m.get('classes') or ()) if isinstance(c, str)]
-            if pending is not None and not any(c in pending for c in m_classes):
-                continue
-            take_cls: set[str] = set()
-            for c in m_classes:
-                if (c in pending and has_cls(c)) if pending is not None else (c in inv['classes'] or has_cls(c)):
-                    inv['classes'].add(c)
-                    take_cls.add(c)
-                if pending is not None and c in pending:
-                    pending.remove(c)
-                    merged_cls.add(c)
-            for tid in m.get('tests') or ():
-                if isinstance(tid, str):
-                    cls = tid.partition('#')[0]
-                    if cls and cls in take_cls:
-                        inv['tests'].add(tid)
-            if isinstance(m.get('inputs'), Mapping):
-                for tid, fmap in m['inputs'].items():
-                    if tid in inv['tests'] and isinstance(fmap, Mapping):
-                        cur = raw_in.setdefault(tid, {})
-                        for fp, dig in fmap.items():
-                            if fp not in cur and isinstance(dig, str):
-                                cur[fp] = dig
-        except Exception:
-            pass
-    if pending is not None:
-        merged_cls.update(pending)
-    else:
-        inv['merged_single'] = True
+    _sec.merge_prior_inventory(out, inv, is_shard, root_dir, resolve_selected_files)
 
 
+def run_projection_checks(ctx: Any, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
+    _sec.run_projection_checks(ctx, case_id, payload, checks, invoke_verified_callback, check_projected_leaf, read_pointer)
 
 
+def run_adverse_checks(ctx: Any, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
+    _sec.run_adverse_checks(ctx, case_id, harness, checks, escape_pointer, read_pointer, values_mismatch, invoke_verified_callback, check_projected_leaf)
 

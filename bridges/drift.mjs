@@ -23,10 +23,12 @@ import {
   parseMutationSegments,
   resolveSelectedFiles,
   runDriftCli,
+  sidecarHead,
   throwAssertionError as aErr,
   throwError as err,
   writePointer,
 } from './drift_checks.mjs';
+import { runAdverseChecks, runProjectionChecks } from './drift_security.mjs';
 import {
   autoResolveView,
   clearUpstreamCache,
@@ -65,7 +67,6 @@ let exitHook = false;
 const ENV_KEYS = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain'];
 const stripBom = (t) => (t.charCodeAt(0) === 0xfeff ? t.slice(1) : t);
 const parseJson = (s) => JSON.parse(stripBom(s));
-const isValidSnapshot = (v) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(v);
 const readJson = (p) => parseJson(fs.readFileSync(p, 'utf8'));
 
 function normalizeBytes(buf) {
@@ -107,10 +108,10 @@ function resolveEnv() {
   const key = `${pk}\u0000${raw}`;
   if (envCache && envCache.key === key) return envCache.value;
   const base = {
-    adapter: 'drift.mjs@0.3.1',
+    adapter: 'drift.mjs@0.3.2',
     config: 'default',
     deps: 'none',
-    drift: '0.3.1',
+    drift: '0.3.2',
     policy: 'core@1',
     runner: 'node:test',
     toolchain: `node@${process.versions.node}`,
@@ -131,10 +132,7 @@ function flushInventory(out, inv) {
   if (!inv.dirty) return;
   inv.dirty = false;
   mergePriorInventory(out, inv, out === shardPath, fs, path, process.cwd());
-  const snapshot = (process.env.DRIFT_SNAPSHOT || '').trim();
-  if (snapshot && !isValidSnapshot(snapshot)) err(`invalid DRIFT_SNAPSHOT "${snapshot}"`);
-  const packRef = (process.env.DRIFT_PACK_REF || '').trim();
-  const touched = [...new Set((process.env.DRIFT_TOUCHED || '').split(/[\n,]+/).map((s) => s.trim()).filter(Boolean))].sort();
+  const head = sidecarHead(process.env, inv.classes, inv.tests);
   const inputs = {};
   for (const tid of [...inv.inputs.keys()].sort()) {
     const fm = inv.inputs.get(tid);
@@ -144,12 +142,7 @@ function flushInventory(out, inv) {
   }
   const env = resolveEnv();
   const sidecar = {
-    version: 1,
-    classes: [...inv.classes].sort(),
-    tests: [...inv.tests].sort(),
-    ...(snapshot ? { snapshot } : {}),
-    ...(packRef ? { pack_ref: packRef } : {}),
-    ...(touched.length ? { touched } : {}),
+    ...head,
     ...(Object.keys(inputs).length ? { inputs } : {}),
     ...(env ? { env } : {}),
   };
@@ -637,17 +630,11 @@ export class DriftContext {
   }
 
   async checkProjection(caseId, payload, checks = {}) {
-    this._tag(caseId);
-    const seen = this.reads.get(caseId);
-    const proj = this._projMap('then');
-    for (const [k, exp] of Object.entries(this._tt(caseId))) {
-      if (checks && typeof checks[k] === 'function') {
-        await invokeVerifiedCallback(checks[k], this.contractId, caseId, k, exp, payload);
-      } else {
-        checkProjectedLeaf(this.contractId, caseId, k, exp, payload, proj, this.mutationOverride, true, 'no check or projection for');
-      }
-      seen.add(k);
-    }
+    return runProjectionChecks(this, caseId, payload, checks);
+  }
+
+  async checkAdverse(caseId, harness, checks = {}) {
+    return runAdverseChecks(this, caseId, harness, checks);
   }
 
   async checkView(caseId, view, checks = {}) {

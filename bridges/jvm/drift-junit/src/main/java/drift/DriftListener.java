@@ -39,6 +39,9 @@ public final class DriftListener implements TestExecutionListener {
     public static final String SNAPSHOT = "drift.snapshot";
     public static final String ENV = "drift.env";
     public static final String PROOF_KEY = "drift.proofKey";
+    public static final String PACK_REF = "drift.packRef";
+    public static final String TOUCHED = "drift.touched";
+    public static final String EXECUTION_REF = "drift.executionRef";
     private static final Set<String> ENV_KEYS = Set.of(
             "adapter", "config", "deps", "drift", "policy", "runner", "toolchain");
 
@@ -446,12 +449,17 @@ public final class DriftListener implements TestExecutionListener {
         for (Map.Entry<String, Set<String>> entry : tests.entrySet()) {
             testNames.addAll(entry.getValue());
         }
-        StringBuilder json = new StringBuilder("{\"version\":1,");
+        String executionRef = ExecutionContext.executionRef();
+        StringBuilder json = new StringBuilder("{\"version\":").append(executionRef == null ? 1 : 2).append(',');
         Json.field(json, "classes", new ArrayList<>(classes)).append(',');
         Json.field(json, "tests", testNames);
+        if (executionRef != null) {
+            Json.field(json.append(','), "execution_ref", executionRef);
+        }
         if (snapshot != null && !snapshot.isBlank()) {
             Json.field(json.append(','), "snapshot", snapshot);
         }
+        ExecutionContext.appendTail(json, executionRef);
         if (!RECORDED_INPUTS.isEmpty()) {
             json.append(",\"inputs\":{");
             boolean firstTest = true;
@@ -526,10 +534,10 @@ public final class DriftListener implements TestExecutionListener {
             return null;
         }
         Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.3.1");
+        base.put("adapter", "drift-junit@0.3.2");
         base.put("config", "default");
         base.put("deps", "none");
-        base.put("drift", "0.3.1");
+        base.put("drift", "0.3.2");
         base.put("policy", "core@1");
         base.put("runner", "junit-platform");
         base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));
@@ -570,9 +578,10 @@ public final class DriftListener implements TestExecutionListener {
                 throw new IllegalStateException(sidecar + " is not a JSON object");
             }
             Map<String, Object> inventory = (Map<String, Object>) raw;
-            Set<String> allowed = Set.of("version", "classes", "tests", "snapshot", "inputs", "env");
-            if (!Long.valueOf(1).equals(inventory.get("version"))
-                    || !inventory.containsKey("classes") || !inventory.containsKey("tests")
+            Set<String> allowed = Set.of("version", "classes", "tests", "snapshot", "pack_ref",
+                    "touched", "self_stubbed", "inputs", "env", "execution_ref");
+            ExecutionContext.checkHead(sidecar, inventory);
+            if (!inventory.containsKey("classes") || !inventory.containsKey("tests")
                     || !allowed.containsAll(inventory.keySet())
                     || !(inventory.get("classes") instanceof List<?> classList)
                     || !(inventory.get("tests") instanceof List<?> testList)) {

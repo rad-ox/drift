@@ -23,7 +23,7 @@ final class DriftViewChecks {
     private static final Set<String> RELATIONAL_KEYS = Set.of(
             "min", "max", "min_len", "max_len", "non_empty",
             "le_field", "ge_field", "eq_field", "in",
-            "sum_fields", "contains", "prefix", "suffix");
+            "sum_fields", "contains", "prefix", "suffix", "allowed_keys");
 
     private DriftViewChecks() {}
 
@@ -72,15 +72,31 @@ final class DriftViewChecks {
             }
         }
         String pfx = c.contract() + "." + c.id();
+        if (exp.containsKey("allowed_keys")) {
+            if (!(actual instanceof Map<?, ?> actMap) || !(exp.get("allowed_keys") instanceof List<?> allowedList)) {
+                throw new AssertionError(pfx + ": expected object for then." + key + ".allowed_keys, got " + actual);
+            }
+            Set<String> allowedSet = new HashSet<>();
+            for (Object item : allowedList) {
+                allowedSet.add(String.valueOf(item));
+            }
+            for (Object actKey : actMap.keySet()) {
+                if (!allowedSet.contains(String.valueOf(actKey))) {
+                    throw new AssertionError(pfx + ": unexpected key \"" + actKey
+                            + "\" outside allowed_keys " + allowedList);
+                }
+            }
+            return true;
+        }
         if (exp.containsKey("min")) {
-            if (!(actual instanceof Number actN) || !(exp.get("min") instanceof Number minN)
-                    || actN.doubleValue() + 1e-9 < minN.doubleValue()) {
+            if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("min"))
+                    || ((Number) actual).doubleValue() + 1e-9 < ((Number) exp.get("min")).doubleValue()) {
                 throw new AssertionError(pfx + ": expected then." + key + ">=" + exp.get("min") + ", got " + actual);
             }
         }
         if (exp.containsKey("max")) {
-            if (!(actual instanceof Number actN) || !(exp.get("max") instanceof Number maxN)
-                    || actN.doubleValue() - 1e-9 > maxN.doubleValue()) {
+            if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("max"))
+                    || ((Number) actual).doubleValue() - 1e-9 > ((Number) exp.get("max")).doubleValue()) {
                 throw new AssertionError(pfx + ": expected then." + key + "<=" + exp.get("max") + ", got " + actual);
             }
         }
@@ -118,10 +134,10 @@ final class DriftViewChecks {
             boolean ok;
             if ("==".equals(op)) {
                 ok = Json.valuesEqual(actual, peer.value());
-            } else if (actual instanceof Number aN && peer.value() instanceof Number pN) {
-                ok = "<=".equals(op)
-                        ? aN.doubleValue() - 1e-9 <= pN.doubleValue()
-                        : aN.doubleValue() + 1e-9 >= pN.doubleValue();
+            } else if (Json.isFiniteNumber(actual) && Json.isFiniteNumber(peer.value())) {
+                double aVal = ((Number) actual).doubleValue();
+                double pVal = ((Number) peer.value()).doubleValue();
+                ok = "<=".equals(op) ? aVal - 1e-9 <= pVal : aVal + 1e-9 >= pVal;
             } else {
                 ok = false;
             }
@@ -143,12 +159,13 @@ final class DriftViewChecks {
             double sum = 0.0;
             for (Object ref : sumRefs) {
                 Json.PointerLookup pr = resolvePeer(payload, proj, ref);
-                if (!pr.found() || !(pr.value() instanceof Number n)) {
+                if (!pr.found() || !Json.isFiniteNumber(pr.value())) {
                     throw new AssertionError(pfx + ": missing numeric peer \"" + ref + "\" for then." + key + ".sum_fields");
                 }
-                sum += n.doubleValue();
+                sum += ((Number) pr.value()).doubleValue();
             }
-            if (!(actual instanceof Number actN) || Math.abs(actN.doubleValue() - sum) > 1e-9) {
+            if (!Json.isFiniteNumber(actual) || !Double.isFinite(sum)
+                    || Math.abs(((Number) actual).doubleValue() - sum) > 1e-9) {
                 throw new AssertionError(pfx + ": expected then." + key + " == sum(" + sumRefs + ") (" + sum + "), got " + actual);
             }
         }
@@ -206,6 +223,11 @@ final class DriftViewChecks {
                 throw new AssertionError(pfx + ": expected then." + key + "=" + expected + ", got " + actual);
             }
             return;
+        }
+        if (expected instanceof Map<?, ?> expMap && expMap.containsKey("allowed_keys")) {
+            if (checkRelationalConstraint(c, key, expected, payload, payload, thenProj)) {
+                return;
+            }
         }
         throw new AssertionError(pfx + ": " + missMsg + " then." + key);
     }

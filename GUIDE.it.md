@@ -58,7 +58,7 @@ rilascio.
 Crea una nuova area `.drift` nella radice del progetto:
 
 ```bash
-drift new --area catalog-service .
+drift init catalog-service .
 drift approve .drift/config.toml --by alice
 ```
 
@@ -126,6 +126,8 @@ drift review .drift/contracts/item-get.toml --brief   # Pacchetto di revisione p
 drift approve .drift/contracts/item-get.toml --by alice
 ```
 
+Per un handoff vincolato alla versione, esegui `drift review <file|dir> --detail guided --as json` e conserva il JSON nella sessione dell'host. Approvalo con `drift approve --reviewed FILE --expect-review REF --by OWNER`, dove `REF` è esattamente il valore `review_snapshot.review_ref` mostrato nel JSON. Lo snapshot vincola area, selettori, target, policy e contesto decisionale; non è una firma e non prova chi ha acconsentito. Il comando `approve` legacy resta disponibile per approvazioni esplicite senza protezione dello snapshot.
+
 Se `drift check` segnala un errore, esegui `drift explain <codice>` (ad esempio `drift explain DR-E601`) per vedere causa e correzione.
 
 ---
@@ -147,7 +149,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.3.1</version>
+    <version>0.3.2</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -157,7 +159,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.3.1</version>
+      <version>0.3.2</version>
       <executions>
         <execution>
           <goals>
@@ -253,8 +255,9 @@ drift gate .drift/contracts --events .drift/events --base HEAD --changed src/ite
 
 # Analizza il blast radius, la mappa di dominio (@tree) o compila capsule @recall
 drift impact .drift --writes items --transitive
-drift impact .drift --recall "@tree"
-drift impact .drift --recall "item lookup #getItem /800t"
+drift recall query "@tree" .drift
+drift recall query "item lookup #getItem /800t" .drift
+drift plan .drift/contracts --pack ready
 ```
 
 ---

@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -59,7 +58,6 @@ _MUT_VAR: contextvars.ContextVar[tuple[dict[str, Any], ...]] = contextvars.Conte
 _IO_LOCK = threading.RLock()
 _exit_hook = False
 
-_SNAP_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$')
 _BAD_CLS = frozenset(('/', '\\', '#', '[', ']'))
 _BAD_MTH = frozenset(('#', '[', ']'))
 _ENV_KEYS = ('adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain')
@@ -101,7 +99,7 @@ def _resolve_env() -> dict[str, str] | None:
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key:
         return _env_cache[1]
-    base = {'adapter': 'drift.py@0.3.1', 'config': 'default', 'deps': 'none', 'drift': '0.3.1', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.3.2', 'config': 'default', 'deps': 'none', 'drift': '0.3.2', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -120,18 +118,7 @@ def _flush_inventory(out: str, inv: dict[str, Any]) -> None:
     inv['dirty'] = False
     inv['flushed'] = True
     _checks.merge_prior_inventory(out, inv, _shard_path is not None and out == str(_shard_path), Path.cwd())
-    snap = os.environ.get('DRIFT_SNAPSHOT', '').strip()
-    if snap and _SNAP_RE.match(snap) is None:
-        raise ValueError(f'invalid DRIFT_SNAPSHOT "{snap}"')
-    sidecar: dict[str, Any] = {'version': 1, 'classes': sorted(inv['classes']), 'tests': sorted(inv['tests'])}
-    if snap:
-        sidecar['snapshot'] = snap
-    pack_ref = os.environ.get('DRIFT_PACK_REF', '').strip()
-    if pack_ref:
-        sidecar['pack_ref'] = pack_ref
-    touched = sorted({p.strip() for p in re.split(r'[\n,]+', os.environ.get('DRIFT_TOUCHED', '')) if p.strip()})
-    if touched:
-        sidecar['touched'] = touched
+    sidecar = _checks.sidecar_head(os.environ, inv['classes'], inv['tests'])
     raw_in = inv.get('inputs') or {}
     if raw_in:
         sidecar['inputs'] = {t: {fp: raw_in[t][fp] for fp in sorted(raw_in[t])} for t in sorted(raw_in) if raw_in[t]}
@@ -533,15 +520,10 @@ class DriftContext:
         return _checks.build_projected_output(self.view, case_id, base, self._then_table(case_id))
 
     def check_projection(self, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
-        self._require_tagged(case_id)
-        seen = self.reads[case_id]
-        proj = self._proj_map('then')
-        for k, exp in self._then_table(case_id).items():
-            if isinstance(checks, Mapping) and callable(checks.get(k)):
-                _checks.invoke_verified_callback(checks[k], self.contract_id, case_id, k, exp)
-            else:
-                _checks.check_projected_leaf(self.contract_id, case_id, k, exp, payload, proj, self.mutation_override, True, 'no check or projection for')
-            seen.add(k)
+        _checks.run_projection_checks(self, case_id, payload, checks)
+
+    def check_adverse(self, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
+        _checks.run_adverse_checks(self, case_id, harness, checks)
 
     def check_view(self, case_id: str, view: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         self._require_tagged(case_id)

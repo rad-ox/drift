@@ -38,6 +38,110 @@
       ],
       "type": "object"
     },
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "enum": [
+            "p99",
+            "rate",
+            "max_observed"
+          ]
+        },
+        "baseline_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        },
+        "case": {
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "enforce": {
+          "enum": [
+            "execution",
+            "release"
+          ]
+        },
+        "environment_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        },
+        "evidence": {
+          "enum": [
+            "statistical",
+            "observed"
+          ]
+        },
+        "limit": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "max_regression": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "metric": {
+          "enum": [
+            "request_latency",
+            "successful_throughput",
+            "process_rss",
+            "frame_time",
+            "cold_start",
+            "artifact_bytes",
+            "work_units"
+          ]
+        },
+        "min_confidence": {
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "le",
+            "ge"
+          ]
+        },
+        "protocol_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        },
+        "unit": {
+          "enum": [
+            "ns",
+            "request/s",
+            "byte",
+            "count"
+          ]
+        },
+        "warn_ratio": {
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "workload_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case",
+        "metric",
+        "unit",
+        "aggregation",
+        "op",
+        "limit",
+        "evidence",
+        "enforce",
+        "workload_ref",
+        "protocol_ref",
+        "environment_ref"
+      ],
+      "type": "object"
+    },
     "case": {
       "additionalProperties": false,
       "dependentRequired": {
@@ -493,6 +597,15 @@
   "properties": {
     "approval": {
       "$ref": "#/$defs/approval"
+    },
+    "budgets": {
+      "additionalProperties": {
+        "$ref": "#/$defs/budget"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
     },
     "cases": {
       "additionalProperties": {

@@ -2,6 +2,48 @@
 
 User-visible changes and capabilities by release.
 
+## 0.3.2
+
+- Release `0.3.2`.
+- Verify optional OpenSSH signatures (`--ssh-sign`, `--trust-root`, `--verify-time`) with `drift-approval@v1` and `drift-attestation@v1` namespaces.
+- Emit deterministic, input-reconstructable `executor_ranking` in `plan` and `review --detail guided` with `history_unknown` caution and zero owner queues.
+- Add `--asyncapi` and `--epoch-manifest` directional multi-epoch compatibility and duplicate-delivery effect checks in `new` and `sweep check --flow`.
+- Verify `#<symbol>` transitions between `base_snapshot` and `result_snapshot` under `--execution-context`, `companion_edits`, and `shard.scope_unverifiable` (D265; DR-E003, DR-E102, DR-E202).
+- Reconcile `.drift-work/recall.d` and `ops.d` per-worker shards transparently with idempotent rereads, `shard.truncated_tail`, and `recall_conflicts`.
+- Reopen POSIX and Windows Stop diagnostics across host turn IDs and prompt-start events while keeping repeats deduplicated within a turn.
+- Emit deterministic `next_command` in `drift.guided/1` JSON, Markdown and text views for check, guarded approve and gate transitions.
+- Add `handoffs` to `plan --detail guided` and resolve target-matched or `#<selector>` packs directly in `gate --execution-context`.
+- Stop hooks name the first finding and one next step, tell findings from tooling failures, disclose unknown task relevance and do not repeat an unchanged block.
+- Skills add a native-client flow: negotiated capabilities, consent tied to the reviewed candidate, full text fallback, current approval state trusted on resume.
+- Add a shared `drift.guided/1` view to status, review and gate with identified prior-report deltas, per-case proof state and explicit activity/claim limits.
+- Bind scheduled execution scope to a complete `drift.execution-context/1` reference and negotiate v1/v2 proof sidecars without changing legacy pack or contract digests.
+- Bind guided JSON review to its exact area, selectors, targets, policy and context; reject stale `approve --reviewed` handoffs.
+- Show guided decisions in JSON, Markdown and text with declared impacts; surface `policy.max_open` before deadlines without inferring authority.
+- Stage approvals safely, make same-owner retries idempotent, and name partial batch outcomes.
+- Add compile-once Rust test bridge (`integrations/rust`) with fail-closed `DRIFT_RESOLVED`, per-process shards, `--list` discovery, and in-process/subprocess mutants.
+- Index Rust `mod`/`use crate::` graphs with opaque-crate widening, `libloading`/`dlopen` guards, intra-crate cycle exemption, and `#<Type>.<method>` `impl` symbols.
+- Add `allowed_keys` to relational `then` tables and verify raw returned object keys before projection across JS, Python, V and JVM bridges.
+- Add contextual `classification`, `encoding_context`, `principal_tenant` and `resource_tenant` roles and 3-state `sweep --flow` checks (`issues` vs `flow_risks`, D250; DR-E003).
+- Detect `security-coarsened` envelope diffs in `review --base`, add `policy.priority_weights` for `mutants --budget`, and add `checkAdverse` probing across bridges (D249; DR-E003, DR-E102).
+- Validate `.security.json` receipts against `scope.code`, snapshots and canonical reuse tuples in `prove`, `gate` and `drift_verify.py` (D248; DR-E003, DR-E104, DR-E105, DR-E202).
+- Resolve V `#<Type>.<method>` and Pug/Sass/CSS `#<symbol>` anchors and index Pug `include`/`extends` and Sass/CSS `@use`/`@forward`/`@import` graphs.
+- Add `frame_time`, `cold_start`, `artifact_bytes` and `work_units` to `[budgets.<id>]` and `--measurements` for UI and compiler performance gates (D246; DR-E003, DR-E102, DR-E104, DR-E202).
+- Add zero-dependency native V test bridge (`integrations/v/drift_v`) with `verified` projections, relational bounds, stubs, golden fixtures, and in-process mutants.
+- Index V module imports and `#flag`/`#include`/`C.*` FFI boundaries in `sweep`, detect `dl.open` dynamic loads, and resolve V `_test` IDs in `select --files`.
+- Add policy-gated `performance_reuse = "execution"` for unchanged causal cones, marking reused receipts `provenance = "reused"` and `at_risk` while blocking release.
+- Distinguish demonstrated `resource.budget_conflict` from advisory `budget_risks` (`budget.slack_inversion`, `budget.unverifiable`) in `sweep --flow`.
+- Add configurable `warn_ratio` leading indicators (`performance.near_limit`, `performance.regression_drift`), `at_risk` grading and preventive `revisit_triggered` (D241; DR-E003, DR-E102).
+- Add `performance_verification` (`verified`, `at_risk`, `unverifiable`) and `provenance` (`measured`, `reused`, `pending`) to `assurance_card` and `gate --attest` bundles.
+- Select affected performance budgets in `drift select`, widen to all area budgets on artifact/build fallback, and add the `bench.jsonl` performance adapter.
+- Evaluate `--measurements` performance bundles, independent subject context, statistical/observed regressions and phase gates in `prove`, `gate` and `drift_verify.py`.
+- Add `[budgets.<id>]` schema, `evidence_protocols` digest discriminant, `review --base` budget diffs and fail-closed `prove`/`gate` checks (D237; DR-E003, DR-E102, DR-E104, DR-E202, DR-E205).
+- Offer an optional session-start notice for newer stable GitHub releases, with an installer prompt, bounded offline-safe checks and no automatic updates.
+- Verify mutation evidence for `proof = "killed"` in `drift_verify.py`, block inherited `deferred` cases at release, and reject `NaN`/`Infinity` in bridges.
+- Extract canonical `init`, `case add`, `export`, `plan`, `recall`, and `sweep` subcommands with `OperationSpec` capability gating and `--detail summary`.
+- Guard shared utility folders in `sweep --sync-scope`, add `--check` previews and `--staged` Git-index mode, and support `sweep --base` / `--delta`.
+- Support multiple contract files in `review --base`, reject extra paths after `--changed`, explain reason tokens in `drift explain`, and add `widening_details`.
+- Surface `select` widening reasons (`widened`, `reasons`) and fail fast on invalid `select` invocations in JS and Python bridge runners.
+
 ## 0.3.1
 
 - Release `0.3.1`; support Scala/MUnit closure tests and `Drift.Case.verify` in `drift-junit`, Scala source/import indexing, and OpenAPI 3.2 `QUERY`.

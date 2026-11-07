@@ -570,28 +570,26 @@ public final class Drift {
         }
 
         /** Synthesizes an output map over {@code base} via {@code projections.then} RFC 6901 JSON Pointers (D104). */
-        @SuppressWarnings("unchecked")
         public Map<String, Object> buildOutput(Map<String, Object> base) {
-            Drift.recordSelfStub(contract);
-            Map<String, String> whenProj = projectionMap("when");
-            Map<String, String> thenProj = projectionMap("then");
-            Map<String, Object> peerIdx = DriftStubs.buildPeerIndex(when, then, whenProj, thenProj);
-            Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
-            for (Map.Entry<String, Object> e : then.entrySet()) {
-                String key = e.getKey();
-                Object w = DriftStubs.witnessVariants(e.getValue(), out, peerIdx, whenProj, thenProj).get(0);
-                if (thenProj.containsKey(key)) {
-                    out = Json.writeJsonPointer(out, thenProj.get(key), w);
-                } else if (out instanceof Map<?, ?> m) {
-                    ((Map<String, Object>) m).put(key, w);
-                }
-            }
-            return out instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+            return DriftVerify.buildOutput(this, base);
         }
 
         /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} (D86). */
         public void checkProjection(Object payload) {
             checkProjection(payload, Map.of());
+        }
+
+        /** Verifies every {@code then} predicate across harness-supplied authenticated adverse variants (D249). */
+        public <V> void checkAdverse(List<V> variants, java.util.function.Function<V, Object> execute) {
+            DriftVerify.checkAdverse(this, variants, execute, Map.of());
+        }
+
+        /** Verifies every {@code then} predicate across harness-supplied authenticated adverse variants with custom checks (D249). */
+        public <V> void checkAdverse(
+                List<V> variants,
+                java.util.function.Function<V, Object> execute,
+                Map<String, ? extends Consumer<Object>> checks) {
+            DriftVerify.checkAdverse(this, variants, execute, checks);
         }
 
         /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} and custom checks (D86). */

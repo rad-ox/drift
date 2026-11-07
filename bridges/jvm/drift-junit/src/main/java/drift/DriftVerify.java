@@ -372,4 +372,50 @@ final class DriftVerify {
         }
         return out;
     }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> buildOutput(Drift.Case c, Map<String, Object> base) {
+        Drift.recordSelfStub(c.contract());
+        Map<String, String> whenProj = c.projectionMap("when");
+        Map<String, String> thenProj = c.projectionMap("then");
+        Map<String, Object> peerIdx = DriftStubs.buildPeerIndex(c.when(), c.thenRaw(), whenProj, thenProj);
+        Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
+        for (Map.Entry<String, Object> e : c.thenRaw().entrySet()) {
+            String key = e.getKey();
+            Object w = DriftStubs.witnessVariants(e.getValue(), out, peerIdx, whenProj, thenProj).get(0);
+            if (thenProj.containsKey(key)) {
+                out = Json.writeJsonPointer(out, thenProj.get(key), w);
+            } else if (out instanceof Map<?, ?> m) {
+                ((Map<String, Object>) m).put(key, w);
+            }
+        }
+        return out instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+    }
+
+    static <V> void checkAdverse(
+            Drift.Case c,
+            List<V> variants,
+            java.util.function.Function<V, Object> execute,
+            Map<String, ? extends java.util.function.Consumer<Object>> checks) {
+        if (variants == null || variants.isEmpty() || execute == null) {
+            throw new IllegalArgumentException(
+                    "checkAdverse for " + c.contract() + "." + c.id()
+                            + " requires non-empty variants and an execute callback");
+        }
+        Map<String, String> whenProj = c.projectionMap("when");
+        for (V variant : variants) {
+            if (variant instanceof Map<?, ?>) {
+                for (Map.Entry<String, Object> we : c.when().entrySet()) {
+                    String wk = we.getKey();
+                    String ptr = whenProj.getOrDefault(wk, "/" + wk.replace("~", "~0").replace("/", "~1"));
+                    Json.PointerLookup rd = Json.readJsonPointer(variant, ptr);
+                    if (rd.found() && !Json.valuesEqual(rd.value(), we.getValue())) {
+                        throw new AssertionError(c.contract() + "." + c.id() + ".when." + wk
+                                + " fixture mismatch: expected " + we.getValue() + ", got " + rd.value());
+                    }
+                }
+            }
+            c.checkProjection(execute.apply(variant), checks);
+        }
+    }
 }

@@ -49,26 +49,26 @@ function peerOrderRelation(ckA, ckB, thenMap, wp, tp) {
 export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
   if (!isObj(rawThen)) return {};
   if (!Object.values(rawThen).some((v) => isRelationalMap(v) && ((Array.isArray(v.sum_fields) && v.sum_fields.length >= 2) || 'le_field' in v || 'ge_field' in v || 'eq_field' in v))) return rawThen;
-  const out = cloneJson(rawThen);
+  const out = cloneJson(rawThen), maxU = (a, b) => (a === undefined ? b : Math.max(a, b)), minU = (a, b) => (a === undefined ? b : Math.min(a, b));
+  const numB = (v, k) => (isRelationalMap(v) && typeof v[k] === 'number' ? v[k] : undefined);
+  const countMap = (arr) => { const m = new Map(); for (const s of arr) { const c = canonicalStubRef(s, wp, tp); if (c) m.set(c, (m.get(c) || 0) + 1); } return m; };
   const lookupBounds = (ref) => {
     const ck = canonicalStubRef(ref, wp, tp), bare = isStr(ref) ? ref.trim().replace(/^\/+/u, '') : '';
     for (const [m, pm] of [[out, tp], [whenMap || {}, wp]]) {
       for (const [k, v] of Object.entries(m)) {
         if (k === ref || k === bare || canonicalStubRef(k, wp, pm) === ck) {
           if (typeof v === 'number') return { lo: v, hi: v };
-          if (isRelationalMap(v)) return { lo: typeof v.min === 'number' ? v.min : undefined, hi: typeof v.max === 'number' ? v.max : undefined };
+          if (isRelationalMap(v)) return { lo: numB(v, 'min'), hi: numB(v, 'max') };
         }
       }
     }
     return { lo: undefined, hi: undefined };
   };
-  const maxU = (a, b) => (a === undefined ? b : Math.max(a, b));
-  const minU = (a, b) => (a === undefined ? b : Math.min(a, b));
   for (let pass = 0; pass < 3; pass++) {
     for (const [tk, tv] of Object.entries(out)) {
       if (!isRelationalMap(tv)) continue;
       const ckTarget = canonicalStubRef(tk, wp, tp);
-      let loK = typeof tv.min === 'number' ? tv.min : undefined, hiK = typeof tv.max === 'number' ? tv.max : undefined;
+      let loK = numB(tv, 'min'), hiK = numB(tv, 'max');
       for (const pk of ['eq_field', 'le_field', 'ge_field']) {
         if (!(pk in tv)) continue;
         const pb = lookupBounds(tv[pk]);
@@ -77,7 +77,7 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
       }
       for (const [pk, pv] of Object.entries(out)) {
         if (pk === tk || !isRelationalMap(pv)) continue;
-        const pLo = typeof pv.min === 'number' ? pv.min : undefined, pHi = typeof pv.max === 'number' ? pv.max : undefined;
+        const pLo = numB(pv, 'min'), pHi = numB(pv, 'max');
         if ('eq_field' in pv && canonicalStubRef(pv.eq_field, wp, tp) === ckTarget) {
           if (pLo !== undefined) loK = maxU(loK, pLo);
           if (pHi !== undefined) hiK = minU(hiK, pHi);
@@ -87,7 +87,7 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
       }
       for (const [sk, sv] of Object.entries(out)) {
         if (sk === tk || !isRelationalMap(sv) || !Array.isArray(sv.sum_fields) || sv.sum_fields.length < 2) continue;
-        const sLo = typeof sv.min === 'number' ? sv.min : undefined, sHi = typeof sv.max === 'number' ? sv.max : undefined;
+        const sLo = numB(sv, 'min'), sHi = numB(sv, 'max');
         if (sLo === undefined && sHi === undefined) continue;
         const mult = new Map(), rep = new Map();
         for (const sf of sv.sum_fields) {
@@ -118,7 +118,7 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
         }
         for (const [bk, bv] of Object.entries(out)) {
           if (bk === sk || bk === tk || !isRelationalMap(bv) || !Array.isArray(bv.sum_fields) || bv.sum_fields.length < 2 || bv.sum_fields.length >= sv.sum_fields.length) continue;
-          const bLo = typeof bv.min === 'number' ? bv.min : undefined, bHi = typeof bv.max === 'number' ? bv.max : undefined;
+          const bLo = numB(bv, 'min'), bHi = numB(bv, 'max');
           if (bLo === undefined && bHi === undefined) continue;
           const multB = new Map();
           let okSub = true;
@@ -143,20 +143,18 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
         if (sHi !== undefined && allRemLo) hiK = minU(hiK, roundTightenedMax(loK, hiK, (sHi - remLo) / mk));
         for (const [bk, bv] of Object.entries(out)) {
           if (bk === sk || bk === tk || !isRelationalMap(bv) || !Array.isArray(bv.sum_fields) || bv.sum_fields.length < 2) continue;
-          const bLo = typeof bv.min === 'number' ? bv.min : undefined, bHi = typeof bv.max === 'number' ? bv.max : undefined;
+          const bLo = numB(bv, 'min'), bHi = numB(bv, 'max');
           if (bLo === undefined && bHi === undefined) continue;
-          const multB = new Map();
-          for (const sf of bv.sum_fields) { const ck = canonicalStubRef(sf, wp, tp); if (ck) multB.set(ck, (multB.get(ck) || 0) + 1); }
+          const multB = countMap(bv.sum_fields);
           if (multB.has(ckTarget) || mult.size !== 2 || multB.size !== 2) continue;
           const yCk = [...mult.keys()].find((x) => x !== ckTarget);
           if (!yCk || mult.get(yCk) !== 1 || multB.get(yCk) !== 1) continue;
           const zCk = [...multB.keys()].find((x) => x !== yCk);
           for (const [ck3, cv3] of Object.entries(out)) {
             if (ck3 === sk || ck3 === bk || ck3 === tk || !isRelationalMap(cv3) || !Array.isArray(cv3.sum_fields) || cv3.sum_fields.length !== sv.sum_fields.length) continue;
-            const multC = new Map();
-            for (const sf of cv3.sum_fields) { const ck = canonicalStubRef(sf, wp, tp); if (ck) multC.set(ck, (multC.get(ck) || 0) + 1); }
+            const multC = countMap(cv3.sum_fields);
             if (multC.size === 2 && multC.get(ckTarget) === mk && multC.get(zCk) === 1) {
-              const cLo = typeof cv3.min === 'number' ? cv3.min : undefined, cHi = typeof cv3.max === 'number' ? cv3.max : undefined;
+              const cLo = numB(cv3, 'min'), cHi = numB(cv3, 'max');
               if (sLo !== undefined && cLo !== undefined && bHi !== undefined) loK = maxU(loK, roundTightenedMin(loK, hiK, (sLo + cLo - bHi) / (2 * mk)));
               if (sHi !== undefined && cHi !== undefined && bLo !== undefined) hiK = minU(hiK, roundTightenedMax(loK, hiK, (sHi + cHi - bLo) / (2 * mk)));
             }
@@ -190,23 +188,16 @@ export function resolveSelectedFiles(raw, rootDir, fs, path) {
     if (miss.has(mk)) return '';
     if (!rem.includes('/')) {
       if (entryType(cur, rem) === 1) return rel ? `${rel}/${rem}` : rem;
-    } else {
-      const direct = path.join(cur, rem);
-      if (fs.existsSync(direct) && fs.statSync(direct).isFile()) return rel ? `${rel}/${rem}` : rem;
-    }
+    } else if (fs.existsSync(path.join(cur, rem)) && fs.statSync(path.join(cur, rem)).isFile()) return rel ? `${rel}/${rem}` : rem;
     for (let pos = 0, dot = rem.indexOf('.', 0); dot > 0; pos = dot + 1, dot = rem.indexOf('.', pos)) {
-      const seg = rem.slice(0, dot);
-      if (entryType(cur, seg) === 2) {
-        const res = findRel(path.join(cur, seg), rel ? `${rel}/${seg}` : seg, rem.slice(dot + 1));
-        if (res) return res;
-      }
+      const seg = rem.slice(0, dot), res = entryType(cur, seg) === 2 ? findRel(path.join(cur, seg), rel ? `${rel}/${seg}` : seg, rem.slice(dot + 1)) : '';
+      if (res) return res;
     }
     miss.add(mk);
     return '';
   };
   for (const tid of Array.isArray(raw.tests) ? raw.tests : []) {
-    const cls = isStr(tid) ? tid.split('#', 1)[0].split('\\').join('/') : '';
-    const hit = cls ? findRel(rootDir, '', cls) : '';
+    const cls = isStr(tid) ? tid.split('#', 1)[0].split('\\').join('/') : '', hit = cls ? findRel(rootDir, '', cls) : '';
     if (hit) out.add(hit);
   }
   return [...out].sort();
@@ -216,12 +207,9 @@ export function mergePriorInventory(out, inv, isShard, fs, path, rootDir) {
   if (!inv.mergedClasses) inv.mergedClasses = new Set();
   if ((isShard && inv.classes.size > 0 && [...inv.classes].every((c) => inv.mergedClasses.has(c))) || (!isShard && inv.mergedSingle)) return;
   const selfMeta = `${out.slice(0, -6)}.meta.json`, dir = path.dirname(out);
-  const files = isShard
-    ? (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.meta.json')).sort().reverse().map((f) => path.join(dir, f)).filter((p) => p !== selfMeta) : [])
-    : (fs.existsSync(selfMeta) ? [selfMeta] : []);
+  const files = isShard ? (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.meta.json')).sort().reverse().map((f) => path.join(dir, f)).filter((p) => p !== selfMeta) : []) : (fs.existsSync(selfMeta) ? [selfMeta] : []);
   if (!files.length) return;
-  const pending = isShard ? new Set([...inv.classes].filter((c) => !inv.mergedClasses.has(c))) : null;
-  const clsOk = new Map();
+  const pending = isShard ? new Set([...inv.classes].filter((c) => !inv.mergedClasses.has(c))) : null, clsOk = new Map();
   const hasCls = (cls) => {
     if (!clsOk.has(cls)) clsOk.set(cls, resolveSelectedFiles({ all: false, tests: [`${cls}#_`] }, rootDir, fs, path).length > 0);
     return clsOk.get(cls);
@@ -242,13 +230,11 @@ export function mergePriorInventory(out, inv, isShard, fs, path, rootDir) {
         const cls = isStr(tid) ? tid.split('#', 1)[0] : '';
         if (cls && takeCls.has(cls)) inv.tests.add(tid);
       }
-      if (isObj(m.inputs)) {
-        for (const [tid, fmap] of Object.entries(m.inputs)) {
-          if (!inv.tests.has(tid) || !isObj(fmap)) continue;
-          if (!inv.inputs.has(tid)) inv.inputs.set(tid, new Map());
-          const cur = inv.inputs.get(tid);
-          for (const [fp, dig] of Object.entries(fmap)) if (!cur.has(fp) && isStr(dig)) cur.set(fp, dig);
-        }
+      if (isObj(m.inputs)) for (const [tid, fmap] of Object.entries(m.inputs)) {
+        if (!inv.tests.has(tid) || !isObj(fmap)) continue;
+        if (!inv.inputs.has(tid)) inv.inputs.set(tid, new Map());
+        const cur = inv.inputs.get(tid);
+        for (const [fp, dig] of Object.entries(fmap)) if (!cur.has(fp) && isStr(dig)) cur.set(fp, dig);
       }
     } catch {}
   }
@@ -258,8 +244,7 @@ export function mergePriorInventory(out, inv, isShard, fs, path, rootDir) {
 
 function captureWorktreeSnapshot(area, execFileSync, fs, path, process) {
   try {
-    const st = execFileSync('git', ['-C', area, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    if (!st) {
+    if (!execFileSync('git', ['-C', area, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) {
       const tr = execFileSync('git', ['-C', area, 'rev-parse', '--verify', '--quiet', 'HEAD^{tree}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
       if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(tr)) return tr;
     }
@@ -302,32 +287,19 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   if (!targets.length) for (const fn of fs.readdirSync(cDir).filter((f) => f.endsWith('.toml')).sort()) targets.push(path.basename(fn, '.toml'));
   if (!targets.length) throwError('usage: node drift.mjs [test|prove|gate] [<contract...>] [--base <ref>] [--changed [<file>]] [--prove|--gate] [--json]');
   const home = process.env.HOME || process.env.USERPROFILE || '';
-  const clis = [(process.env.DRIFT_CLI || '').trim(), path.join(area, '.build', 'drift'), 'drift', home ? path.join(home, '.local', 'bin', 'drift') : ''].filter(Boolean);
-  let cli = '';
-  for (const cand of clis) {
-    try { execFileSync(cand, ['version'], { cwd: area, stdio: 'ignore' }); cli = cand; break; } catch {}
-  }
-  if (!cli) throwError('drift CLI not found on PATH or DRIFT_CLI');
+  const cli = [(process.env.DRIFT_CLI || '').trim(), path.join(area, '.build', 'drift'), 'drift', home ? path.join(home, '.local', 'bin', 'drift') : ''].filter(Boolean).find((c) => { try { execFileSync(c, ['version'], { cwd: area, stdio: 'ignore' }); return true; } catch { return false; } }) || throwError('drift CLI not found on PATH or DRIFT_CLI');
   if (wantChanged && !baseRef) baseRef = 'HEAD';
   if (wantChanged && !changedPaths.length) {
     try {
-      const seen = new Set();
-      const dOut = execFileSync('git', ['-C', area, 'diff', '--name-only', '--relative', baseRef], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      const uOut = execFileSync('git', ['-C', area, 'ls-files', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      for (const ln of `${dOut}\n${uOut}`.split('\n')) {
-        const p = ln.trim();
-        if (p && !p.startsWith('.drift-work/') && !seen.has(p)) { seen.add(p); changedPaths.push(p); }
-      }
+      const seen = new Set(), dOut = execFileSync('git', ['-C', area, 'diff', '--name-only', '--relative', baseRef], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }), uOut = execFileSync('git', ['-C', area, 'ls-files', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const ln of `${dOut}\n${uOut}`.split('\n')) { const p = ln.trim(); if (p && !p.startsWith('.drift-work/') && !seen.has(p)) { seen.add(p); changedPaths.push(p); } }
     } catch {}
   }
   const resDir = path.join(area, '.drift-work', 'resolved'), evDir = path.join(area, '.drift-work', 'events');
   fs.mkdirSync(resDir, { recursive: true });
   fs.mkdirSync(evDir, { recursive: true });
   const ids = [], idSet = new Set(), tomls = [], tomlSet = new Set(), relSrcs = [];
-  const addTarget = (id, direct) => {
-    if (!idSet.has(id)) { idSet.add(id); ids.push(id); }
-    if (!tomlSet.has(direct)) { tomlSet.add(direct); tomls.push(direct); }
-  };
+  const addTarget = (id, direct) => { if (!idSet.has(id)) { idSet.add(id); ids.push(id); } if (!tomlSet.has(direct)) { tomlSet.add(direct); tomls.push(direct); } };
   for (const t of targets) {
     const id = path.basename(t).endsWith('.toml') ? path.basename(t, '.toml') : t;
     const direct = fs.existsSync(path.resolve(area, t)) && t.endsWith('.toml') ? path.resolve(area, t) : path.join(cDir, `${id}.toml`);
@@ -346,29 +318,33 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   if (relSrcs.length) {
     try {
       const impObj = JSON.parse(execFileSync(cli, ['impact', ...relSrcs.map((x) => x.relSrc), '--json'], { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-      const unm = new Set(Array.isArray(impObj?.unmatched_code) ? impObj.unmatched_code : []);
-      const miss = relSrcs.find((x) => unm.has(x.relSrc));
+      const unm = new Set(Array.isArray(impObj?.unmatched_code) ? impObj.unmatched_code : []), miss = relSrcs.find((x) => unm.has(x.relSrc));
       if (miss) throwError(`contract "${miss.raw}" not found at ${miss.direct}`);
-      for (const mc of impObj?.contracts || []) {
-        const mDirect = path.join(cDir, `${mc.id}.toml`);
-        if (mc.id && fs.existsSync(mDirect)) addTarget(mc.id, mDirect);
-      }
+      for (const mc of impObj?.contracts || []) { const mDirect = path.join(cDir, `${mc.id}.toml`); if (mc.id && fs.existsSync(mDirect)) addTarget(mc.id, mDirect); }
     } catch (e) { if (String(e?.message || '').includes('not found at')) throw e; }
     if (!ids.length) throwError(`contract "${relSrcs[0].raw}" not found at ${relSrcs[0].direct}`);
   }
   try { execFileSync(cli, ['show', ...tomls, '--out', resDir], { cwd: area, stdio: ['ignore', 'pipe', 'pipe'] }); } catch {}
-  let selFile = '', narrowedFiles = null;
+  let selFile = '', narrowedFiles = null, selectWidened = false, selectReasons = [];
   if (baseRef) {
     const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, '--base', baseRef, '--events', evDir, '--files', '--json', ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []))];
-    try {
-      const selOut = execFileSync(cli, selArgs, { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      const selObj = JSON.parse(selOut);
-      if (selObj && selObj.all === false && Array.isArray(selObj.test_files)) {
-        selFile = path.join(area, '.drift-work', 'select.json');
-        fs.writeFileSync(selFile, selOut, 'utf8');
-        narrowedFiles = selObj.test_files;
-      }
-    } catch {}
+    let selOut = '', selStatus = 0, selErr = '';
+    try { selOut = execFileSync(cli, selArgs, { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) {
+      selStatus = typeof e?.status === 'number' ? e.status : 2;
+      selOut = String(e?.stdout || '');
+      selErr = String(e?.stderr || '').trim();
+    }
+    if (selStatus > 1) throwError(selErr || `drift select failed with status ${selStatus}`);
+    let selObj = null;
+    try { selObj = JSON.parse(selOut); } catch {}
+    if (!isObj(selObj)) throwError(selErr || 'drift select returned invalid JSON');
+    fs.writeFileSync(selFile = path.join(area, '.drift-work', 'select.json'), selOut, 'utf8');
+    if (selObj.all === false && Array.isArray(selObj.test_files)) narrowedFiles = selObj.test_files;
+    else {
+      selectWidened = true;
+      selectReasons = Array.isArray(selObj.reasons) ? selObj.reasons.map(String) : [];
+      if (!jsonOut) process.stderr.write(`drift: select widened to all tests (${selectReasons.join(', ') || 'all'})\n`);
+    }
   }
   const testFiles = new Set(), missingIds = [];
   if (narrowedFiles !== null) {
@@ -466,7 +442,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     } catch (e) { testStatus = typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
   }
   if (mode === 'test') {
-    if (jsonOut) process.stdout.write(JSON.stringify({ ok: testStatus === 0, ran: runFiles.length, selected_files: runFiles }) + '\n');
+    if (jsonOut) process.stdout.write(JSON.stringify({ ok: testStatus === 0, ran: runFiles.length, selected_files: runFiles, ...(baseRef ? { widened: selectWidened, reasons: selectReasons } : {}) }) + '\n');
     else if (!runFiles.length) process.stdout.write('drift test: 0 test file(s) selected\n');
     return testStatus;
   }

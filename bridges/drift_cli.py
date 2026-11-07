@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -19,9 +20,10 @@ _PROF_MTIME_CACHE: dict[str, float] = {}
 def escape_pointer(s: str) -> str: return s.replace('~', '~0').replace('/', '~1')
 def unescape_pointer(s: str) -> str: return s.replace('~1', '/').replace('~0', '~') if '~' in s else s
 def is_array_index(s: str) -> bool: return s == '0' or (s.isdigit() and not s.startswith('0'))
+def is_finite_num(v: Any) -> bool: return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 def values_mismatch(a: Any, b: Any) -> bool:
     if isinstance(a, bool) or isinstance(b, bool): return type(a) is not type(b) or a != b
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)): return abs(float(a) - float(b)) > 1e-9
+    if isinstance(a, (int, float)) or isinstance(b, (int, float)): return not (is_finite_num(a) and is_finite_num(b)) or abs(float(a) - float(b)) > 1e-9
     if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)): return len(a) != len(b) or any(values_mismatch(x, y) for x, y in zip(a, b))
     if isinstance(a, Mapping) and isinstance(b, Mapping): return len(a) != len(b) or any(k not in b or values_mismatch(v, b[k]) for k, v in a.items())
     return a != b
@@ -158,15 +160,7 @@ def _max_source_mtime(cur: Path, tf: Path, warmed: set[str]) -> float:
         _PROF_MTIME_CACHE.clear()
     prof_max = _PROF_MTIME_CACHE.get(pk)
     if prof_max is None:
-        prof_max = 0.0
-        if p_dir.is_dir():
-            for pf in p_dir.glob('*.toml'):
-                try:
-                    pm = pf.stat().st_mtime
-                    if pm > prof_max:
-                        prof_max = pm
-                except OSError:
-                    pass
+        prof_max = max((pf.stat().st_mtime for pf in p_dir.glob('*.toml') if pf.is_file()), default=0.0) if p_dir.is_dir() else 0.0
         _PROF_MTIME_CACHE[pk] = prof_max
     return prof_max if prof_max > m else m
 
@@ -401,27 +395,28 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
         if not ids:
             raise FileNotFoundError(f'contract "{rel_srcs[0][0]}" not found at {rel_srcs[0][1]}')
     subprocess.run([cli, 'show', *tomls, '--out', str(res_dir)], cwd=str(area), capture_output=True, check=False)
-    sel_file = ''
-    narrowed_files: list[str] | None = None
+    sel_file, narrowed_files, select_widened, select_reasons = '', None, False, []
     if base_ref:
-        sel_target = tomls[0] if len(tomls) == 1 else str(c_dir)
-        sel_cmd = [cli, 'select', sel_target, '--base', base_ref, '--events', str(ev_dir), '--files', '--json']
-        if changed_paths:
-            for cp in changed_paths:
-                sel_cmd.extend(['--changed', cp])
-        elif want_changed:
-            sel_cmd.append('--changed')
+        sel_cmd = [cli, 'select', tomls[0] if len(tomls) == 1 else str(c_dir), '--base', base_ref, '--events', str(ev_dir), '--files', '--json', *([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else (['--changed'] if want_changed else []))]
+        sel_proc = subprocess.run(sel_cmd, cwd=str(area), capture_output=True, text=True, check=False)
+        if sel_proc.returncode not in (0, 1):
+            raise RuntimeError((sel_proc.stderr or '').strip() or f'drift select failed with status {sel_proc.returncode}')
         try:
-            sel_proc = subprocess.run(sel_cmd, cwd=str(area), capture_output=True, text=True, check=False)
-            if sel_proc.returncode == 0 and sel_proc.stdout.strip():
-                sel_obj = json.loads(sel_proc.stdout)
-                if isinstance(sel_obj, Mapping) and sel_obj.get('all') is False and isinstance(sel_obj.get('test_files'), list):
-                    sf_p = area / '.drift-work' / 'select.json'
-                    sf_p.write_text(sel_proc.stdout, encoding='utf-8')
-                    sel_file = str(sf_p)
-                    narrowed_files = [str(x) for x in sel_obj['test_files']]
+            sel_obj = json.loads(sel_proc.stdout.lstrip('\ufeff')) if sel_proc.stdout.strip() else None
         except Exception:
-            pass
+            sel_obj = None
+        if not isinstance(sel_obj, Mapping):
+            raise RuntimeError((sel_proc.stderr or '').strip() or 'drift select returned invalid JSON')
+        sf_p = area / '.drift-work' / 'select.json'
+        sf_p.write_text(sel_proc.stdout, encoding='utf-8')
+        sel_file = str(sf_p)
+        if sel_obj.get('all') is False and isinstance(sel_obj.get('test_files'), list):
+            narrowed_files = [str(x) for x in sel_obj['test_files']]
+        else:
+            select_widened = True
+            select_reasons = [str(r) for r in (sel_obj.get('reasons') or ()) if r is not None]
+            if not json_out:
+                sys.stderr.write(f"drift: select widened to all tests ({', '.join(select_reasons) or 'all'})\n")
     if narrowed_files is not None:
         test_files = set(narrowed_files)
         missing = []
@@ -510,7 +505,11 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
                 test_rc = rc
     if mode == 'test':
         if json_out:
-            sys.stdout.write(json.dumps({'ok': test_rc == 0, 'ran': len(run_list), 'selected_files': run_list}) + '\n')
+            test_rep: dict[str, Any] = {'ok': test_rc == 0, 'ran': len(run_list), 'selected_files': run_list}
+            if base_ref:
+                test_rep['widened'] = select_widened
+                test_rep['reasons'] = select_reasons
+            sys.stdout.write(json.dumps(test_rep) + '\n')
         elif not run_list:
             sys.stdout.write('drift test: 0 test file(s) selected\n')
         return test_rc

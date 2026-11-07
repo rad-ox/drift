@@ -15,3 +15,5 @@ feedback forward; they add no owner stop.
   full campaign after a passing probe) proceeds when the condition holds,
   without a new stop.
 - Keep full command logs in files and report targeted excerpts.
+- Client interaction, protocol negotiation and recovery:
+  [native-flow.md](native-flow.md).

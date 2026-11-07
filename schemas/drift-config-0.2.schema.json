@@ -87,6 +87,12 @@
             "type": "array",
             "uniqueItems": true
           },
+          "companion_edits": {
+            "enum": [
+              "none",
+              "imports_only"
+            ]
+          },
           "forbid_imports": {
             "items": {
               "minLength": 1,
@@ -114,12 +120,62 @@
           "pack": {
             "const": "core@1"
           },
+          "performance_reuse": {
+            "enum": [
+              "off",
+              "execution"
+            ]
+          },
+          "priority_weights": {
+            "additionalProperties": false,
+            "properties": {
+              "boundary_operator": {
+                "maximum": 32,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "fragile_card": {
+                "maximum": 32,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "security_case": {
+                "maximum": 32,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "shared_test": {
+                "maximum": 32,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "symmetric_witness": {
+                "maximum": 32,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
           "proof": {
             "enum": [
               "bound",
               "verified",
               "killed"
             ]
+          },
+          "security": {
+            "items": {
+              "enum": [
+                "sast",
+                "fuzz",
+                "policy",
+                "deps"
+              ]
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
           },
           "sweep": {
             "anyOf": [
@@ -135,6 +191,11 @@
                 "uniqueItems": true
               }
             ]
+          },
+          "warn_ratio": {
+            "exclusiveMaximum": 1,
+            "exclusiveMinimum": 0,
+            "type": "number"
           }
         },
         "required": [

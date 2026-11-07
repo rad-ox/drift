@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `drift:drift-junit:0.3.1` and
-`drift:drift-maven-plugin:0.3.1` (from `maven/` in the release package) into
+The release installer puts `drift:drift-junit:0.3.2` and
+`drift:drift-maven-plugin:0.3.2` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -26,7 +26,7 @@ id, and reruns then collapse them.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.2</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -37,7 +37,7 @@ id, and reruns then collapse them.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.2</version>
   <executions>
     <execution>
       <goals>

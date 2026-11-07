@@ -355,7 +355,13 @@
                 "uniqueItems": true
               },
               "role": {
-                "const": "state"
+                "enum": [
+                  "state",
+                  "classification",
+                  "encoding_context",
+                  "principal_tenant",
+                  "resource_tenant"
+                ]
               },
               "transient": {
                 "items": {
@@ -515,6 +521,19 @@
               "type": "array"
             }
           ]
+        },
+        "security": {
+          "items": {
+            "enum": [
+              "sast",
+              "fuzz",
+              "policy",
+              "deps"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
         },
         "sources": {
           "anyOf": [

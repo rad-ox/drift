@@ -332,15 +332,17 @@ final class Json {
         return baseObj;
     }
 
+    static boolean isFiniteNumber(Object v) { return v instanceof Number n && Double.isFinite(n.doubleValue()); }
+
     static boolean valuesEqual(Object a, Object b) {
+        if (a instanceof Number || b instanceof Number) {
+            if (!isFiniteNumber(a) || !isFiniteNumber(b)) return false;
+            return ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer))
+                    ? ((Number) a).longValue() == ((Number) b).longValue()
+                    : Math.abs(((Number) a).doubleValue() - ((Number) b).doubleValue()) <= 1e-9;
+        }
         if (a == b) return true;
         if (a == null || b == null) return false;
-        if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer)) {
-            return ((Number) a).longValue() == ((Number) b).longValue();
-        }
-        if (a instanceof Number na && b instanceof Number nb) {
-            return Math.abs(na.doubleValue() - nb.doubleValue()) <= 1e-9;
-        }
         if (a instanceof List<?> la && b instanceof List<?> lb) {
             if (la.size() != lb.size()) return false;
             for (int i = 0; i < la.size(); i++) if (!valuesEqual(la.get(i), lb.get(i))) return false;
@@ -348,9 +350,7 @@ final class Json {
         }
         if (a instanceof Map<?, ?> ma && b instanceof Map<?, ?> mb) {
             if (ma.size() != mb.size()) return false;
-            for (Map.Entry<?, ?> e : ma.entrySet()) {
-                if (!mb.containsKey(e.getKey()) || !valuesEqual(e.getValue(), mb.get(e.getKey()))) return false;
-            }
+            for (Map.Entry<?, ?> e : ma.entrySet()) if (!mb.containsKey(e.getKey()) || !valuesEqual(e.getValue(), mb.get(e.getKey()))) return false;
             return true;
         }
         return a.equals(b);
@@ -358,12 +358,7 @@ final class Json {
 
     static boolean isRelationalMap(Object val) {
         if (!(val instanceof Map<?, ?> m) || m.isEmpty()) return false;
-        for (Object k : m.keySet()) {
-            if (!(k instanceof String s)
-                    || !List.of("min", "max", "min_len", "max_len", "non_empty", "le_field", "ge_field", "eq_field", "in", "sum_fields", "contains", "prefix", "suffix").contains(s)) {
-                return false;
-            }
-        }
+        for (Object k : m.keySet()) if (!(k instanceof String s) || !List.of("min", "max", "min_len", "max_len", "non_empty", "le_field", "ge_field", "eq_field", "in", "sum_fields", "contains", "prefix", "suffix").contains(s)) return false;
         return true;
     }
 
@@ -371,30 +366,16 @@ final class Json {
         if (!(rawRef instanceof String ref) || ref.isBlank()) return "";
         String s = ref.trim();
         if (s.startsWith("/")) return splitResourcePointer(s)[1];
-        String p = thenProjections != null && thenProjections.containsKey(s) ? thenProjections.get(s)
-                : (whenProjections != null && whenProjections.containsKey(s) ? whenProjections.get(s) : ("/" + s));
+        String p = thenProjections != null && thenProjections.containsKey(s) ? thenProjections.get(s) : (whenProjections != null && whenProjections.containsKey(s) ? whenProjections.get(s) : ("/" + s));
         return splitResourcePointer(p)[1];
     }
 
-    static Number maxNum(Number a, Number b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.doubleValue() >= b.doubleValue() ? a : b;
-    }
-
-    static Number minNum(Number a, Number b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.doubleValue() <= b.doubleValue() ? a : b;
-    }
+    static Number maxNum(Number a, Number b) { return a == null ? b : (b == null || a.doubleValue() >= b.doubleValue() ? a : b); }
+    static Number minNum(Number a, Number b) { return a == null ? b : (b == null || a.doubleValue() <= b.doubleValue() ? a : b); }
 
     static Number roundTightenedNum(Number curLo, Number curHi, double rawVal, boolean isMin) {
-        boolean isInt = (curLo instanceof Long || curLo instanceof Integer)
-                || (curHi instanceof Long || curHi instanceof Integer)
-                || Math.abs(rawVal - Math.rint(rawVal)) < 1e-9;
-        if (isInt) {
-            return Long.valueOf((long) (isMin ? Math.ceil(rawVal - 1e-9) : Math.floor(rawVal + 1e-9)));
-        }
+        boolean isInt = (curLo instanceof Long || curLo instanceof Integer) || (curHi instanceof Long || curHi instanceof Integer) || Math.abs(rawVal - Math.rint(rawVal)) < 1e-9;
+        if (isInt) return Long.valueOf((long) (isMin ? Math.ceil(rawVal - 1e-9) : Math.floor(rawVal + 1e-9)));
         return Double.valueOf(rawVal);
     }
 

@@ -12,8 +12,8 @@ rete, e un solo comando rimuove tutto ciò che ha installato.
 
 | | Ubuntu e altri Linux | macOS (Apple Silicon & Intel) | Windows 10 e 11 |
 |---|---|---|---|
-| Ricevi | `drift-0.3.1-linux-x64.tar.gz` | `drift-0.3.1-macos-arm64.tar.gz` o `drift-0.3.1-macos-x64.tar.gz` | `drift-0.3.1-windows-x64.zip` |
-| Installa | `tar -xzf drift-0.3.1-linux-x64.tar.gz`<br>`./drift-0.3.1-linux-x64/install.sh` | `tar -xzf drift-0.3.1-macos-arm64.tar.gz`<br>`./drift-0.3.1-macos-arm64/install.sh` | Estrai lo zip, doppio clic su `install.cmd` |
+| Ricevi | `drift-0.3.2-linux-x64.tar.gz` | `drift-0.3.2-macos-arm64.tar.gz` o `drift-0.3.2-macos-x64.tar.gz` | `drift-0.3.2-windows-x64.zip` |
+| Installa | `tar -xzf drift-0.3.2-linux-x64.tar.gz`<br>`./drift-0.3.2-linux-x64/install.sh` | `tar -xzf drift-0.3.2-macos-arm64.tar.gz`<br>`./drift-0.3.2-macos-arm64/install.sh` | Estrai lo zip, doppio clic su `install.cmd` |
 | Verifica | `drift version` | `drift version` | `drift version` in un nuovo terminale |
 | Rimuovi | `~/.local/share/drift/install.sh --uninstall` | `~/.local/share/drift/install.sh --uninstall` | Impostazioni › App › DRIFT › Disinstalla |
 
@@ -46,21 +46,21 @@ confronta il valore su un secondo canale attendibile.
    sha256sum --ignore-missing -c SHA256SUMS
    ```
 
-   Deve comparire `drift-0.3.1-linux-x64.tar.gz: OK`. Qualunque altro esito
+   Deve comparire `drift-0.3.2-linux-x64.tar.gz: OK`. Qualunque altro esito
    indica un file danneggiato o diverso: fattelo rimandare. (Se hai ricevuto
    solo il `.tar.gz`, il passo 2 verifica lo `SHA256SUMS` interno all'archivio.)
 2. Estrai e installa:
 
    ```bash
-   tar -xzf drift-0.3.1-linux-x64.tar.gz
-   (cd drift-0.3.1-linux-x64 && sha256sum -c SHA256SUMS)
-   ./drift-0.3.1-linux-x64/install.sh
+   tar -xzf drift-0.3.2-linux-x64.tar.gz
+   (cd drift-0.3.2-linux-x64 && sha256sum -c SHA256SUMS)
+   ./drift-0.3.2-linux-x64/install.sh
    ```
 
    Ogni passo stampa `✓`. Una riga con `!` ti dice cosa fare, per esempio
    `~/.local/bin entra nel PATH al prossimo login; in questo terminale
    esegui: . ~/.profile`.
-3. Verifica: `drift version` stampa `drift 0.3.1 (schema 0.2, digest dr1, build <id>)`,
+3. Verifica: `drift version` stampa `drift 0.3.2 (schema 0.2, digest dr1, build <id>)`,
    dove `<id>` indica il sorgente da cui è stato costruito il pacchetto.
 
 Dopo puoi cancellare la cartella estratta.
@@ -71,7 +71,7 @@ Dopo puoi cancellare la cartella estratta.
    cartella, apri PowerShell in quella cartella e verifica il download:
 
    ```powershell
-   (Get-FileHash .\drift-0.3.1-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
+   (Get-FileHash .\drift-0.3.2-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
    ```
 
    Deve comparire `True`. (La cartella estratta contiene inoltre uno
@@ -95,8 +95,8 @@ App. Dopo puoi cancellare la cartella estratta.
 | Bridge JS e Python | `~/.local/share/drift/bridges/drift.mjs`, `drift.py` | `%LOCALAPPDATA%\Programs\drift\bridges\drift.mjs`, `drift.py` |
 | Skill dell'agente | `~/.copilot/skills/drift/` (e `~/.agents/skills/` se presente o con `--hooks`) | `%USERPROFILE%\.copilot\skills\drift\` (e `%USERPROFILE%\.agents\skills\`) |
 | Hook dell'agente (opt-in) | `~/.pi/agent/extensions/drift.ts`, `~/.copilot/hooks/drift.json`, `~/.codex/hooks.json`, `~/.claude/settings.json` | `%USERPROFILE%\.pi\agent\extensions\drift.ts`, `%USERPROFILE%\.copilot\hooks\drift.json` |
-| Bridge JUnit | `~/.m2/repository/drift/drift-junit/0.3.1/` | `%USERPROFILE%\.m2\repository\drift\drift-junit\0.3.1\` |
-| Plugin Maven | `~/.m2/repository/drift/drift-maven-plugin/0.3.1/` | `%USERPROFILE%\.m2\repository\drift\drift-maven-plugin\0.3.1\` |
+| Bridge JUnit | `~/.m2/repository/drift/drift-junit/0.3.2/` | `%USERPROFILE%\.m2\repository\drift\drift-junit\0.3.2\` |
+| Plugin Maven | `~/.m2/repository/drift/drift-maven-plugin/0.3.2/` | `%USERPROFILE%\.m2\repository\drift\drift-maven-plugin\0.3.2\` |
 | Impostazioni modificate | nessuna: l'installer stampa solo un suggerimento sul PATH | PATH utente e una voce in Impostazioni › App |
 
 Se `~/.m2/settings.xml` imposta `<localRepository>`, il bridge e il plugin
@@ -112,6 +112,8 @@ I profili della shell non vengono mai modificati.
 | `--no-skill` | `-NoSkill` | non installa la skill dell'agente |
 | `--hooks` | `-Hooks` | installa gli hook/estensioni automatici per gli agenti rilevati (Pi, Copilot, Claude, Codex, Cursor, Gemini) |
 | `--no-hooks` | `-NoHooks` | salta gli hook automatici senza chiedere |
+| `--update-check` | `-UpdateCheck` | installa gli hook con il controllo opzionale delle release GitHub |
+| `--no-update-check` | `-NoUpdateCheck` | omette o rimuove solo il controllo delle release |
 | `--hooks-dir DIR` | `-HooksDir DIR` | installa il file hook automatico in `DIR/drift.json` |
 | `--maven-repo DIR` | `-MavenRepo DIR` | usa un altro repository Maven locale |
 | `--no-maven` | `-NoMaven` | non installa il bridge JUnit e il plugin Maven |
@@ -122,6 +124,20 @@ I profili della shell non vengono mai modificati.
 | `--help` | `-Help` | elenca tutte le opzioni |
 
 Anche `DRIFT_LANG=it` sceglie l'italiano, e `NO_COLOR=1` disattiva i colori.
+
+Con gli hook abilitati, l'installer chiede separatamente se installare il
+controllo delle release (predefinito **Sì**). Senza interazione mantiene una
+scelta precedente; alla prima installazione non lo abilita implicitamente.
+L'installer resta offline. Il componente selezionato controlla `rad-ox/drift`
+all'avvio/ripresa nelle aree DRIFT e segnala soltanto release stabili più
+recenti: non scarica né installa aggiornamenti e non blocca la sessione.
+`DRIFT_UPDATE_CHECK=0` sospende le richieste. La policy installata in
+`hooks/release/release-policy.json` contiene repository e limiti temporali
+(2 secondi per la richiesta, 3 complessivi).
+Anche l'installazione da sorgente presenta la domanda:
+`make install UPDATE_CHECK=0` esclude esplicitamente il componente.
+Rifiutarlo lascia operativi gli hook ordinari. Su POSIX serve Python 3;
+su Windows viene usata PowerShell nativa.
 
 ## Primi passi
 
@@ -148,7 +164,7 @@ installata spiega come marcare i test, in `references/jvm-bridge.md`.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.2</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -157,7 +173,7 @@ installata spiega come marcare i test, in `references/jvm-bridge.md`.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.2</version>
   <executions>
     <execution>
       <goals>
@@ -310,11 +326,11 @@ organizzazione impone una policy, chiedi all'IT, oppure copia a mano
 **Windows chiede se eseguire `install.cmd`, o blocca `drift.exe`.** I file non
 sono firmati e arrivano da un altro computer. Scegli **Esegui**; per evitare la
 domanda, sblocca lo zip prima di estrarlo: clic destro › Proprietà › Annulla
-blocco, oppure `Unblock-File .\drift-0.3.1-windows-x64.zip`. Se le regole
+blocco, oppure `Unblock-File .\drift-0.3.2-windows-x64.zip`. Se le regole
 aziendali bloccano i programmi in `%LOCALAPPDATA%`, installa con `-Prefix` in
 una cartella consentita o chiedi all'IT.
 
-**Maven: `Could not find artifact drift:drift-junit:jar:0.3.1`** (o
+**Maven: `Could not find artifact drift:drift-junit:jar:0.3.2`** (o
 `drift-maven-plugin`). Maven usa un repository locale diverso da quello
 dell'installer, per esempio tramite `-Dmaven.repo.local` o un file di
 impostazioni in un altro posto. Riesegui l'installer con `--maven-repo DIR` o
@@ -340,4 +356,4 @@ proxy in `~/.m2/settings.xml`.
 **Quarantena Gatekeeper su macOS.** Se macOS blocca il binario scaricato da un
 browser perché non firmato, rimuovi l'attributo di quarantena sulla cartella
 estratta prima di eseguire `install.sh`:
-`xattr -dr com.apple.quarantine ./drift-0.3.1-macos-*`.
+`xattr -dr com.apple.quarantine ./drift-0.3.2-macos-*`.

@@ -18,6 +18,10 @@ maven_repo=
 with_skill=1
 with_hooks=0
 hooks_set=0
+update_check=
+update_yes=0
+update_no=0
+no_hooks=0
 with_maven=1
 dry=0
 action=install
@@ -41,7 +45,9 @@ while [ $# -gt 0 ]; do
 	--hooks-dir=*) hooks_dir=${1#*=} with_hooks=1 hooks_set=1 ;;
 	--hooks-dir) need "$@" && hooks_dir=$2 with_hooks=1 hooks_set=1 && shift ;;
 	--hooks) with_hooks=1 hooks_set=1 ;;
-	--no-hooks) with_hooks=0 hooks_set=1 ;;
+	--no-hooks) with_hooks=0 hooks_set=1 no_hooks=1 ;;
+	--update-check) update_check=1 update_yes=1 with_hooks=1 hooks_set=1 ;;
+	--no-update-check) update_check=0 update_no=1 ;;
 	--maven-repo=*) maven_repo=${1#*=} ;;
 	--maven-repo) need "$@" && maven_repo=$2 && shift ;;
 	--lang=*) lang=${1#*=} ;;
@@ -110,6 +116,8 @@ Opzioni:
   --hooks            installa gli hook automatici per gli agenti rilevati
                      (pi, copilot, claude, codex, cursor, gemini)
   --no-hooks         non installa gli hook automatici
+  --update-check     installa anche il controllo opzionale delle release GitHub
+  --no-update-check  omette o rimuove solo il controllo delle release
   --hooks-dir DIR    installa l'hook automatico in DIR/drift.json
   --maven-repo DIR   repository Maven locale (predefinito: quello di
                      ~/.m2/settings.xml, altrimenti ~/.m2/repository)
@@ -135,6 +143,8 @@ Options:
   --hooks            install automatic hooks for detected agents
                      (pi, copilot, claude, codex, cursor, gemini)
   --no-hooks         do not install automatic hooks
+  --update-check     also install optional GitHub release checks
+  --no-update-check  omit or remove only the release-check component
   --hooks-dir DIR    install the automatic hook into DIR/drift.json
   --maven-repo DIR   local Maven repository (default: the one in
                      ~/.m2/settings.xml, else ~/.m2/repository)
@@ -158,6 +168,11 @@ bad)
 	exit 2
 	;;
 esac
+
+if [ "$action" = install ] && [ "$update_yes" = 1 ] && { [ "$update_no" = 1 ] || [ "$no_hooks" = 1 ]; }; then
+	die "Conflicting --update-check and --no-update-check/--no-hooks options." \
+		"Opzioni --update-check e --no-update-check/--no-hooks in conflitto."
+fi
 
 # The installed copy lives in PREFIX/share/drift next to its manifest.
 data=$prefix/share/drift
@@ -487,8 +502,8 @@ if [ -d "$here/schemas" ]; then
 	run cp -R "$here/schemas" "$data/schemas"
 fi
 if [ -d "$here/hooks" ]; then
-	remove "$data/hooks" /hooks
-	run cp -R "$here/hooks" "$data/hooks"
+	run mkdir -p "$data/hooks"
+	run cp "$here/hooks/drift-hook.sh" "$here/hooks/drift-hook.ps1" "$here/hooks/drift-pi.ts" "$data/hooks/"
 	run chmod 0755 "$data/hooks/drift-hook.sh"
 fi
 for f in install.sh VERSION INSTALL.md INSTALL.it.md SHA256SUMS; do
@@ -538,6 +553,9 @@ if [ "$hooks_set" = 0 ] && [ "$dry" = 0 ]; then
 		esac
 	fi
 fi
+
+if [ "$with_hooks" = 0 ]; then update_check=0; fi
+sh "$here/release-component.sh" "$here/release" "$data/hooks/release" "$update_check" "$lang" "$dry"
 
 new_skills=''
 if [ "$with_skill" = 1 ]; then
@@ -694,6 +712,14 @@ PY
 	ok "agent hook entry → $(tilde "$1")" "voce hook dell'agente → $(tilde "$1")"
 }
 
+stage_pi_extension() {
+	if [ -d "$data/hooks/release" ]; then
+		python3 "$here/configure-pi.py" "$here/hooks/drift-pi.ts" "$1" "$data/hooks/release"
+	else
+		cp "$here/hooks/drift-pi.ts" "$1"
+	fi
+}
+
 new_hooks='' new_hook_merges=''
 if [ "$with_hooks" = 1 ] && [ -d "$here/hooks" ]; then
 	if [ -n "$hooks_dir" ]; then
@@ -704,7 +730,7 @@ if [ "$with_hooks" = 1 ] && [ -d "$here/hooks" ]; then
 			any_agent=1
 			pi_ext=$pi_dir/extensions/drift.ts
 			run mkdir -p "${pi_ext%/*}"
-			[ "$dry" = 1 ] || cp "$here/hooks/drift-pi.ts" "$pi_ext.new"
+			[ "$dry" = 1 ] || stage_pi_extension "$pi_ext.new"
 			[ "$dry" = 1 ] || mv -f "$pi_ext.new" "$pi_ext"
 			new_hooks="$new_hooks$pi_ext$tab"
 			ok "Pi extension → $(tilde "$pi_ext")" "estensione Pi → $(tilde "$pi_ext")"
@@ -732,7 +758,7 @@ if [ "$with_hooks" = 1 ] && [ -d "$here/hooks" ]; then
 		if [ "$any_agent" = 0 ]; then
 			pi_ext=$pi_dir/extensions/drift.ts
 			run mkdir -p "${pi_ext%/*}"
-			[ "$dry" = 1 ] || cp "$here/hooks/drift-pi.ts" "$pi_ext.new"
+			[ "$dry" = 1 ] || stage_pi_extension "$pi_ext.new"
 			[ "$dry" = 1 ] || mv -f "$pi_ext.new" "$pi_ext"
 			new_hooks="$new_hooks$pi_ext$tab"
 			ok "Pi extension → $(tilde "$pi_ext")" "estensione Pi → $(tilde "$pi_ext")"

@@ -1,6 +1,10 @@
 ﻿# Universal vendor-agnostic DRIFT lifecycle hook for Windows native agents.
 # Supports SessionStart (sessionStart) and Stop (agentStop) payloads across
 # Copilot, Claude, Codex, Gemini and Cursor. Fast-exits outside DRIFT areas.
+# Context boundary: these payloads carry no trusted task attribution or prompt
+# identity. Stop diagnostics keep the conservative area check, state that task
+# relevance is unknown, and deduplicate one unchanged diagnostic per host
+# session (when supplied) and area; a changed diagnostic reopens it.
 [CmdletBinding()]
 param(
     [string]$Mode = ''
@@ -71,8 +75,27 @@ if (-not $eventName) {
 }
 $norm = ($eventName.ToLowerInvariant() -replace '[_-]', '')
 $contractsDir = [IO.Path]::Combine($area, '.drift', 'contracts')
+$session = ''
+foreach ($key in @('session_id', 'sessionId')) {
+    if (-not $session -and $payload -and $payload.PSObject.Properties[$key] -and $payload.$key) { $session = [string]$payload.$key }
+}
+$turn = ''
+foreach ($key in @('prompt_id', 'promptId', 'turn_id', 'turnId', 'interaction_id', 'interactionId')) {
+    if (-not $turn -and $payload -and $payload.PSObject.Properties[$key] -and $payload.$key) { $turn = [string]$payload.$key }
+}
+$sha = [Security.Cryptography.SHA256]::Create()
+$hash = { param([string]$s) -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString('x2') }) }
+$baseKey = (& $hash "${area}:$session").Substring(0, 16)
+
+if ($norm -in @('userpromptsubmit', 'userpromptsubmitted')) {
+    Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-check-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    exit 0
+}
 
 if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
+    if ($norm -eq 'beforeagentstart') {
+        Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-check-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    }
     $summary = "DRIFT area active at $area."
     if (Test-Path -LiteralPath $contractsDir -PathType Container) {
         $stLines = & $driftExe 'status' $contractsDir 2>$null
@@ -81,7 +104,18 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
             if ($stFlat) { $summary = "$summary $stFlat." }
         }
     }
-    $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the drift skill: (0) Orient first with drift impact --recall '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift impact --schedule --pack ready. Never piggyback new feature assertions onto existing approved cases."
+    $releaseDir = Join-Path $PSScriptRoot 'release'
+    if ($norm -ne 'beforeagentstart' -and $env:DRIFT_UPDATE_CHECK -ne '0' -and
+        (Test-Path -LiteralPath $releaseDir -PathType Container)) {
+        $checker = Join-Path $releaseDir 'check.ps1'
+        if (Test-Path -LiteralPath $checker -PathType Leaf) {
+            $notice = & $checker -DriftExe $driftExe
+            if ($notice) { $summary = "$summary $notice" }
+        } else {
+            [Console]::Error.WriteLine('drift: release check unavailable (component missing); continuing without an update verdict.')
+        }
+    }
+    $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the drift skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
     $out = @{ additionalContext = $msg } | ConvertTo-Json -Compress
     Write-Output $out
     exit 0
@@ -89,15 +123,60 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
 
 if ($norm -in @('stop', 'agentstop', 'afteragent')) {
     if ($payload -and $payload.PSObject.Properties['stop_hook_active'] -and $payload.stop_hook_active -eq $true) {
+        [Console]::Error.WriteLine('drift: continued stop; the previous DRIFT outcome was not re-evaluated and is not treated as passing.')
         exit 0
     }
-    & $driftExe 'check' ([IO.Path]::Combine($area, '.drift')) '--json' *> $null
-    if ($LASTEXITCODE -ne 0) {
-        $out = @{
-            decision = 'block'
-            reason   = "DRIFT check reported findings in $area\.drift. Run drift fmt and drift check --json before finishing."
-        } | ConvertTo-Json -Compress
-        Write-Output $out
+    $stampName = if ($turn) { "drift-stop-check-${baseKey}-" + (& $hash $turn).Substring(0, 12) } else { "drift-stop-check-${baseKey}" }
+    $stampFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), $stampName)
+    $driftDir = [IO.Path]::Combine($area, '.drift')
+    $checkCode = 0
+    $stdout = ''
+    $stderr = ''
+    try {
+        $lines = @(& $driftExe 'check' $driftDir '--json' 2>&1)
+        $checkCode = $LASTEXITCODE
+        $stdout = ($lines | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join "`n"
+        $stderr = ($lines | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { "$_" }) -join "`n"
+    } catch {
+        $checkCode = 127
+        $stderr = "$_"
+    }
+    if ($checkCode -eq 0) {
+        Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-check-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    } else {
+        $fingerprint = & $hash "${checkCode}:${stdout}:$stderr"
+        $last = ''
+        if (Test-Path -LiteralPath $stampFile -PathType Leaf) { $last = ([IO.File]::ReadAllText($stampFile)).Trim() }
+        if ($last -eq $fingerprint) {
+            [Console]::Error.WriteLine('drift: the same DRIFT area diagnostic is still unresolved; not repeated to avoid a correction loop. It is not treated as passing.')
+            exit 0
+        }
+        try { [IO.File]::WriteAllText($stampFile, $fingerprint) } catch { }
+        $field = { param($o, [string]$n) if ($o -and $o.PSObject.Properties[$n]) { [string]$o.$n } else { '' } }
+        if ($checkCode -eq 1) {
+            $count = 0
+            $first = $null
+            $firstFile = ''
+            try {
+                $report = $stdout | ConvertFrom-Json
+                foreach ($entry in @($report.files)) {
+                    foreach ($finding in @($entry.findings)) {
+                        $count++
+                        if (-not $first) { $first = $finding; $firstFile = & $field $entry 'file' }
+                    }
+                }
+            } catch { }
+            $code = & $field $first 'code'
+            $where = & $field $first 'path'
+            if ($where) { $where = " ($where)" }
+            $reason = "DRIFT area check found $count finding(s) in $driftDir; relevance to the current task is unknown (no trusted task attribution). First: $firstFile${where}: $code $(& $field $first 'message'). Next: if this task changed that file, run drift explain $code and fix it; otherwise report it without editing unrelated contracts. The full-area check remains required before delivery."
+        } else {
+            $cause = @(("$stderr`n$stdout") -split "`n" | Where-Object { $_.Trim() })[0]
+            if (-not $cause) { $cause = 'no diagnostic' }
+            if ($cause.Length -gt 200) { $cause = $cause.Substring(0, 200) }
+            $reason = "DRIFT area check could not run in $driftDir (exit ${checkCode}: invocation, input or environment): $cause. Next: run drift check $driftDir to inspect the tooling or input error; formatting contracts will not fix it. No check verdict is available."
+        }
+        Write-Output (@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress)
         exit 0
     }
     $gitCmd = Get-Command 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -138,7 +217,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
                 if ($dirtyContracts -or $impFlat -match '"contracts":\[\]') {
                     $out = @{
                         decision = 'block'
-                        reason   = "DRIFT impact detected changed source files in $area not covered by any contract scope.code (unmatched_code). Scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root $area --sync-scope instead of piggybacking on unrelated cases."
+                        reason   = "Changed source files in $area are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root $area --sync-scope; otherwise report them and leave them unchanged."
                     } | ConvertTo-Json -Compress
                     Write-Output $out
                 }

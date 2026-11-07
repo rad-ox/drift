@@ -87,12 +87,14 @@ export function cloneJson(val) {
   return val;
 }
 
+export const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
 export function valuesEqual(a, b) {
+  if (typeof a === 'number' || typeof b === 'number') {
+    return isFinNum(a) && isFinNum(b) && Math.abs(a - b) <= 1e-9;
+  }
   if (a === b) return true;
   if (a === null || b === null || a === undefined || b === undefined) return false;
-  if (typeof a === 'number' && typeof b === 'number') {
-    return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-9;
-  }
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
   }
@@ -242,10 +244,10 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     return isObj(payload) && ref in payload ? { found: true, value: payload[ref] } : { found: false };
   };
   const actLen = (isStr(act) || Array.isArray(act)) ? act.length : (isObj(act) ? Object.keys(act).length : -1);
-  if ('min' in exp && (typeof act !== 'number' || act + 1e-9 < Number(exp.min))) {
+  if ('min' in exp && (!isFinNum(act) || !isFinNum(Number(exp.min)) || act + 1e-9 < Number(exp.min))) {
     throwAssertionError(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
   }
-  if ('max' in exp && (typeof act !== 'number' || act - 1e-9 > Number(exp.max))) {
+  if ('max' in exp && (!isFinNum(act) || !isFinNum(Number(exp.max)) || act - 1e-9 > Number(exp.max))) {
     throwAssertionError(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
   }
   if ('min_len' in exp && (actLen < 0 || actLen < Number(exp.min_len))) {
@@ -263,7 +265,7 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     if (!pr.found) throwAssertionError(`${pfx}: missing peer "${exp[fk]}" for then.${key}.${fk}`);
     const ok = op === '=='
       ? valuesEqual(act, pr.value)
-      : (typeof act === 'number' && typeof pr.value === 'number' && (op === '<=' ? act - 1e-9 <= pr.value : act + 1e-9 >= pr.value));
+      : (isFinNum(act) && isFinNum(pr.value) && (op === '<=' ? act - 1e-9 <= pr.value : act + 1e-9 >= pr.value));
     if (!ok) {
       throwAssertionError(`${pfx}: expected then.${key} ${op} ${exp[fk]} (${JSON.stringify(pr.value)}), got ${JSON.stringify(act)}`);
     }
@@ -278,12 +280,12 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     let sum = 0;
     for (const ref of exp.sum_fields) {
       const pr = peerOf(ref);
-      if (!pr.found || typeof pr.value !== 'number') {
+      if (!pr.found || !isFinNum(pr.value)) {
         throwAssertionError(`${pfx}: missing numeric peer "${ref}" for then.${key}.sum_fields`);
       }
       sum += pr.value;
     }
-    if (typeof act !== 'number' || Math.abs(act - sum) > 1e-9) {
+    if (!isFinNum(act) || !isFinNum(sum) || Math.abs(act - sum) > 1e-9) {
       throwAssertionError(`${pfx}: expected then.${key} == sum(${exp.sum_fields.join('+')}) (${sum}), got ${JSON.stringify(act)}`);
     }
   }
@@ -363,7 +365,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
     if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`);
   };
   const assertBound = (k, op, exp, act) => {
-    if (op === '<=' ? act > Number(exp) : act < Number(exp)) {
+    if (!isFinNum(act) || !isFinNum(Number(exp)) || (op === '<=' ? act > Number(exp) : act < Number(exp))) {
       throwAssertionError(`${pfx}: expected ${k}${op}${exp}, got ${act}`);
     }
   };
@@ -572,4 +574,21 @@ export function captureSurfaceView(rootOrSelector) {
   return { documentWidth, viewportWidth, elements, controls };
 }
 
-
+// Inventory sidecar fields from DRIFT_SNAPSHOT, DRIFT_EXECUTION_REF, DRIFT_PACK_REF and DRIFT_TOUCHED.
+export function sidecarHead(env, classes, tests) {
+  const snapshot = (env.DRIFT_SNAPSHOT || '').trim();
+  if (snapshot && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(snapshot)) throwError(`invalid DRIFT_SNAPSHOT "${snapshot}"`);
+  const ref = (env.DRIFT_EXECUTION_REF || '').trim();
+  if (ref && !/^sha256:[0-9a-f]{64}$/u.test(ref)) throwError('invalid DRIFT_EXECUTION_REF');
+  const packRef = (env.DRIFT_PACK_REF || '').trim();
+  const touched = [...new Set((env.DRIFT_TOUCHED || '').split(/[\n,]+/).map((s) => s.trim()).filter(Boolean))].sort();
+  return {
+    version: ref ? 2 : 1,
+    classes: [...classes].sort(),
+    tests: [...tests].sort(),
+    ...(ref ? { execution_ref: ref } : {}),
+    ...(snapshot ? { snapshot } : {}),
+    ...(packRef ? { pack_ref: packRef } : {}),
+    ...(touched.length || ref ? { touched } : {}),
+  };
+}
