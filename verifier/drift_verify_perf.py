@@ -26,7 +26,7 @@ def extract_contract_budgets(
   {
    k: v
    for k, v in use_tbl.items()
-   if k not in ("profile", "waive", "vocabulary")
+   if k not in ("profile", "waive", "vocabulary", "concepts")
   }
   if isinstance(use_tbl, dict)
   else {}
@@ -36,7 +36,7 @@ def extract_contract_budgets(
  for bid, bval in raw_b.items():
   if not isinstance(bval, dict):
    continue
-  trimmed = {k: v for k, v in bval.items() if k not in ("note", "warn_ratio")}
+  trimmed = {k: v for k, v in bval.items() if k not in ("note", "warn_ratio", "requirement_ref")}
   digest_budgets[bid] = trimmed
   sub_b = {}
   for k, v in trimmed.items():

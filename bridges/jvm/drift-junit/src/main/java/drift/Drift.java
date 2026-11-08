@@ -124,16 +124,18 @@ public final class Drift {
         }
     }
 
-    /** True when the running test read every {@code then} value of the case. */
+    /** True when the running test read every {@code then} value and required frame of the case. */
     static boolean read(String contract, String caseId) {
         String key = contract + "\u0000" + caseId;
         if (!READS.get().contains(key)) {
             return false;
         }
-        Map<String, Object> c = DriftInternal.map(DriftInternal.map(view(contract).get("cases"), contract + ".cases").get(caseId),
+        Map<String, Object> v = view(contract);
+        Map<String, Object> c = DriftInternal.map(DriftInternal.map(v.get("cases"), contract + ".cases").get(caseId),
                 contract + ".cases." + caseId);
         Set<String> seen = THEN_READS.get().getOrDefault(key, Set.of());
-        return seen.containsAll(DriftInternal.map(c.getOrDefault("then", Map.of()), "then").keySet());
+        return seen.containsAll(DriftInternal.map(c.getOrDefault("then", Map.of()), "then").keySet())
+                && DriftVerify.allFramesRead(v, caseId, seen);
     }
 
     static void mark(String contract, String caseId, String predicate) {
@@ -218,7 +220,7 @@ public final class Drift {
         return IN_TEST.get();
     }
 
-    /** Flushes any standalone programmatic proof events and inventory sidecars to disk (D229). */
+    /** Flushes any standalone programmatic proof events and inventory sidecars to disk (D229, D281). */
     public static void flushEvents() {
         DriftListener.flushStandaloneEvents();
     }
@@ -592,7 +594,13 @@ public final class Drift {
             DriftVerify.checkAdverse(this, variants, execute, checks);
         }
 
+        /** Verifies forbidden write resources ({@code scope.writes \ cases.<id>.writes}) via snapshot equality and zero operation counts (D272). */
+        public void checkFrame(Map<String, Object> frameObs) {
+            DriftVerify.checkFrame(this, frameObs);
+        }
+
         /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} and custom checks (D86). */
+        @SuppressWarnings("unchecked")
         public void checkProjection(Object payload, Map<String, ? extends Consumer<Object>> checks) {
             Map<String, String> thenProj = projectionMap("then");
             for (Map.Entry<String, Object> e : thenRaw().entrySet()) {
@@ -606,6 +614,9 @@ public final class Drift {
                 }
                 DriftViewChecks.checkProjectedLeaf(
                         this, key, expected, payload, thenProj, true, "no check or projection for");
+            }
+            if (payload instanceof Map<?, ?> pm && pm.get("_frame") instanceof Map<?, ?> fm) {
+                DriftVerify.checkFrame(this, (Map<String, Object>) fm);
             }
         }
 

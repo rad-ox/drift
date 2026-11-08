@@ -418,4 +418,229 @@ final class DriftVerify {
             c.checkProjection(execute.apply(variant), checks);
         }
     }
+
+    static List<String> forbiddenWritesOf(Map<String, Object> view, String caseId) {
+        if (!(view.get("scope") instanceof Map<?, ?> scopeMap)
+                || !(scopeMap.get("writes") instanceof List<?> swList)
+                || !(view.get("cases") instanceof Map<?, ?> casesMap)
+                || !(casesMap.get(caseId) instanceof Map<?, ?> cm)
+                || !(cm.get("writes") instanceof List<?> cwList)) {
+            return List.of();
+        }
+        Set<String> allowed = new LinkedHashSet<>();
+        Set<String> allowedBases = new LinkedHashSet<>();
+        for (Object item : cwList) {
+            String w = String.valueOf(item);
+            allowed.add(w);
+            int h = w.indexOf('#');
+            allowedBases.add(h >= 0 ? w.substring(0, h) : w);
+        }
+        List<String> out = new ArrayList<>();
+        for (Object item : swList) {
+            String r = String.valueOf(item);
+            int h = r.indexOf('#');
+            String base = h >= 0 ? r.substring(0, h) : r;
+            if (!allowed.contains(r) && !allowed.contains(base) && !allowedBases.contains(r)) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+    static boolean allFramesRead(Map<String, Object> view, String caseId, Set<String> seen) {
+        for (String fr : forbiddenWritesOf(view, caseId)) {
+            if (!seen.contains("@frame:" + fr)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void checkFrame(Drift.Case c, Map<String, Object> frameObs) {
+        List<String> forbidden = forbiddenWritesOf(Drift.view(c.contract()), c.id());
+        if (forbidden.isEmpty()) {
+            return;
+        }
+        String pfx = c.contract() + "." + c.id();
+        for (String res : forbidden) {
+            int h = res.indexOf('#');
+            String baseRes = h >= 0 ? res.substring(0, h) : res;
+            Object obs = frameObs == null ? null : (frameObs.containsKey(res) ? frameObs.get(res) : frameObs.get(baseRes));
+            if (obs == null) {
+                throw new AssertionError(pfx + ": missing frame observation for forbidden write resource \"" + res + "\"");
+            }
+            boolean checked = false;
+            if (Json.isFiniteNumber(obs) && ((Number) obs).doubleValue() >= 0.0) {
+                checked = true;
+                if (((Number) obs).doubleValue() > 0.0) {
+                    throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + obs);
+                }
+            } else if (obs instanceof Map<?, ?> om) {
+                for (String wk : new String[] {"writes", "operations", "events"}) {
+                    if (om.containsKey(wk)) {
+                        Object wv = om.get(wk);
+                        if (Json.isFiniteNumber(wv) && ((Number) wv).doubleValue() >= 0.0) {
+                            checked = true;
+                            if (((Number) wv).doubleValue() > 0.0) {
+                                throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + wv);
+                            }
+                        } else if (wv instanceof java.util.Collection<?> col) {
+                            checked = true;
+                            if (!col.isEmpty()) {
+                                throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + col.size());
+                            }
+                        }
+                    }
+                }
+                if (om.containsKey("before") && om.containsKey("after")) {
+                    checked = true;
+                    if (!Json.valuesEqual(om.get("before"), om.get("after"))) {
+                        throw new AssertionError(pfx + ": frame state mutation on resource \"" + res + "\": before and after snapshots differ");
+                    }
+                }
+            }
+            if (!checked) {
+                throw new AssertionError(pfx + ": frame observation for \"" + res + "\" must supply writes/operations/events or before/after snapshots");
+            }
+            Drift.mark(c.contract(), c.id(), "@frame:" + res);
+        }
+    }
+
+    static boolean checkObjectKeysAndNotIn(String pfx, String key, Map<?, ?> exp, Object actual) {
+        if (exp.containsKey("allowed_keys") || exp.containsKey("forbid_keys")) {
+            if (!(actual instanceof Map<?, ?> actMap)) {
+                throw new AssertionError(pfx + ": expected object for then." + key + ", got " + actual);
+            }
+            if (exp.containsKey("allowed_keys")) {
+                if (!(exp.get("allowed_keys") instanceof List<?> allowedList)) {
+                    throw new AssertionError(pfx + ": invalid allowed_keys on then." + key);
+                }
+                Set<String> allowedSet = new LinkedHashSet<>();
+                for (Object item : allowedList) {
+                    allowedSet.add(String.valueOf(item));
+                }
+                for (Object actKey : actMap.keySet()) {
+                    if (!allowedSet.contains(String.valueOf(actKey))) {
+                        throw new AssertionError(pfx + ": unexpected key \"" + actKey + "\" outside allowed_keys " + allowedList);
+                    }
+                }
+            }
+            if (exp.containsKey("forbid_keys")) {
+                Object fkObj = exp.get("forbid_keys");
+                if (fkObj instanceof List<?> forbidList) {
+                    for (Object fk : forbidList) {
+                        if (actMap.containsKey(String.valueOf(fk))) {
+                            throw new AssertionError(pfx + ": forbidden key \"" + fk + "\" present on then." + key);
+                        }
+                    }
+                } else if (fkObj instanceof String fkStr) {
+                    if (!actMap.containsKey(fkStr)) {
+                        throw new AssertionError(pfx + ": drop-forbid-key mutant on then." + key + ".forbid_keys killed");
+                    }
+                } else {
+                    throw new AssertionError(pfx + ": invalid forbid_keys on then." + key);
+                }
+            }
+            return true;
+        }
+        if (exp.containsKey("not_in")) {
+            if (actual == null) {
+                throw new AssertionError(pfx + ": expected non-null value for then." + key + ".not_in");
+            }
+            Object niObj = exp.get("not_in");
+            if (niObj instanceof List<?> forbiddenList) {
+                if (forbiddenList.stream().anyMatch(item -> Json.valuesEqual(actual, item))) {
+                    throw new AssertionError(pfx + ": forbidden value " + actual + " in then." + key + ".not_in " + forbiddenList);
+                }
+            } else if (!Json.valuesEqual(actual, niObj)) {
+                throw new AssertionError(pfx + ": pick-forbidden-value mutant on then." + key + ".not_in killed");
+            }
+        }
+        return false;
+    }
+
+    public static final Set<String> CAPABILITIES = Set.of(
+            "allowed_keys",
+            "case_frames",
+            "counterexample_replay",
+            "forbid_keys",
+            "inventory_sidecar",
+            "mutants",
+            "not_in",
+            "predicates",
+            "projections",
+            "relational_bounds",
+            "stubs");
+
+    public static Map<String, Object> bridgeCapabilities() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("bridge", "drift-junit");
+        out.put("capabilities", new ArrayList<>(new java.util.TreeSet<>(CAPABILITIES)));
+        out.put("runtime_baseline", "java-25-lts");
+        out.put("schema", "drift.bridge-capabilities/1");
+        out.put("version", "0.3.3");
+        return out;
+    }
+
+    public static void requireCapabilities(java.util.Collection<String> required) {
+        if (required == null) {
+            throw new IllegalStateException("bridge.capability_unsupported:null");
+        }
+        for (String cap : required) {
+            if (cap == null || cap.isBlank() || !CAPABILITIES.contains(cap.trim())) {
+                throw new IllegalStateException("bridge.capability_unsupported:" + (cap == null ? "" : cap.trim()));
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static int replayCounterexamples(
+            Drift.Case c,
+            java.nio.file.Path cexDirOrFile,
+            java.util.function.Function<Map<String, Object>, Object> sut) {
+        if (cexDirOrFile == null || !java.nio.file.Files.exists(cexDirOrFile)) {
+            return 0;
+        }
+        List<java.nio.file.Path> files = new ArrayList<>();
+        if (java.nio.file.Files.isDirectory(cexDirOrFile)) {
+            try (var stream = java.nio.file.Files.list(cexDirOrFile)) {
+                stream.filter(p -> p.getFileName().toString().endsWith(".cex.json"))
+                        .sorted()
+                        .forEach(files::add);
+            } catch (java.io.IOException e) {
+                throw new IllegalStateException("cannot list counterexample directory " + cexDirOrFile, e);
+            }
+        } else if (cexDirOrFile.getFileName().toString().endsWith(".cex.json")) {
+            files.add(cexDirOrFile);
+        }
+        int replayed = 0;
+        for (java.nio.file.Path f : files) {
+            final Object parsed;
+            try {
+                parsed = Json.read(f);
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException("cannot read counterexample fixture " + f, e);
+            }
+            if (!(parsed instanceof Map<?, ?> raw)) {
+                throw new IllegalStateException("invalid counterexample fixture " + f);
+            }
+            Map<String, Object> doc = (Map<String, Object>) raw;
+            if (!c.contract().equals(doc.get("contract"))) {
+                continue;
+            }
+            String targetCase = doc.get("case") instanceof String s ? s : "";
+            if (!targetCase.isEmpty() && !c.id().equals(targetCase)) {
+                continue;
+            }
+            Object witObj = doc.get("witness");
+            if (!(witObj instanceof Map<?, ?> witMap) || !(witMap.get("when") instanceof Map<?, ?> whenRaw)) {
+                throw new IllegalStateException("counterexample fixture " + f + " is missing witness.when");
+            }
+            Drift.recordInput(f);
+            Object actual = sut.apply((Map<String, Object>) whenRaw);
+            c.checkProjection(actual);
+            replayed++;
+        }
+        return replayed;
+    }
 }

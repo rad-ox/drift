@@ -22,8 +22,8 @@ final class DriftViewChecks {
             "available", "sent", "paid", "approved");
     private static final Set<String> RELATIONAL_KEYS = Set.of(
             "min", "max", "min_len", "max_len", "non_empty",
-            "le_field", "ge_field", "eq_field", "in",
-            "sum_fields", "contains", "prefix", "suffix", "allowed_keys");
+            "le_field", "ge_field", "eq_field", "in", "not_in",
+            "sum_fields", "contains", "prefix", "suffix", "allowed_keys", "forbid_keys");
 
     private DriftViewChecks() {}
 
@@ -72,20 +72,7 @@ final class DriftViewChecks {
             }
         }
         String pfx = c.contract() + "." + c.id();
-        if (exp.containsKey("allowed_keys")) {
-            if (!(actual instanceof Map<?, ?> actMap) || !(exp.get("allowed_keys") instanceof List<?> allowedList)) {
-                throw new AssertionError(pfx + ": expected object for then." + key + ".allowed_keys, got " + actual);
-            }
-            Set<String> allowedSet = new HashSet<>();
-            for (Object item : allowedList) {
-                allowedSet.add(String.valueOf(item));
-            }
-            for (Object actKey : actMap.keySet()) {
-                if (!allowedSet.contains(String.valueOf(actKey))) {
-                    throw new AssertionError(pfx + ": unexpected key \"" + actKey
-                            + "\" outside allowed_keys " + allowedList);
-                }
-            }
+        if (DriftVerify.checkObjectKeysAndNotIn(pfx, key, exp, actual)) {
             return true;
         }
         if (exp.containsKey("min")) {
@@ -224,12 +211,17 @@ final class DriftViewChecks {
             }
             return;
         }
-        if (expected instanceof Map<?, ?> expMap && expMap.containsKey("allowed_keys")) {
+        if (expected instanceof Map<?, ?> expMap
+                && (expMap.containsKey("allowed_keys") || expMap.containsKey("forbid_keys"))) {
             if (checkRelationalConstraint(c, key, expected, payload, payload, thenProj)) {
                 return;
             }
         }
         throw new AssertionError(pfx + ": " + missMsg + " then." + key);
+    }
+
+    public static boolean isElementUnintentionallyClipped(Map<?, ?> el) {
+        return DriftUiChecks.isElementUnintentionallyClipped(el);
     }
 
     @SuppressWarnings("unchecked")
@@ -241,6 +233,9 @@ final class DriftViewChecks {
         String id = c.id();
         Map<String, Object> then = c.thenRaw();
             Map<String, Object> v = view == null ? Map.of() : view;
+            if (Boolean.FALSE.equals(v.get("surfaceFound")) || Boolean.FALSE.equals(v.get("surface_found"))) {
+                throw new AssertionError(contract + "." + id + ": surface.missing");
+            }
             Map<String, String> thenProj = null;
             for (Map.Entry<String, Object> e : then.entrySet()) {
                 String key = e.getKey();
@@ -249,6 +244,15 @@ final class DriftViewChecks {
                 BiConsumer<Object, Map<String, Object>> custom = checks == null ? null : checks.get(key);
                 if (custom != null) {
                     custom.accept(expected, v);
+                    continue;
+                }
+                if (v.get("adapter") instanceof Map<?, ?>) {
+                    if (thenProj == null) {
+                        thenProj = c.projectionMap("then");
+                    }
+                    DriftUiChecks.checkAdapterCapability(contract, id, key, v, thenProj);
+                }
+                if (DriftUiChecks.checkSurfaceKey(c, key, expected, v, then, thenProj)) {
                     continue;
                 }
                 if ("baseline_state".equals(key)) {
@@ -289,107 +293,6 @@ final class DriftViewChecks {
                     if (dupCount != want) {
                         throw new AssertionError(contract + "." + id
                                 + ": expected duplicate_figures=" + expected + ", got " + dupCount);
-                    }
-                    continue;
-                }
-                if ("clipped_elements".equals(key)) {
-                    long clipped = 0L;
-                    if (v.get("elements") instanceof List<?> els) {
-                        for (Object item : els) {
-                            if (item instanceof Map<?, ?> el) {
-                                double sw = el.get("scrollWidth") instanceof Number n ? n.doubleValue() : 0.0;
-                                double cw = el.get("clientWidth") instanceof Number n ? n.doubleValue() : 0.0;
-                                double sh = el.get("scrollHeight") instanceof Number n ? n.doubleValue() : 0.0;
-                                double ch = el.get("clientHeight") instanceof Number n ? n.doubleValue() : 0.0;
-                                if (sw > cw || sh > ch) {
-                                    clipped++;
-                                }
-                            }
-                        }
-                    }
-                    long want = expected instanceof Number n ? n.longValue() : -1L;
-                    if (clipped != want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected clipped_elements=" + expected + ", got " + clipped);
-                    }
-                    continue;
-                }
-                if ("horizontal_overflow_px".equals(key)) {
-                    double docW = v.get("documentWidth") instanceof Number n ? n.doubleValue() : 0.0;
-                    double vpW = v.get("viewportWidth") instanceof Number n ? n.doubleValue() : 0.0;
-                    double overflow = Math.max(0.0, docW - vpW);
-                    double want = expected instanceof Number n ? n.doubleValue() : -1.0;
-                    if (overflow > want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected horizontal_overflow_px<=" + expected + ", got " + overflow);
-                    }
-                    continue;
-                }
-                if ("min_contrast_ratio".equals(key)) {
-                    double minRatio = Double.POSITIVE_INFINITY;
-                    if (v.get("elements") instanceof List<?> els) {
-                        for (Object item : els) {
-                            if (item instanceof Map<?, ?> el && el.get("contrastRatio") instanceof Number n) {
-                                minRatio = Math.min(minRatio, n.doubleValue());
-                            }
-                        }
-                    }
-                    if (Double.isInfinite(minRatio)) {
-                        minRatio = v.get("min_contrast_ratio") instanceof Number n ? n.doubleValue() : 21.0;
-                    }
-                    double want = expected instanceof Number n ? n.doubleValue() : 21.0;
-                    if (minRatio < want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected min_contrast_ratio>=" + expected + ", got " + minRatio);
-                    }
-                    continue;
-                }
-                if ("min_target_px".equals(key)) {
-                    double minPx = Double.POSITIVE_INFINITY;
-                    if (v.get("elements") instanceof List<?> els) {
-                        for (Object item : els) {
-                            if (item instanceof Map<?, ?> el
-                                    && el.get("width") instanceof Number w
-                                    && el.get("height") instanceof Number h
-                                    && !Boolean.TRUE.equals(el.get("spacingException"))) {
-                                minPx = Math.min(minPx, Math.min(w.doubleValue(), h.doubleValue()));
-                            }
-                        }
-                    }
-                    if (Double.isInfinite(minPx)) {
-                        minPx = v.get("min_target_px") instanceof Number n ? n.doubleValue() : 44.0;
-                    }
-                    double want = expected instanceof Number n ? n.doubleValue() : 24.0;
-                    if (minPx < want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected min_target_px>=" + expected + ", got " + minPx);
-                    }
-                    continue;
-                }
-                if ("obscured_focus_elements".equals(key)) {
-                    long obscured = 0L;
-                    boolean hasFlag = false;
-                    if (v.get("elements") instanceof List<?> els) {
-                        for (Object item : els) {
-                            if (item instanceof Map<?, ?> el
-                                    && (el.containsKey("obscured") || el.containsKey("focusObscured"))) {
-                                hasFlag = true;
-                                boolean focusable = !el.containsKey("focusable")
-                                        || Boolean.TRUE.equals(el.get("focusable"));
-                                if (focusable && (Boolean.TRUE.equals(el.get("obscured"))
-                                        || Boolean.TRUE.equals(el.get("focusObscured")))) {
-                                    obscured++;
-                                }
-                            }
-                        }
-                    }
-                    if (!hasFlag && v.get("obscured_focus_elements") instanceof Number n) {
-                        obscured = n.longValue();
-                    }
-                    long want = expected instanceof Number n ? n.longValue() : -1L;
-                    if (obscured != want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected obscured_focus_elements=" + expected + ", got " + obscured);
                     }
                     continue;
                 }

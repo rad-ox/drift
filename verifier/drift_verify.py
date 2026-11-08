@@ -4,8 +4,8 @@ import argparse, hashlib, json, math, re, sys, tomllib
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from drift_verify_perf import evaluate_contract_budgets, evaluate_contract_mutations_impl, extract_contract_budgets, load_measurement_bundle, load_mutation_events_impl
-from drift_verify_sec import evaluate_contract_security_impl, load_security_receipts_impl, validate_mutation_manifest_impl
-from drift_verify_ssh import apply_openssh_trust_verdicts
+from drift_verify_sec import evaluate_contract_formal_impl, evaluate_contract_migration_impl, evaluate_contract_security_impl, extract_contract_formal, load_formal_receipts_impl, load_migration_receipts_impl, load_security_receipts_impl, parse_subject_manifest_impl, run_sec_self_test, validate_mutation_manifest_impl
+from drift_verify_ssh import _has_approval_blocker, _is_unanchored_prose_source, apply_openssh_trust_verdicts, evaluate_contract_parity_impl, extract_contract_cutover, load_merged_profile_impl, load_parity_receipts_impl
 
 SAFE_INT = (1 << 53) - 1
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -17,7 +17,7 @@ CLASS_TOKEN_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
 METHOD_TOKEN_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
 OUTCOMES = frozenset(("passed", "failed", "skipped", "disabled", "interrupted", "timeout"))
 EVENT_KEYS = frozenset(("test", "contract", "cases", "level", "outcome", "read", "digest"))
-META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "self_stubbed", "inputs", "env", "execution_ref"))
+META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "self_stubbed", "inputs", "env", "execution_ref", "subject_ref"))
 ENV_KEYS = frozenset(("toolchain", "deps", "config", "runner", "drift", "adapter", "policy"))
 _ESC_MAP = {0x22: '\\"', 0x5C: "\\\\", 0x08: "\\b", 0x0C: "\\f", 0x0A: "\\n", 0x0D: "\\r", 0x09: "\\t"}
 
@@ -97,8 +97,8 @@ def validate_event_line(line):
 def validate_inventory_text(text):
  doc = _decode_no_dup_keys(text)
  if not isinstance(doc, dict) or any(k not in META_KEYS for k in doc) or doc.get("version") not in (1, 2) or isinstance(doc.get("version"), bool): raise ValueError("inv")
- execution_ref = doc.get("execution_ref", "")
- if (doc["version"] == 2 and (not isinstance(execution_ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution_ref))) or (doc["version"] == 1 and "execution_ref" in doc): raise ValueError("execution_ref")
+ execution_ref, s_ref = doc.get("execution_ref", ""), doc.get("subject_ref", "")
+ if (doc["version"] == 2 and (not isinstance(execution_ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", execution_ref))) or (doc["version"] == 1 and "execution_ref" in doc) or ("subject_ref" in doc and (not isinstance(s_ref, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", s_ref))): raise ValueError("ref")
  cls, tsts = doc.get("classes"), doc.get("tests")
  if not isinstance(cls, list) or not all(isinstance(x, str) and CLASS_TOKEN_RE.match(x) for x in cls) or cls != sorted(set(cls)): raise ValueError("cls")
  c_set = set(cls)
@@ -109,74 +109,22 @@ def validate_inventory_text(text):
  if "self_stubbed" in doc and (not isinstance(doc["self_stubbed"], list) or any(not isinstance(x, str) or x not in t_set for x in doc["self_stubbed"])): raise ValueError("stub")
  if "inputs" in doc and (not isinstance(ri := doc["inputs"], dict) or any(tid not in t_set or not isinstance(fm, dict) or any(not isinstance(fp, str) or not fp.strip() or not isinstance(ov, str) or not ov.strip() for fp, ov in fm.items()) for tid, fm in ri.items())): raise ValueError("in")
  if "env" in doc and (not isinstance(re_e := doc["env"], dict) or set(re_e) != ENV_KEYS or any(not isinstance(ev, str) or not ev.strip() for ev in re_e.values())): raise ValueError("env")
- return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": execution_ref, "touched": set(doc.get("touched", []))}
+ return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": doc.get("execution_ref", ""), "subject_ref": doc.get("subject_ref", ""), "touched": set(doc.get("touched", []))}
 
 
-def validate_inventory_sidecar(path): return validate_inventory_text(path.read_text(encoding="utf-8"))
+def validate_inventory_sidecar(path): return validate_inventory_text(path.read_text("utf-8"))
 
 
 def verify_config_toml(path):
  if not path.is_file(): return "missing", "", {}
- raw = tomllib.loads(path.read_text(encoding="utf-8"))
+ raw = tomllib.loads(path.read_text("utf-8"))
  appr, dig, pol = raw.pop("approval", None), dr1_digest(raw), (raw.get("policy") if isinstance(raw.get("policy"), dict) else {})
  if not isinstance(appr, dict) or not appr.get("ref"): return "absent", dig, pol
  st = "current" if appr["ref"] == dr1_ref(dig) else "stale"
  return st, dig, (pol if st == "current" else {})
 
 
-def _is_unanchored_prose_source(raw):
- s = raw.strip()
- if not s or s.startswith("ADR-") or ";" in s or "://" in s: return False
- if " " in s: return True
- if ":" in s: return False
- b = s.split("@sha256:", 1)[0].replace("\\", "/")
- if not b or b.startswith(("note:", "cite:")) or any(c in b for c in " \t\n\r;"): return True
- dot = b.rfind(".")
- if 0 < dot < len(b) - 1 and b[dot + 1:].isalnum() and any(c.isalpha() for c in b[dot + 1:]): return False
- return not ("/" in b and any("a" <= c <= "z" for c in b))
-
-
-def _contains_todo(v):
- return v == "todo" if isinstance(v, str) else (any(_contains_todo(x) for x in v) if isinstance(v, list) else (any(_contains_todo(x) for x in v.values()) if isinstance(v, dict) else False))
-
-
-def _has_approval_blocker(raw, prof):
- if isinstance(sc := raw.get("scope"), dict) and sc.get("indirect") == "unknown": return True
- if any(_contains_todo(raw.get(s)) for s in ("use", "scope", "cases", "budgets")): return True
- if isinstance(ot := raw.get("open"), dict) and any(isinstance(q, dict) and q.get("blocks", "approval") == "approval" for q in ot.values()): return True
- return any(isinstance(d, dict) and d.get("pick", "") == "" and d.get("decide_by", "approval") == "approval" for s in (raw.get("decisions"), prof.get("decisions")) if isinstance(s, dict) for d in s.values())
-
-
-def _load_merged_profile(prof_ref, profiles_dir):
- p0 = profiles_dir / f"{prof_ref}.toml"
- if not prof_ref or not p0.is_file(): return {}
- prof = tomllib.loads(p0.read_text(encoding="utf-8"))
- exts = prof.pop("extends", None)
- if not isinstance(exts, list) or not exts: return prof
- m, vw, vt, prm, pw, pt, req, cs, dc = {"drift": prof.get("drift", "0.2"), "profile": prof.get("profile", prof_ref)}, [], [], {}, {}, {}, {}, {}, {}
- for r in [*exts, prof_ref]:
-  bp = prof if r == prof_ref else (tomllib.loads(p.read_text(encoding="utf-8")) if (p := profiles_dir / f"{r}.toml").is_file() else {})
-  bv = bp.get("vocabulary") if isinstance(bp.get("vocabulary"), dict) else {}
-  vw.extend(w for w in bv.get("when", []) if w not in vw)
-  vt.extend(t for t in bv.get("then", []) if t not in vt)
-  for s, d in (("params", prm), ("cases", cs), ("decisions", dc)):
-   if isinstance(bp.get(s), dict): d.update(bp[s])
-  if isinstance(bpr := bp.get("projections"), dict):
-   pw.update(bpr["when"] if isinstance(bpr.get("when"), dict) else {})
-   pt.update(bpr["then"] if isinstance(bpr.get("then"), dict) else {})
-   for pk, pv in bpr.items():
-    if pk not in ("when", "then") and isinstance(pv, str): (pt if pk in vt else pw)[pk] = pv
-  if isinstance(bp.get("requires"), dict):
-   for k, v in bp["requires"].items():
-    if k == "security" and isinstance(v, list):
-     req["security"] = list(dict.fromkeys([*req.get("security", []), *(str(x) for x in v)]))
-    elif k != "proof" or "proof" not in req or _proof_rank(str(v)) > _proof_rank(str(req["proof"])): req[k] = v
-  if "kit" in bp: m["kit"] = bp["kit"]
- m["vocabulary"] = {"when": vw, "then": vt}
- for k, v in (("params", prm), ("requires", req), ("cases", cs), ("decisions", dc)):
-  if v: m[k] = v
- if pw or pt: m["projections"] = {**({"when": pw} if pw else {}), **({"then": pt} if pt else {})}
- return m
+def _load_merged_profile(prof_ref, profiles_dir): return load_merged_profile_impl(prof_ref, profiles_dir, _proof_rank)
 
 
 def _strip_outside_digest(cases, decs):
@@ -196,20 +144,27 @@ def verify_contract_toml(path, profiles_dir):
  raw.pop("note", None)
  raw_sc = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
  sc_code = [str(x) for x in raw_sc.get("code", []) if isinstance(x, str)] if isinstance(raw_sc.get("code"), list) else []
+ sc_reads = [str(x) for x in raw_sc.get("reads", []) if isinstance(x, str)] if isinstance(raw_sc.get("reads"), list) else []
+ sc_writes = [str(x) for x in raw_sc.get("writes", []) if isinstance(x, str)] if isinstance(raw_sc.get("writes"), list) else []
  if isinstance(raw.get("scope"), dict): raw["scope"] = {k: v for k, v in raw["scope"].items() if k not in ("code", "max_lines", "forbid_imports")}
  cases, use_tbl = raw.get("cases", {}), raw.get("use")
+ if isinstance(use_tbl, dict): use_tbl.pop("concepts", None)
  _strip_outside_digest(cases, raw.get("decisions"))
  if isinstance(raw.get("open"), dict):
   for qm in raw["open"].values():
    if isinstance(qm, dict): qm.pop("owner", None)
  prof_ref = use_tbl.get("profile", "") if isinstance(use_tbl, dict) else ""
  prof = _load_merged_profile(prof_ref, profiles_dir)
+ prof.pop("concepts", None)
  waived = use_tbl.get("waive", {}) if isinstance(use_tbl, dict) and isinstance(use_tbl.get("waive"), dict) else {}
  _strip_outside_digest(prof.get("cases", {}), prof.get("decisions"))
  inh = {k: cm for k, cm in (prof.get("cases") or {}).items() if k not in waived and isinstance(cm, dict)}
  eff = {**inh, **cases}
+ own_inv = set((raw.get("invariants") or {}).keys()) if isinstance(raw.get("invariants"), dict) else set()
+ prof_inv = set((prof.get("invariants") or {}).keys()) if isinstance(prof.get("invariants"), dict) else set()
+ inv_k = sorted(own_inv | prof_inv)
  keys_of = lambda m, s: {k for cm in m.values() if isinstance(cm, dict) for k in cm.get(s, {})}
- own_w, own_t, used_w, used_t = keys_of(cases, "when"), keys_of(cases, "then"), keys_of(eff, "when"), keys_of(eff, "then")
+ own_w, own_t, used_w, used_t = keys_of(cases, "when"), keys_of(cases, "then") | own_inv, keys_of(eff, "when"), keys_of(eff, "then") | own_inv | prof_inv
  if isinstance(use_tbl, dict) and isinstance(uv := use_tbl.get("vocabulary"), dict):
   nw, nt = [w for w in uv.get("when", []) if w in own_w], [t for t in uv.get("then", []) if t in own_t]
   if nvoc := {**({"when": nw} if nw else {}), **({"then": nt} if nt else {})}: use_tbl["vocabulary"] = nvoc
@@ -232,8 +187,11 @@ def verify_contract_toml(path, profiles_dir):
   if np := {**({"when": pw} if pw else {}), **({"then": pt} if pt else {})}: prof["projections"] = np
   else: prof.pop("projections", None)
  budgets, has_b = extract_contract_budgets(raw, use_tbl, dr1_digest)
+ formal, has_f = extract_contract_formal(raw, use_tbl, dr1_digest)
+ cutover, has_c = extract_contract_cutover(raw, use_tbl, dr1_digest)
  d_in = {"contract": raw, "profiles": ({prof_ref: prof} if prof_ref else {})}
- if has_b: d_in["evidence_protocols"] = ["performance-evidence/1"]
+ protos = [*(['formal-evidence/1'] if has_f else []), *(['parity-evidence/1'] if has_c else []), *(['performance-evidence/1'] if has_b else [])]
+ if protos: d_in["evidence_protocols"] = protos
  dig = dr1_digest(d_in)
  has_ref = isinstance(appr, dict) and bool(appr.get("ref"))
  st = "blocked" if _has_approval_blocker(raw, prof) else ("current" if has_ref and appr["ref"] == dr1_ref(dig) else ("stale" if has_ref else "absent"))
@@ -241,13 +199,16 @@ def verify_contract_toml(path, profiles_dir):
  own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d, dict)] if isinstance(raw.get("decisions"), dict) else []
  decs = [d for s in (raw.get("decisions"), prof.get("decisions")) if isinstance(s, dict) for d in s.values() if isinstance(d, dict)]
  blk = lambda ph: any(isinstance(q, dict) and q.get("blocks") == ph for q in open_m.values()) or any(d.get("pick", "") == "" and d.get("decide_by") == ph for d in decs)
- return {"id": cid, "digest": dig, "ref": dr1_ref(dig), "approval": st, "approver": str(appr.get("by", "")) if has_ref else "", "profile_proof": p_proof, "profile_security": p_sec, "scope_code": sc_code, "cases": eff, "budgets": budgets, "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in eff.values())}
+ area_root = path.parent.parent.parent if path.parent.name == "contracts" and path.parent.parent.name == ".drift" else path.parent
+ return {"id": cid, "digest": dig, "ref": dr1_ref(dig), "approval": st, "approver": str(appr.get("by", "")) if has_ref else "", "profile_proof": p_proof, "profile_security": p_sec, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": inv_k, "cases": eff, "budgets": budgets, "formal": formal, "cutover": cutover, "area_root": area_root, "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in eff.values())}
 
 
 def load_proof_events(events_paths):
- shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() else []))]
- events, gone, inc, errs, snaps, all_snap = [], {}, 0, [], set(), bool(shards)
+ shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".jsonl") else []))]
+ events, gone, inc, errs, snaps, shard_subs, all_snap, sh_hashes = [], {}, 0, [], set(), set(), bool(shards), []
  for sf in shards:
+  raw = sf.read_bytes()
+  sh_hashes.append("sha256:" + hashlib.sha256(raw).hexdigest())
   mp = sf.with_suffix(".meta.json")
   has_inv, c_set, t_set, snap = mp.is_file(), set(), set(), ""
   if has_inv:
@@ -256,27 +217,28 @@ def load_proof_events(events_paths):
     c_set, t_set, snap = inv["classes"], inv["tests"], inv["snapshot"]
     if snap: snaps.add(snap)
     else: all_snap = False
+    if inv.get("subject_ref"): shard_subs.add(inv["subject_ref"])
    except Exception as exc:
-    errs.append(f"{mp.name}: {exc}")
-    all_snap = False
-    continue
+    errs.append(f"{mp.name}: {exc}"); all_snap = False; continue
   else: all_snap = False
   cnt = 0
-  for idx, line in enumerate(sf.read_text(encoding="utf-8").splitlines(), 1):
+  for idx, line in enumerate(raw.decode("utf-8").splitlines(), 1):
    if not line.strip(): continue
    try: ev = validate_event_line(line)
    except Exception as exc:
-    errs.append(f"events:{sf.name}:{idx}: DR-E701 {exc}")
-    continue
+    errs.append(f"events:{sf.name}:{idx}: DR-E701 {exc}"); continue
    cnt += 1
    tid = ev["test"].split("[", 1)[0]
    if not has_inv or (tid.split("#", 1)[0] if "#" in tid else "") not in c_set or tid not in t_set: gone[ev["contract"]] = gone.get(ev["contract"], 0) + 1
    else: events.append(ev)
   if has_inv and snap and t_set and cnt == 0: inc += 1
  sec_recs, sec_errs = load_security_receipts_impl(events_paths, _decode_no_dup_keys)
- errs.extend(sec_errs)
+ form_recs, form_errs = load_formal_receipts_impl(events_paths, _decode_no_dup_keys)
+ par_recs, par_errs = load_parity_receipts_impl(events_paths, _decode_no_dup_keys)
+ mig_recs, mig_errs = load_migration_receipts_impl(events_paths, _decode_no_dup_keys)
+ errs.extend(sec_errs + form_errs + par_errs + mig_errs)
  exp_snap = next(iter(snaps)) if all_snap and inc == 0 and events and len(snaps) == 1 else ""
- return events, gone, inc, errs, sec_recs, exp_snap
+ return events, gone, inc, errs, sec_recs, form_recs, par_recs, mig_recs, shard_subs, exp_snap, sh_hashes, sorted(snaps), bool(all_snap and shards)
 
 
 def _proof_rank(floor): return {"killed": 3, "verified": 2, "bound": 1}.get(floor, 0)
@@ -285,7 +247,7 @@ def load_mutation_events(paths, manifest): return load_mutation_events_impl(path
 def evaluate_contract_mutations(contract, manifest, latest_mut, mut_errors): return evaluate_contract_mutations_impl(contract, manifest, latest_mut, mut_errors, digest_matches)
 
 
-def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_errors, policy=None, min_proof="verified", phase="", total_open=None, mutations_ok=False, perf_bundle=None, expected_subject=None, sec_receipts=None, expected_snapshot=""):
+def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_errors, policy=None, min_proof="verified", phase="", total_open=None, mutations_ok=False, perf_bundle=None, expected_subject=None, sec_receipts=None, expected_snapshot="", formal_receipts=None, shard_subject_refs=None, manifest_sources=None, parity_receipts=None, mig_receipts=None):
  cid, dig, pol = contract["id"], contract["digest"], policy or {}
  pol_on = pol.get("pack") == "core@1"
  matching, ignored, latest, sup = [], 0, {}, 0
@@ -318,13 +280,21 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
  allowed = ("verified",) if eff_rank >= 2 else ("verified", "bound")
  if gone > 0 or incomplete_shards > 0 or not res or any(r["state"] not in allowed for r in res) or (eff_rank >= 3 and not mutations_ok): rsn.append("proof.not_green")
  p_rsn, pend_b, p_sum = evaluate_contract_budgets(contract, phase, perf_bundle, expected_subject, digest_matches, pol)
- rsn.extend(r for r in p_rsn if r not in rsn)
  s_rsn, s_checks = evaluate_contract_security_impl(contract, sec_receipts or [], pol if pol_on else {}, expected_snapshot, digest_matches)
- rsn.extend(r for r in s_rsn if r not in rsn)
+ exp_sref = (expected_subject or {}).get("artifact_ref", "")
+ f_rsn, pend_f, f_checks = evaluate_contract_formal_impl(contract, formal_receipts or [], phase, exp_sref, expected_snapshot, shard_subject_refs or set(), contract.get("area_root"), manifest_sources, digest_matches)
+ par_rsn, par_checks = evaluate_contract_parity_impl(contract, parity_receipts or [], phase, digest_matches)
+ m_rsn, m_checks = evaluate_contract_migration_impl(contract, mig_receipts or [], pol if pol_on else {}, expected_snapshot, exp_sref, digest_matches)
+ for r in (*p_rsn, *s_rsn, *f_rsn, *par_rsn, *m_rsn):
+  if r not in rsn: rsn.append(r)
  out = {"id": cid, "digest": dig, "ref": contract["ref"], "approval": contract["approval"], "ok": not rsn, "reasons": rsn, "ignored": ignored, "superseded": sup, "gone": gone, "results": res}
  if p_sum is not None: out["performance"] = p_sum
  if pend_b: out["pending_budgets"] = pend_b
+ if pend_f: out["pending_formal"] = pend_f
  if s_checks: out["security_checks"] = s_checks
+ if f_checks: out["formal_checks"] = f_checks
+ if par_checks: out["parity_checks"] = par_checks
+ if m_checks: out["migration_checks"] = m_checks
  return out
 
 
@@ -337,26 +307,19 @@ def _expect_err(fn, arg):
 
 def run_self_test():
  assert canonical_json(-0.0) == "0" and canonical_json(1e21) == "1e+21" and canonical_json(1e-6) == "0.000001" and canonical_json(1e-7) == "1e-7" and canonical_json({"\ue000": 1, "\U0001f600": 2}) == '{"\U0001f600":2,"\ue000":1}'
- for bad in (1 << 53, -(1 << 53), float("nan"), float("inf")): _expect_err(canonical_json, bad)
- ev_b = '"contract":"a","cases":["c"],"level":"unit","outcome":"passed"'
- for b in (f'"test":"t#1","test":"t#2",{ev_b}', f'"test":"t#1",{ev_b},"extra":1', f'"test":"t#1",{ev_b},"read":["other"]', '"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"', '"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"', f'"test":"t#1",{ev_b},"digest":"dr1:UPPER0000000"'):
-  _expect_err(validate_event_line, "{" + b + "}")
+ for b in (1 << 53, -(1 << 53), float("nan"), float("inf")): _expect_err(canonical_json, b)
+ eb = '"contract":"a","cases":["c"],"level":"unit","outcome":"passed"'
+ for b in (f'"test":"t#1","test":"t#2",{eb}', f'"test":"t#1",{eb},"extra":1', f'"test":"t#1",{eb},"read":["other"]', '"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"', '"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"', f'"test":"t#1",{eb},"digest":"dr1:UPPER0000000"'): _expect_err(validate_event_line, "{" + b + "}")
  _expect_err(validate_event_line, '{"a":' * 65 + '1' + '}' * 65)
  assert len(validate_inventory_text(json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0" * 40, "pack_ref": "dr1:" + "0" * 12, "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": dict.fromkeys(ENV_KEYS, "v")}))["tests"]) == 2
- v2 = validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))
- assert v2["version"] == 2 and v2["execution_ref"] == "sha256:" + "a" * 64 and not v2["touched"]
+ assert validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))["version"] == 2
  ib = '"version":1,"classes":["a"],"tests":["a#t1"]'
- for sfx in ('"version":2,"classes":[],"tests":[]', '"version":true,"classes":[],"tests":[]', '"version":1,"classes":["b","a"],"tests":[]', '"version":1,"classes":["a/b"],"tests":[]', '"version":1,"classes":["a"],"tests":["other#t1"]', f'{ib},"snapshot":"bad"', f'{ib},"pack_ref":"dr1:bad"', f'{ib},"touched":["/abs"]', f'{ib},"touched":["../e"]', f'{ib},"inputs":{{"u#t":{{"f":"1"}}}}', f'{ib},"env":{{"toolchain":"v1"}}', f'{ib},"extra":1'):
-  _expect_err(validate_inventory_text, "{" + sfx + "}")
- assert _is_unanchored_prose_source("observed in prod") and _is_unanchored_prose_source("SPEC.md#D209") and not _is_unanchored_prose_source("src/a/Item.java") and not _is_unanchored_prose_source("ADR-0012")
- assert _has_approval_blocker({"open": {"q": {"ask": "?", "blocks": "approval"}}}, {}) and not _has_approval_blocker({"open": {"q": {"ask": "?", "blocks": "execution"}}}, {}) and _has_approval_blocker({"scope": {"indirect": "unknown"}}, {}) and _has_approval_blocker({"cases": {"c": {"then": {"x": "todo"}}}}, {})
+ for sfx in ('"version":2,"classes":[],"tests":[]', '"version":true,"classes":[],"tests":[]', '"version":1,"classes":["b","a"],"tests":[]', '"version":1,"classes":["a/b"],"tests":[]', '"version":1,"classes":["a"],"tests":["other#t1"]', f'{ib},"snapshot":"bad"', f'{ib},"pack_ref":"dr1:bad"', f'{ib},"touched":["/abs"]', f'{ib},"touched":["../e"]', f'{ib},"inputs":{{"u#t":{{"f":"1"}}}}', f'{ib},"env":{{"toolchain":"v1"}}', f'{ib},"extra":1'): _expect_err(validate_inventory_text, "{" + sfx + "}")
+ assert _is_unanchored_prose_source("observed in prod") and not _is_unanchored_prose_source("src/a/Item.java") and _has_approval_blocker({"scope": {"indirect": "unknown"}}, {})
  ck = {"id": "svc", "digest": "dr1:sha256:" + "a" * 64, "ref": "dr1:" + "a" * 12, "approval": "current", "approver": "o", "profile_proof": "killed", "cases": {"ok": {"at": ["unit"], "then": {"status": 200}}}, "open_cnt": 0, "exec_blk": False, "rel_blk": False}
  ev = [{"test": "T#ok", "contract": "svc", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": ck["ref"]}]
  assert not evaluate_contract(ck, "current", ev, 0, 0, [])["ok"] and evaluate_contract(ck, "current", ev, 0, 0, [], mutations_ok=True)["ok"]
- mid = "ok:/cases/ok/then/status"
- md = validate_mutation_manifest(json.dumps({"version": 1, "contracts": [{"id": "svc", "digest": ck["digest"], "mutants": [{"id": mid, "case": "ok", "path": "/cases/ok/then/status", "operator": "add-one", "before": 200, "after": 201}]}]}))
- me = {"manifest": md["digest"], "contract": "svc", "digest": ck["digest"], "mutant": mid, "case": "ok", "outcome": "killed", "control": "passed"}
- assert evaluate_contract_mutations(ck, md, {("svc", mid): me}, []) and not evaluate_contract_mutations(ck, md, {("svc", mid): {**me, "outcome": "survived"}}, [])
+ run_sec_self_test(ck, digest_matches)
  print("drift_verify.py self-test: ok (RFC 8785 JCS, event & full inventory schema vectors passed)")
  return 0
 
@@ -368,38 +331,33 @@ def main(argv):
  ap.add_argument("--config", type=Path, required=True)
  ap.add_argument("--profiles", type=Path)
  ap.add_argument("--events", type=Path, action="append", required=True)
- ap.add_argument("--mutants", type=Path)
+ for fl in ("--mutants", "--measurements", "--subject", "--attest", "--attest-sig", "--trust-root"): ap.add_argument(fl, type=Path)
  ap.add_argument("--mutation-events", type=Path, action="append")
- ap.add_argument("--measurements", type=Path)
- ap.add_argument("--subject", type=Path)
- ap.add_argument("--subject-artifact", default="")
- ap.add_argument("--subject-tree", default="")
- ap.add_argument("--run-id", default="")
+ for fl in ("--subject-artifact", "--subject-tree", "--run-id", "--verify-time"): ap.add_argument(fl, default="")
  ap.add_argument("--min-proof", choices=("bound", "verified", "killed"), default="verified")
  ap.add_argument("--phase", choices=("execution", "release"), default="")
- for fl in ("--attest", "--attest-sig", "--trust-root"): ap.add_argument(fl, type=Path)
- ap.add_argument("--verify-time", default="")
  ap.add_argument("--json", action="store_true")
  args = ap.parse_args(argv)
  if bool(args.mutants) != bool(args.mutation_events): ap.error("--mutants and --mutation-events must be supplied together")
- cfg_st, _, pol = verify_config_toml(args.config)
+ cfg_st, cfg_dig, pol = verify_config_toml(args.config)
  p_dir = args.profiles or (args.config.parent / "profiles")
  c_files = [cf for t in args.targets for cf in (sorted(t.glob("*.toml")) if t.is_dir() else [t])]
- evs, gone, inc, ev_errs, sec_recs, exp_snap = load_proof_events(args.events)
+ evs, gone, inc, ev_errs, sec_recs, form_recs, par_recs, mig_recs, shard_subs, exp_snap, sh_h, sn_l, sn_ok = load_proof_events(args.events)
  m_man, lat_m, m_errs = None, {}, []
  if args.mutants and args.mutation_events:
   try:
-   m_man = validate_mutation_manifest(args.mutants.read_text(encoding="utf-8"))
+   m_man = validate_mutation_manifest(args.mutants.read_text("utf-8"))
    lat_m, m_errs = load_mutation_events(args.mutation_events, m_man)
   except Exception as exc: m_errs.append(str(exc))
- s_art = args.subject_artifact or (("sha256:" + hashlib.sha256(args.subject.read_bytes()).hexdigest()) if args.subject else "")
+ s_art, man_srcs = (parse_subject_manifest_impl(st, _decode_no_dup_keys, canonical_json)["subject_ref"], parse_subject_manifest_impl(st, _decode_no_dup_keys, canonical_json)["sources"]) if args.subject and '"drift.subject-manifest/1"' in (st := args.subject.read_text("utf-8", errors="ignore")) else ((args.subject_artifact or (("sha256:" + hashlib.sha256(args.subject.read_bytes()).hexdigest()) if args.subject else "")), None)
  exp_sub = {"artifact_ref": s_art, "source_tree": args.subject_tree, "run_id": args.run_id}
  perf_b = load_measurement_bundle(args.measurements, _decode_no_dup_keys, digest_matches)
  by_c = {}
  for ev in evs: by_c.setdefault(ev["contract"], []).append(ev)
  parsed = [verify_contract_toml(cf, p_dir) for cf in c_files]
  tot_open = sum(c.get("open_cnt", 0) for c in parsed)
- verdicts = apply_openssh_trust_verdicts([evaluate_contract(c, cfg_st, by_c.get(c["id"], []), gone.get(c["id"], 0), inc, ev_errs, pol, args.min_proof, args.phase, tot_open, evaluate_contract_mutations(c, m_man, lat_m, m_errs), perf_b, exp_sub, sec_recs, exp_snap) for c in parsed], args)
+ raw_v = [evaluate_contract(c, cfg_st, by_c.get(c["id"], []), gone.get(c["id"], 0), inc, ev_errs, pol, args.min_proof, args.phase, tot_open, evaluate_contract_mutations(c, m_man, lat_m, m_errs), perf_b, exp_sub, sec_recs, exp_snap, form_recs, shard_subs, man_srcs, par_recs, mig_recs) for c in parsed]
+ verdicts = apply_openssh_trust_verdicts(raw_v, args, cfg_st, cfg_dig, sh_h, sn_l, sn_ok, inc, m_man, perf_b, _decode_no_dup_keys)
  ok = bool(verdicts) and all(v["ok"] for v in verdicts)
  if args.json: print(json.dumps({"ok": ok, "contracts": verdicts}, indent=2, sort_keys=True))
  else:

@@ -6,7 +6,7 @@
 
 DRIFT is packaged into three progressive editions—**Free**, **Pro**, and **Enterprise**—across Linux (`x86_64`), macOS (`arm64` Apple Silicon and `x86_64` Intel), and Windows (`x86_64`).
 
-Every edition is a **self-contained standalone package**: installing **Pro** or **Enterprise** gives you the complete CLI, the full progressive-superset Agent Skill (`skill/drift/SKILL.md` + `references/`), all five language bridges (`drift-junit`, `drift-maven-plugin`, `drift.mjs`, `drift.py`, `drift_v.v`, `integrations/rust`), editor JSON Schemas, and agent hooks in one step.
+Every edition is a **self-contained standalone package**: installing **Pro** or **Enterprise** gives you the complete CLI, the full progressive-superset Agent Skill (`skill/drift/SKILL.md` + `references/`), all five language bridges (`drift-junit` for Java & Scala/MUnit, `drift-maven-plugin`, `drift.mjs`, `drift.py`, `bridges/v/drift_v`, `bridges/rust` / `drift_rust`), editor JSON Schemas, and agent hooks in one step.
 
 ---
 
@@ -14,9 +14,9 @@ Every edition is a **self-contained standalone package**: installing **Pro** or 
 
 | Edition | Target Audience | Core Value |
 |---|---|---|
-| **DRIFT Free** (`drift`) | Individual developers, open-source maintainers, and teams adopting Specification-Driven Development | Complete single-contract lifecycle: draft, format, check, diff, review, approve, export views, bind JUnit/Node/Python/V/Rust tests (including `allowed_keys` and `checkAdverse`/`check_adverse`), verify `[budgets.<id>]` (`--measurements`) and `*.security.json` receipts, and enforce the release gate. |
-| **DRIFT Pro** (`drift-pro`) | Fast-moving engineering teams and multi-agent workflows | Incremental & multi-slice velocity: change-based test & budget selection (`select`), blast-radius (`impact`), wave DAG scheduling (`plan`), `@recall` context capsules (`recall`), 3-way semantic contract merge (`merge`), baseline delta & leading-indicator reviews (`review --base`, `review --measurements`), and bounded proof/performance/security reuse (`gate --base`). |
-| **DRIFT Enterprise** (`drift-enterprise`) | Regulated, mission-critical, and large-scale multi-service organizations | High-assurance governance: contract mutation testing with configurable `[policy].priority_weights` (`mutants`, `proof = "killed"`), cryptographic gate attestations with performance & security bundles (`gate --attest`), JUnit XML CI reports (`gate --as junit`), fleet dataflow, budget & security boundary audits (`sweep --flow --simplify --promote`), and multi-version analytics (`stats`). |
+| **DRIFT Free** (`drift`) | Individual developers, open-source maintainers, and teams adopting Specification-Driven Development | Complete single-contract lifecycle: draft, format, check, diff, review, approve (`--reviewed`, `--ssh-sign`), export views, bind Java/Scala/Node/Python/Rust/V tests (including `allowed_keys`/`forbid_keys`, `not_in`, `checkFrame`, and `checkAdverse`/`check_adverse`), verify `[invariants]`, `[budgets.<id>]` (`--measurements`), `*.security.json`, and `[formal.<id>]` (`*.formal.json` / `*.model.json`) receipts, and enforce the release gate. |
+| **DRIFT Pro** (`drift-pro`) | Fast-moving engineering teams and multi-agent workflows | Incremental & multi-slice velocity: change-based test & budget selection (`select`), blast-radius (`impact`), wave DAG scheduling (`plan`), `@recall` context capsules (`recall`), 3-way semantic contract merge (`merge`), OpenAPI 3.2/AsyncAPI/runtime-trace scaffolding (`new --openapi`, `--asyncapi`, `--from-upstream`), baseline delta & leading-indicator reviews (`review --base`, `review --measurements`), and bounded proof/performance/security reuse (`gate --base`). |
+| **DRIFT Enterprise** (`drift-enterprise`) | Regulated, mission-critical, and large-scale multi-service organizations | High-assurance governance: contract mutation testing with configurable `[policy].priority_weights` (`mutants`, `proof = "killed"`), cryptographic gate attestations with performance, security & OpenSSH signature bundles (`gate --attest`, `--ssh-sign`, `--trust-root`), JUnit XML CI reports (`gate --as junit`), fleet dataflow, FSM/Saga, AsyncAPI epoch, budget & security boundary audits (`sweep --flow --simplify --promote`), and multi-version analytics (`stats`). |
 
 ---
 
@@ -29,16 +29,16 @@ Every edition is a **self-contained standalone package**: installing **Pro** or 
 | `drift init` | ✅ | ✅ | ✅ | Initialize an area configuration (`.drift/config.toml`) |
 | `drift new` | ✅ | ✅ | ✅ | Scaffold a new contract or profile |
 | `drift case` | ✅ | ✅ | ✅ | Append draft cases to an existing contract (`case add`; `--from-intent` in **Pro**) |
-| `drift check` | ✅ | ✅ | ✅ | Static validation of contracts, profiles, `[budgets.<id>]`, `[requires].security`, and `.drift/config.toml` |
-| `drift status` | ✅ | ✅ | ✅ | Compact summary of area approval and proof states (`--detail summary`) |
+| `drift check` | ✅ | ✅ | ✅ | Static validation of contracts, profiles, `[concepts]`, `[invariants]`, `[cutover]`, `[budgets.<id>]`, `[requires].security`, `[formal.<id>]`, UI surfaces, and `.drift/config.toml` |
+| `drift status` | ✅ | ✅ | ✅ | Compact summary of area approval and proof states (`--detail summary\|guided`) |
 | `drift show` | ✅ | ✅ | ✅ | Export resolved contract JSON views (`--as json`, `--out`; `--boundary` in **Pro**) |
 | `drift export` | ✅ | ✅ | ✅ | Export contract views (`export views` in **Free**; `export boundary` in **Pro**) |
 | `drift fmt` | ✅ | ✅ | ✅ | Canonical TOML formatter (`--check`, `--sync-vocab`) |
 | `drift diff` | ✅ | ✅ | ✅ | Structural and semantic diff between two contracts |
-| `drift approve` | ✅ | ✅ | ✅ | Owner approval seal (`--by OWNER`, `--pin-sources`) |
+| `drift approve` | ✅ | ✅ | ✅ | Owner approval seal (`--by OWNER`, `--pin-sources`, `--reviewed --expect-review`, `--ssh-sign`) |
 | `drift explain` | ✅ | ✅ | ✅ | Detailed cause and remediation for any `DR-E*` code or reason token |
 | `drift version` | ✅ | ✅ | ✅ | Print CLI version, schema version, digest algorithm, and build ID |
-| `drift select` | — | ✅ | ✅ | Change-based test and performance-budget selection across JVM, JS, Python, V, Rust, and Pug/Sass/CSS graphs |
+| `drift select` | — | ✅ | ✅ | Change-based test and performance-budget selection across JVM (Java/Scala), JS, Python, V, Rust, and Pug/Sass/CSS graphs |
 | `drift impact` | — | ✅ | ✅ | Blast radius, lexical query, and transitive dependency graph |
 | `drift plan` | — | ✅ | ✅ | Wave DAG scheduling, `what_if` cuts, and `--pack` worker bundles |
 | `drift recall` | — | ✅ | ✅ | Symbolic context capsules (`recall query`) and ring maintenance (`recall sync`) across code and `#<Type>.<method>` / `#<mixin>` anchors |
@@ -52,13 +52,13 @@ Several core commands belong to **DRIFT Free** in their standard usage and unloc
 
 | Command | Free Usage | Pro Subcommands / Options | Enterprise Subcommands / Options |
 |---|---|---|---|
-| `drift case` | `drift case add <file> [<id>] --ask <text> [--blocks <phase>]` | `--from-intent` | *(all Pro options)* |
-| `drift export` | `drift export views [<path>...] --out <dir>` | `drift export boundary [<path>...] --out <file> [--area ...] [--openapi ... \| --asyncapi ...]` | *(all Pro options)* |
-| `drift review` | `drift review <path> [--brief] [--as json\|summary] [--detail full\|summary\|guided]` | `--base <ref>` (`budget-coarsened`, `security-coarsened`, `allowed_keys` `then.widened`), `--delta`, `--base-profiles`, `--events`, `--measurements` (`budget-at-risk` & `revisit_triggered`), `--subject*`, `--run-id`, `--upstream`, `--as md` | *(all Pro options)* |
-| `drift new` | `drift new <file> [--profile REF] [--from <sibling>] [--code ...] [--intent ...]` | `--openapi <file>`, `--asyncapi <file>`, `--from-upstream`, `--resource`, `--from-recall <id>`, `--from-intent` | *(all Pro options)* |
+| `drift case` | `drift case add <file> [<id>] --ask <text> [--blocks <phase>]` | `--from-intent`, `--from-signal <file>` | *(all Pro options)* |
+| `drift export` | `drift export views [<path>...] --out <dir>` | `drift export boundary [<path>...] --out <file> [--area ...] [--openapi ... \| --asyncapi ... \| --wsdl ...]` | *(all Pro options)* |
+| `drift review` | `drift review <path> [--brief] [--as json\|summary] [--detail full\|summary\|guided]` | `--base <ref>` (`budget-coarsened`, `security-coarsened`, `concept_changes`, `when.narrowed`/`when.shifted`, `writes.widened`, `allowed_keys`/`forbid_keys`/`not_in` `then.widened`, `refinement`, `relaxation_witnesses`), `--delta`, `--base-profiles`, `--events`, `--measurements` (`budget-at-risk` & `revisit_triggered`), `--subject*`, `--run-id`, `--upstream`, `--as md` | *(all Pro options)* |
+| `drift new` | `drift new <file> [--profile REF] [--concept ID...] [--from <sibling>] [--code ...] [--intent ...]` | `--openapi <file>`, `--asyncapi <file>`, `--wsdl <file>`, `--from-upstream`, `--resource`, `--from-recall <id>`, `--from-intent` | *(all Pro options)* |
 | `drift prove` | `drift prove <path> --events <dir> [--measurements <file> --subject* --run-id ...] [--at LEVEL...] [--explain] [--json]` | `--base <ref>`, `--changed`, `--changed-list`, `--changed-none` | `--mutants <file>`, `--mutation-events <dir>` |
 | `drift gate` | `drift gate <path> --events <dir> [--execution-context <file> [--base-snapshot ... --result-snapshot ...]] [--measurements <file> --subject* --run-id ...] [--at LEVEL...] [--phase ...] [--explain] [--as summary\|json] [--detail full\|summary\|guided]` | `--base <ref>` (including `performance_reuse = "execution"` and security receipt reuse), `--changed`, `--changed-list`, `--changed-none`, `--upstream` | `--mutants`, `--mutation-events`, `--attest <file>` (with `performance`, `security_checks`, `--ssh-sign`, `--trust-root`, `--verify-time`), `--as junit`, `--compare-before` |
-| `drift sweep` | — | `sweep check`, `sweep sync-scope [--apply]`, `--root <dir>`, `--base <ref>`, `--delta`, `--recall`, `--sync-scope` | `sweep simplify`, `sweep promote`, `--flow` (resource, budget, security & AsyncAPI epoch checks), `--openapi`, `--asyncapi`, `--epoch-manifest`, `--scaffold-profile`, `--promote`, `--simplify`, `--apply`, `--upstream` |
+| `drift sweep` | — | `sweep check`, `sweep sync-scope [--apply]`, `--root <dir>`, `--base <ref>`, `--delta`, `--recall`, `--sync-scope` | `sweep simplify`, `sweep promote`, `--flow` (resource, DB seam, budget, security & AsyncAPI epoch checks), `--openapi`, `--asyncapi`, `--wsdl`, `--epoch-manifest`, `--scaffold-profile`, `--promote`, `--simplify`, `--apply`, `--upstream` |
 
 ---
 

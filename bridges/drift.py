@@ -99,7 +99,7 @@ def _resolve_env() -> dict[str, str] | None:
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key:
         return _env_cache[1]
-    base = {'adapter': 'drift.py@0.3.2', 'config': 'default', 'deps': 'none', 'drift': '0.3.2', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.3.3', 'config': 'default', 'deps': 'none', 'drift': '0.3.3', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -490,6 +490,9 @@ class DriftContext:
         self.record_input(fp, raw)
         return _strip_bom(raw.decode(encoding))
 
+    def bind_ui_environment(self, p: str | Path, o: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return _checks._ui.bind_ui_environment(self, p, o)
+
     def check(self, case_id: str, checks: Mapping[str, Callable[[Any], Any]]) -> None:
         self._require_tagged(case_id)
         _checks.run_simple_checks(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], checks)
@@ -525,12 +528,22 @@ class DriftContext:
     def check_adverse(self, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         _checks.run_adverse_checks(self, case_id, harness, checks)
 
+    def check_frame(self, case_id: str, frame_obs: Mapping[str, Any]) -> None:
+        _checks._sec.verify_case_frame(self, case_id, frame_obs, _checks.values_mismatch, True)
+
     def check_view(self, case_id: str, view: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         self._require_tagged(case_id)
         _checks.check_view_table(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], view, checks, self.mutation_override, _METRICS, lambda: self._proj_map('then'))
 
     def fully_read_cases(self) -> list[str]:
-        return [c for c in self.cases if (n := len(self.view['cases'][c].get('then') or {})) > 0 and len(self.reads[c]) >= n]
+        out: list[str] = []
+        for c in self.cases:
+            t_keys = list((self.view['cases'][c].get('then') or {}).keys())
+            f_res = _checks._sec.forbidden_writes_of(self.view, c)
+            seen = self.reads[c]
+            if t_keys and all(k in seen for k in t_keys) and all(f'@frame:{r}' in seen for r in f_res):
+                out.append(c)
+        return out
 
 
 def select_files(sel: Any = None, root_dir: str | Path | None = None) -> list[str]:

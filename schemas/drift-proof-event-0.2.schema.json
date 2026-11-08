@@ -61,7 +61,7 @@
       "properties": {
         "version": {
           "type": "integer",
-          "const": 1
+          "enum": [1, 2]
         },
         "classes": {
           "type": "array",
@@ -87,12 +87,28 @@
           "type": "string",
           "pattern": "^dr1:[0-9a-f]{12}$"
         },
+        "execution_ref": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "subject_ref": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "touched": {
           "type": "array",
           "uniqueItems": true,
           "items": {
             "type": "string",
             "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)(?:\\.{1,2}|$)).+$"
+          }
+        },
+        "self_stubbed": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^# \\t\\r\\n/\\\\\\[\\]]+#[^# \\t\\r\\n\\[\\]]+$"
           }
         },
         "inputs": {
@@ -119,6 +135,133 @@
             "policy": { "type": "string", "minLength": 1 }
           }
         }
+      },
+      "oneOf": [
+        {
+          "properties": { "version": { "const": 1 } },
+          "not": { "required": ["execution_ref"] }
+        },
+        {
+          "properties": { "version": { "const": 2 } },
+          "required": ["execution_ref"]
+        }
+      ]
+    },
+    "securityReceipt": {
+      "title": "DRIFT Security Check Receipt (<name>.security.json)",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "category", "tool", "tool_ref", "ruleset_ref", "contract", "digest", "code_snapshot", "covered_scope", "cases", "outcome"],
+      "properties": {
+        "kind": { "type": "string", "const": "security_check" },
+        "category": { "type": "string", "enum": ["sast", "fuzz", "policy", "deps"] },
+        "tool": { "type": "string", "minLength": 1 },
+        "tool_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "ruleset_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "contract": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "digest": { "type": "string", "pattern": "^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$" },
+        "code_snapshot": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "covered_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        },
+        "outcome": { "type": "string", "enum": ["passed", "violated", "inconclusive"] }
+      }
+    },
+    "formalReceipt": {
+      "title": "DRIFT Formal Verification Receipt (<name>.formal.json)",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "contract", "digest", "formal_id", "requirement_ref",
+        "verifier", "verifier_ref", "subject_ref", "subject_identity",
+        "execution_determinism", "code_snapshot", "covered_scope", "cases",
+        "verified_properties", "evidence_kind", "completion", "linkage", "outcome"
+      ],
+      "properties": {
+        "schema": { "type": "string", "const": "drift.formal-receipt/1" },
+        "contract": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "digest": { "type": "string", "pattern": "^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$" },
+        "formal_id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "requirement_ref": { "type": "string", "pattern": "^dr1:sha256:[0-9a-f]{64}$" },
+        "verifier": { "type": "string", "enum": ["kani", "loom", "tlc", "cbmc", "alloy", "spin", "shuttle", "stateright", "dafny"] },
+        "verifier_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "subject_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "subject_identity": { "type": "string", "enum": ["pinned", "opaque_external"] },
+        "execution_determinism": { "type": "string", "enum": ["bitwise", "statistical"] },
+        "code_snapshot": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "covered_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        },
+        "verified_properties": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence_kind": { "type": "string", "enum": ["deductive", "bounded_exhaustive", "sampled_exploration"] },
+        "completion": { "type": "string", "enum": ["proven", "exhausted_within_bounds", "sampled_budget_met", "truncated_unwind", "truncated_oom", "truncated_timeout"] },
+        "linkage": { "type": "string", "enum": ["in_code_harness", "conformance_traced", "declared_model"] },
+        "harness": { "type": "string", "minLength": 3 },
+        "domain_bounds": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "enum": ["loop_unwind", "max_preemptions", "max_steps", "max_threads", "input_bytes"] },
+          "additionalProperties": { "type": "integer", "minimum": 1 }
+        },
+        "cover_checks": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "enum": ["satisfied", "unsatisfied", "unreachable"] }
+        },
+        "fairness": { "type": "string", "enum": ["none", "weak", "strong"] },
+        "assumptions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "source_digests": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        },
+        "reproducer": {
+          "type": "object",
+          "required": ["kind", "command", "witness"],
+          "properties": {
+            "kind": { "type": "string", "const": "counterexample_witness" },
+            "command": { "type": "string", "minLength": 1 },
+            "witness": {
+              "type": "object",
+              "required": ["when", "then"],
+              "properties": {
+                "when": { "type": "object" },
+                "then": { "type": "object" }
+              },
+              "additionalProperties": false
+            },
+            "artifact_path": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "outcome": { "type": "string", "enum": ["passed", "violated", "inconclusive"] }
       }
     }
   }

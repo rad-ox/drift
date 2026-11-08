@@ -2,7 +2,7 @@
 
 const REL_KEYS = new Set([
   'min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in',
-  'sum_fields', 'contains', 'prefix', 'suffix',
+  'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys',
 ]);
 const throwError = (message) => {
   throw new Error(message);

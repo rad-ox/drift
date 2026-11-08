@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `drift:drift-junit:0.3.2` and
-`drift:drift-maven-plugin:0.3.2` (from `maven/` in the release package) into
+The release installer puts `drift:drift-junit:0.3.3` and
+`drift:drift-maven-plugin:0.3.3` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -26,7 +26,7 @@ id, and reruns then collapse them.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -37,7 +37,7 @@ id, and reruns then collapse them.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <executions>
     <execution>
       <goals>
@@ -178,6 +178,39 @@ The events file may keep earlier runs: the gate takes each test's last event
 for the current version. `--events` may be repeated, and a directory stands
 for its `*.jsonl` files.
 
+### Scala 3 / MUnit and `sbt` (`build.sbt`)
+
+Resolve `drift:drift-junit` from the local Maven repository in `build.sbt` and
+pass `drift.resolved` and `drift.events` to the forked test JVM:
+
+```scala
+scalaVersion := "3.9.0"
+resolvers += Resolver.mavenLocal
+libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+Test / fork := true
+Test / javaOptions ++= Seq(
+  s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
+  s"-Ddrift.events=${baseDirectory.value}/target/drift/events"
+)
+```
+
+```scala
+import drift.Drift
+
+class ItemSuite extends munit.FunSuite:
+  test("returns existing item") {
+    val c = Drift.expect("item-get", "found", "http")
+    val res = send(c.whenString("request"))
+    c.verify("status", res.status, "name", res.name)
+  }
+```
+
+```bash
+drift show .drift/contracts --as json --out target/drift/resolved
+sbt test
+drift gate .drift/contracts --events target/drift/events --json
+```
+
 ## Selecting tests after a contract change
 
 ```bash
@@ -275,6 +308,41 @@ file digests in `.meta.json` `inputs` alongside optional `DRIFT_ENV` /
           fn=lambda d: d.check("found", {"status": lambda v: assert_eq(send(d.when("found", "request")).status, v)}),
       )
   ```
+- Rust (`cargo test` with `drift_rust` in `bridges/rust`):
+  ```rust
+  use drift_rust::{canonical_rust_test_id, run_drift_case, RunOptions};
+
+  #[test]
+  fn test_found() {
+      let tid = canonical_rust_test_id("catalog", module_path!(), "test_found");
+      run_drift_case(
+          RunOptions {
+              contract: "item-get".to_string(),
+              test: tid,
+              cases: vec!["found".to_string()],
+              level: "http".to_string(),
+              ..Default::default()
+          },
+          |ctx| ctx.check_projection("found", &send(ctx.when_str("found", "request")?)),
+      ).expect("drift case verified");
+  }
+  ```
+- V (`v -path "bridges/v|@vlib|@vmodules" test .` with `drift_v` in `bridges/v/drift_v`):
+  ```v
+  import drift_v
+
+  fn test_found() {
+      res := drift_v.run_drift_case(drift_v.RunOptions{
+          contract: 'item-get'
+          test:     'items_test#test_found'
+          cases:    ['found']
+          level:    'http'
+      }, fn (mut ctx drift_v.DriftContext) ! {
+          ctx.check_projection('found', send(ctx.when_str('found', 'request')!))!
+      }) or { panic(err) }
+      assert res == 'passed'
+  }
+  ```
 - When `core@1` or `requires.proof = "killed"` is active, generate the mutant
   manifest with `drift mutants .drift/contracts --out "$OUT/mutants.json"
   [--when]`, run the test suite with `DRIFT_MUTANTS="$OUT/mutants.json"` and
@@ -295,4 +363,12 @@ file digests in `.meta.json` `inputs` alongside optional `DRIFT_ENV` /
   `matched_resources` and `matched_inputs`; pass `--attest FILE` (or `-Ddrift.attest=<file>`) to `gate`
   to write a canonical `gate/v1` attestation bundle (`--as junit` for JUnit
   XML).
+
+## Legacy Monolith Bridges (`bridges/legacy/junit4/DriftJUnit4.java`)
+
+Main JVM support (`drift:drift-junit`) targets LTS Java 25 (`--release 25`), Scala 3.9 LTS, and JUnit 5 Platform. For legacy Java 6–8 / JUnit 4 monoliths without JUnit 5 on the classpath, use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`integrations/jvm/junit4/DriftJUnit4.java` / `~/.local/share/drift/bridges/legacy/junit4/DriftJUnit4.java`):
+- `@DriftJUnit4.Case(contract = "<id>", value = {"<case>"}, level = "unit")` tags JUnit 4 methods.
+- `DriftJUnit4.Listener` records `.meta.json` inventories and `bound` proof events (`passed`, `failed`, `skipped` on assumption failure, `disabled` on `@Ignore`).
+- `DriftJUnit4.verify(contract, caseId, observations, frames)` checks projections, relational bounds, and forbidden write frames to promote a case to `verified`, and `DriftJUnit4.replayCounterexamples(...)` replays `*.cex.json` regression fixtures.
+
 

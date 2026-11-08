@@ -12,10 +12,14 @@ from typing import Any
 try:
     from . import drift_upstream as _up
     from . import drift_security as _sec
+    from . import drift_ui as _ui
+    from . import drift_ui_surface as _uis
 except ImportError:
     try:
         import drift_upstream as _up  # type: ignore[no-redef]
         import drift_security as _sec  # type: ignore[no-redef]
+        import drift_ui as _ui  # type: ignore[no-redef]
+        import drift_ui_surface as _uis  # type: ignore[no-redef]
     except ImportError:
         _up_spec = importlib.util.spec_from_file_location('drift_upstream', Path(__file__).with_name('drift_upstream.py'))
         assert _up_spec is not None and _up_spec.loader is not None
@@ -25,8 +29,16 @@ except ImportError:
         assert _sec_spec is not None and _sec_spec.loader is not None
         _sec = importlib.util.module_from_spec(_sec_spec)
         _sec_spec.loader.exec_module(_sec)
+        _ui_spec = importlib.util.spec_from_file_location('drift_ui', Path(__file__).with_name('drift_ui.py'))
+        assert _ui_spec is not None and _ui_spec.loader is not None
+        _ui = importlib.util.module_from_spec(_ui_spec)
+        _ui_spec.loader.exec_module(_ui)
+        _uis_spec = importlib.util.spec_from_file_location('drift_ui_surface', Path(__file__).with_name('drift_ui_surface.py'))
+        assert _uis_spec is not None and _uis_spec.loader is not None
+        _uis = importlib.util.module_from_spec(_uis_spec)
+        _uis_spec.loader.exec_module(_uis)
 
-REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'sum_fields', 'contains', 'prefix', 'suffix'))
+REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys'))
 NON_VERIFIED_OP_STATES = frozenset((
     'prepared', 'accepted', 'queued', 'running', 'in_progress',
     'partial_failure', 'cancellation_requested', 'unknown',
@@ -242,6 +254,23 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             raise AssertionError(f'{pfx}: exp then.{key} {op} {exp[fk]} ({pv!r}), got {act!r}')
     if 'in' in exp and (not isinstance(exp['in'], (list, tuple)) or not any(not values_mismatch(act, x) for x in exp['in'])):
         raise AssertionError(f"{pfx}: exp then.{key} in {exp['in']!r}, got {act!r}")
+    if 'not_in' in exp:
+        if act is None:
+            raise AssertionError(f'{pfx}: exp non-null value for then.{key}.not_in')
+        if isinstance(exp['not_in'], (list, tuple)):
+            if any(not values_mismatch(act, x) for x in exp['not_in']):
+                raise AssertionError(f"{pfx}: forbidden value {act!r} in then.{key}.not_in {exp['not_in']!r}")
+        elif values_mismatch(act, exp['not_in']):
+            raise AssertionError(f'{pfx}: pick-forbidden-value mutant on then.{key}.not_in killed (got {act!r})')
+    if 'forbid_keys' in exp:
+        if not isinstance(act, Mapping):
+            raise AssertionError(f'{pfx}: exp mapping for then.{key}.forbid_keys')
+        if isinstance(exp['forbid_keys'], (list, tuple)):
+            for fk in exp['forbid_keys']:
+                if str(fk) in act:
+                    raise AssertionError(f'{pfx}: forbidden key "{fk}" present on then.{key}')
+        elif str(exp['forbid_keys']) not in act:
+            raise AssertionError(f'{pfx}: drop-forbid-key mutant killed on then.{key}.forbid_keys')
     if 'sum_fields' in exp:
         if not isinstance(exp['sum_fields'], (list, tuple)) or len(exp['sum_fields']) < 2:
             raise AssertionError(f'{pfx}: invalid sum_fields on then.{key}')
@@ -310,6 +339,9 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
     is_mut = mutation_override is not None
     proj: Mapping[str, str] | None = None
 
+    if v.get('surfaceFound') is False or v.get('surface_found') is False:
+        raise AssertionError(f'{pfx}: surface.missing')
+
     def assert_eq(key: str, exp: Any, act: Any) -> None:
         if act != exp:
             raise AssertionError(f'{pfx}: exp {key}={exp}, got {act}')
@@ -322,12 +354,21 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
         if failed:
             raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
 
-    for key, exp in then_table.items():
+    state_first = {'baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence'}
+    ordered_items = [
+        *(item for item in then_table.items() if item[0] in state_first),
+        *(item for item in then_table.items() if item[0] not in state_first),
+    ]
+    for key, exp in ordered_items:
         if isinstance(checks, Mapping) and callable(checks.get(key)):
             invoke_verified_callback(checks[key], contract_id, case_id, key, exp)
             seen.add(key)
             continue
-        els = v.get('elements') or ()
+        if isinstance(v.get('adapter'), Mapping) and proj is None:
+            proj = proj_loader()
+        if _uis.check_surface_key(contract_id, case_id, key, exp, v, then_table, proj, mutation_override, check_relational_leaf):
+            seen.add(key)
+            continue
         if key == 'baseline_state':
             has_b = bool(v.get('hasBaseline') if 'hasBaseline' in v else v.get('baseline') is not None)
             lbl = str(v.get('baselineLabel') or v.get('deltaLabel') or '').strip().lower()
@@ -357,21 +398,6 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
                 if not is_mut:
                     metrics_store[mk] = entry
             assert_eq(key, exp, not conflict)
-        elif key == 'clipped_elements':
-            clipped = sum(1 for el in els if float(el.get('scrollWidth') or 0) > float(el.get('clientWidth') or 0) or float(el.get('scrollHeight') or 0) > float(el.get('clientHeight') or 0))
-            assert_eq(key, exp, clipped)
-        elif key == 'horizontal_overflow_px':
-            assert_bound(key, '<=', exp, max(0.0, float(v.get('documentWidth') or 0) - float(v.get('viewportWidth') or 0)))
-        elif key == 'min_contrast_ratio':
-            ratio = min((float(el['contrastRatio']) for el in els if isinstance(el, Mapping) and isinstance(el.get('contrastRatio'), (int, float))), default=float(v.get('min_contrast_ratio') or 21.0))
-            assert_bound(key, '>=', exp, ratio)
-        elif key == 'min_target_px':
-            target_px = min((min(float(el['width']), float(el['height'])) for el in els if isinstance(el, Mapping) and isinstance(el.get('width'), (int, float)) and isinstance(el.get('height'), (int, float)) and el.get('spacingException') is not True), default=float(v.get('min_target_px') or 44.0))
-            assert_bound(key, '>=', exp, target_px)
-        elif key == 'obscured_focus_elements':
-            tagged = [el for el in els if isinstance(el, Mapping) and ('obscured' in el or 'focusObscured' in el)]
-            obscured = sum(1 for el in tagged if bool(el.get('focusable', True)) and (el.get('obscured') is True or el.get('focusObscured') is True)) if tagged else int(v.get('obscured_focus_elements') or 0)
-            assert_eq(key, exp, obscured)
         elif key == 'preserved_input_on_error':
             act_preserved = bool(v.get('preserved_input_on_error', True))
             dirty = v.get('dirtyInputs')

@@ -7,40 +7,11 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import {
-  applyMutation,
-  captureSurfaceView,
-  checkProjectedLeaf,
-  checkViewTable,
-  cloneJson,
-  escapePointer,
-  expandDomain,
-  invokeVerifiedCallback,
-  isAssertErr,
-  isObj,
-  isStr,
-  mergePriorInventory,
-  parseMutationSegments,
-  resolveSelectedFiles,
-  runDriftCli,
-  sidecarHead,
-  throwAssertionError as aErr,
-  throwError as err,
-  writePointer,
-} from './drift_checks.mjs';
-import { runAdverseChecks, runProjectionChecks } from './drift_security.mjs';
-import {
-  autoResolveView,
-  clearUpstreamCache,
-  extractProjectionMap,
-  findUpstreamContract,
-  resolveStubCaseId,
-  runCaseMutants,
-  synthesizeViewOutput,
-  synthesizeViewVariants,
-} from './drift_upstream.mjs';
+import { applyMutation, bindUiEnvironment, captureSurfaceView, checkProjectedLeaf, checkViewTable, cloneJson, escapePointer, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, writePointer } from './drift_checks.mjs';
+import { runAdverseChecks, runProjectionChecks, forbiddenWritesOf, verifyCaseFrame } from './drift_security.mjs';
+import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
 
-export { captureSurfaceView, expandDomain };
+export { bindUiEnvironment, captureSurfaceView, checkViewTable, expandDomain, observeUiSequence };
 
 const VIEWS = new Map();
 const METRICS = new Map();
@@ -108,10 +79,10 @@ function resolveEnv() {
   const key = `${pk}\u0000${raw}`;
   if (envCache && envCache.key === key) return envCache.value;
   const base = {
-    adapter: 'drift.mjs@0.3.2',
+    adapter: 'drift.mjs@0.3.3',
     config: 'default',
     deps: 'none',
-    drift: '0.3.2',
+    drift: '0.3.3',
     policy: 'core@1',
     runner: 'node:test',
     toolchain: `node@${process.versions.node}`,
@@ -141,11 +112,7 @@ function flushInventory(out, inv) {
     }
   }
   const env = resolveEnv();
-  const sidecar = {
-    ...head,
-    ...(Object.keys(inputs).length ? { inputs } : {}),
-    ...(env ? { env } : {}),
-  };
+  const sidecar = { ...head, ...(Object.keys(inputs).length ? { inputs } : {}), ...(env ? { env } : {}) };
   fs.writeFileSync(out.slice(0, -6) + '.meta.json', JSON.stringify(sidecar) + '\n', 'utf8');
 }
 
@@ -546,6 +513,8 @@ export class DriftContext {
     return encoding ? stripBom(raw.toString(encoding)) : raw;
   }
 
+  bindUiEnvironment(p, o) { return bindUiEnvironment(this, p, o); }
+
   async check(caseId, checks) {
     this._tag(caseId);
     const seen = this.reads.get(caseId);
@@ -637,6 +606,10 @@ export class DriftContext {
     return runAdverseChecks(this, caseId, harness, checks);
   }
 
+  checkFrame(caseId, frameObs) {
+    return verifyCaseFrame(this, caseId, frameObs, true);
+  }
+
   async checkView(caseId, view, checks = {}) {
     this._tag(caseId);
     await checkViewTable(
@@ -655,8 +628,11 @@ export class DriftContext {
   fullyReadCases() {
     return this.cases.filter((c) => {
       const keys = Object.keys(this.view.cases[c]?.then || {});
+      const forbidden = forbiddenWritesOf(this.view, c);
       const seen = this.reads.get(c);
-      return keys.length > 0 && seen.size >= keys.length && keys.every((k) => seen.has(k));
+      return keys.length > 0 && seen.size >= keys.length + forbidden.length
+        && keys.every((k) => seen.has(k))
+        && forbidden.every((r) => seen.has(`@frame:${r}`));
     });
   }
 }

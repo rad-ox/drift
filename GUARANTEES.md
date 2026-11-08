@@ -15,10 +15,11 @@ DRIFT is designed for **epistemic honesty**: it never claims that a green gate p
 | **1. Unapproved edit to `when` / `then` / `scope.writes`** | **Yes (`DR-E601`)** | **Blocked (`contract.unapproved`)** | Always active; any semantic change alters the `dr1:sha256` digest and invalidates `[approval]`. |
 | **2. Stale test replay after contract change** | **Yes** | **Blocked (`proof.not_green`)** | Events carrying an older `dr1:` digest are counted as `ignored`, leaving the updated case `missing`. |
 | **3. Deleted or unexecuted test (`gone`)** | **Yes** | **Blocked (`proof.not_green`)** | Active when the test bridge writes the `.meta.json` discovery inventory sidecar alongside `.jsonl` events. |
-| **4. Test passes without checking all `then.*` fields** | **Yes** | **`bound` only (or `AssertionError` in `d.check`)** | Direct observation matching `d.check(case, { key: actual })` fails immediately if any `then.<key>` is omitted or mismatches. |
+| **4. Test passes without checking all `then.*` fields (or forbidden `writes` frame)** | **Yes** | **`bound` only (or `AssertionError` in `d.check` / `checkFrame`)** | Direct observation matching `d.check(case, { key: actual })`, `[invariants]` postconditions, and `checkFrame` / `checks.frame` on `scope.writes \ cases.<id>.writes` fail immediately on mismatch or forbidden writes, and keep unobserved frame cases at `bound`. |
 | **5. Callback ignores expected value (`() => {}` / `lambda v: None`)** | **Yes** | **Blocked (`AssertionError`)** | Prefer declarative observation matching `d.check(case, { key: actual })`. Legacy callbacks are checked for no-op bodies and `false` returns; full assertion discrimination is proven by `proof = "killed"` (`drift mutants`, **Enterprise**). |
 | **6. Forged `[approval].by` or unreviewed `scope.code` change** | **Requires VCS / Policy** | **Blocked in PR / Enterprise** | In **Free**, protect `.drift/**` with GitHub `CODEOWNERS` + signed commits (`git commit -S`). In **Enterprise**, `[policy] approvers` (`DR-E603`) + deterministic RFC 8785 attestations (`drift gate --attest`, unsigned by default unless paired with optional OpenSSH signature verification and a verifier-pinned `--trust-root`) enforce this in the gate. |
 | **7. Test feeds contract's own stub into `checkProjection` or never calls real code** | **Yes (`oracle.self_stubbed`)** | **Surfaced in `review` / `gate --explain`; blocked by `proof = "killed"`** | Bridges record self-contract `buildOutput` / `buildStub` calls in `.meta.json` (`oracle.self_stubbed`); bind integration tests at `at = ["http"]` / `at = ["e2e"]` and enforce `drift mutants` (**Enterprise**). |
+| **8. Missing or violated performance (`[budgets.<id>]`), security (`[requires].security`), formal (`[formal.<id>]`), or DB migration (`*.migration.json`) evidence** | **Yes** | **Blocked (`performance.*`, `security.*`, `formal.*`, `migration.*`)** | Both `drift gate` and `verifier/drift_verify.py` fail closed when required `--measurements`, `*.security.json`, `*.formal.json` / `*.model.json` (`tlc`, `cbmc`, `alloy`, `spin`, Kani), or `*.migration.json` (`drift.migration-receipt/1` across `epoch_compatibility`, `data_correctness`, and `operational_safety`) receipts are missing, stale, partial, or violated (`violated` takes precedence over truncation/conflicts). |
 
 ---
 
@@ -28,10 +29,10 @@ You do **not** need to trust the precompiled `drift` CLI binary to verify a cont
 
 This repository includes **[`verifier/drift_verify.py`](verifier/drift_verify.py)** (100% Python 3.11+ standard library, **MIT License**), an independent reference implementation of the DRIFT proof protocol that:
 
-1. Parses `.drift/config.toml`, `.drift/profiles/*.toml`, and `.drift/contracts/*.toml`.
-2. Recomputes the canonical RFC 8785 `dr1:sha256:<hex>` digest and verifies `[approval].ref` (`DR-E601`).
-3. Validates every `.jsonl` proof event against [`schemas/drift-proof-event-0.2.schema.json`](schemas/drift-proof-event-0.2.schema.json) and reconciles active tests against `.meta.json` inventory sidecars (`gone`, `superseded`, `ignored`).
-4. Computes the deterministic state (`missing`, `red`, `bound`, `verified`) for every `(case, level)` requirement and exits `0` if and only if the gate is green:
+1. Parses `.drift/config.toml`, `.drift/profiles/*.toml`, and `.drift/contracts/*.toml` (including `[concepts]`, `[invariants]`, case `writes` frames, `[cutover]`, `[budgets.<id>]`, `[requires].security`, and `[formal.<id>]`).
+2. Recomputes the canonical RFC 8785 `dr1:sha256:<hex>` digest (including `evidence_protocols` discriminants) and verifies `[approval].ref` (`DR-E601`), `[policy].approvers` (`DR-E603`), `policy.max_open`, and optional OpenSSH signatures (`--trust-root`, `--verify-time`).
+3. Validates every `.jsonl` proof event against [`schemas/drift-proof-event-0.2.schema.json`](schemas/drift-proof-event-0.2.schema.json), reconciles active tests against `.meta.json` inventory sidecars (`gone`, `superseded`, `ignored`, `self_stubbed`), and evaluates UI sequence observations (`drift.ui-observation/1`), `--measurements` bundles, `*.security.json` receipts, `*.parity.json` / `*.migration.json` cutover receipts, and `*.formal.json` / `*.model.json` formal receipts.
+4. Computes the deterministic state (`missing`, `red`, `bound`, `verified`, `killed`) for every `(case, level)` requirement and exits `0` if and only if the gate is green:
 
 ```bash
 python3 verifier/drift_verify.py example/.drift/contracts \

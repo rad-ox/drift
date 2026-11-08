@@ -29,8 +29,8 @@ Install DRIFT first with **[INSTALL.md](INSTALL.md)** ([Italiano](INSTALL.it.md)
 | **Contract** | `.drift/contracts/<slice>.toml` | States the intended behaviour of one slice: `[scope]`, `[cases.<id>]`, and `[decisions.<id>]`. |
 | **Approval** | `[approval]` (`ref = "dr1:..."`) | Seal recorded by `drift approve --by <owner>`. Turns `stale` (`DR-E601`) if behaviour is edited. |
 | **Resolved View** | `<slice>.json` | Canonical JSON exported by `drift show --as json` and consumed by runtime test bridges. |
-| **Proof Event** | `events.jsonl` + `.meta.json` | Emitted by JUnit, Node.js, or Python test runners when bound tests execute against a contract. |
-| **Gate** | `drift gate` | Verifies that config + contracts are approved and every required case has a passing current proof. |
+| **Proof Event** | `events.jsonl` + `.meta.json` | Emitted by JUnit / Scala MUnit, Node.js, Python, Rust, or V test runners when bound tests execute against a contract. |
+| **Gate** | `drift gate` | Verifies that config + contracts are approved and every required case, budget, security receipt, and formal obligation has a passing current proof. |
 
 ---
 
@@ -40,10 +40,10 @@ Each level delivers standalone value—stop where the cost stops paying, or clim
 
 | Level | You Add | You Get | Edition |
 |---|---|---|---|
-| **Level 0** | `.drift/config.toml` + `.drift/contracts/*.toml` | Owner-approved behaviour records that automatically turn stale on unapproved edits | **Free** |
-| **Level 1** | Test bindings (`@DriftCase`, `runDriftCase`, `run_drift_case`) | A gate that turns **green** only when real tests pass against the approved version | **Free** |
-| **Level 2** | Change-aware test selection (`drift select`, `-Ddrift.changed`) | Fast incremental test runs and snapshot-backed proof reuse across large repositories | **Pro** |
-| **Level 3** | `[policy]` (`core@1`) + `drift mutants` + `gate --attest` | Listed approvers, mandatory `verified` / `killed` proof floors, and cryptographic gate bundles | **Enterprise** |
+| **Level 0** | `.drift/config.toml` + `.drift/contracts/*.toml` | Owner-approved behaviour records (including relational `then` bounds, `[invariants]`, case `writes`, `[budgets.<id>]`, `[requires].security`, and `[formal.<id>]`) that automatically turn stale on unapproved edits | **Free** |
+| **Level 1** | Test bindings (`@DriftCase` / `Drift.expect`, `runDriftCase`, `run_drift_case`) | A gate that turns **green** only when real Java, Scala, JS/TS, Python, Rust, or V tests pass against the approved version | **Free** |
+| **Level 2** | Change-aware selection (`drift select`), `@recall`, OpenAPI/AsyncAPI & trace scaffolding | Fast incremental test & budget runs, snapshot-backed proof reuse, and contract scaffolding from specs or runtime traces | **Pro** |
+| **Level 3** | `[policy]` (`core@1`) + `drift mutants` + `sweep --flow` + `gate --attest` (`--ssh-sign`) | Listed approvers, mandatory `verified` / `killed` proof floors, cross-service FSM/Saga/security flow audits, and OpenSSH-signed gate bundles | **Enterprise** |
 
 ---
 
@@ -126,6 +126,49 @@ For a version-bound handoff, request `drift review <file|dir> --detail guided --
 
 If `drift check` reports a finding, run `drift explain <code>` (for example `drift explain DR-E601`) to see the exact cause and fix.
 
+### 5. Relational `then` Bounds, `[invariants]`, Case `writes`, Budgets, Security & Formal Proofs
+
+Beyond point scalars, **DRIFT Free** contracts can express rich domain constraints and evidence obligations directly in `.toml`:
+
+```toml
+[invariants]
+status = { in = [200, 400, 404] }
+body = { forbid_keys = ["password_hash", "internal_token"] }
+
+[cases.found]
+at = ["http"]
+writes = []
+when.request = "GET /items/1"
+then.status = 200
+then.body = { allowed_keys = ["id", "name", "price", "tax", "total"], non_empty = true }
+then.total = { min = 0.0, max = 10000.0, sum_fields = ["price", "tax"] }
+then.currency = { not_in = ["UNKNOWN"] }
+
+[budgets.p99-latency]
+kind = "request_latency"
+metric = "p99_ns"
+max = 15000000
+warn_ratio = 0.85
+sampling_unit = "request"
+enforce = "release"
+
+[requires]
+security = ["sast-clean", "no-secret-leak"]
+
+[formal.no-negative-total]
+cases = ["found"]
+verifier = "cbmc"
+property = "total >= price && price >= 0"
+property_kind = "safety"
+min_evidence = "exhausted_within_bounds"
+enforce = "release"
+```
+
+- **Relational `then` tables**: constrain numeric intervals (`min`, `max`), lengths (`min_len`, `max_len`, `non_empty`), finite sets (`in`, `not_in`), string affixes (`prefix`, `suffix`, `contains`), raw payload key allow/deny lists (`allowed_keys`, `forbid_keys`), cross-field comparisons (`le_field`, `ge_field`, `eq_field`), and affine sums (`sum_fields`).
+- **`[invariants]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`).
+- **Performance (`[budgets.<id>]`), Security (`[requires].security`) & Formal (`[formal.<id>]`) obligations**: pass `--measurements bench.jsonl` (supporting `request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, and `work_units`), `*.security.json` receipts, and `*.formal.json` / `*.model.json` receipts (`tlc`, `cbmc`, `alloy`, `spin`, Kani) to `drift prove`, `drift gate`, and `verifier/drift_verify.py`.
+- **Domain `[concepts]`, Migration `[cutover]` & UI Surface Sequences**: define context-qualified domain `[concepts]` in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, `@concept` recall), enforce legacy cutover parity (`[cutover]`, `*.parity.json` `drift.parity-receipt/1`, and `*.migration.json` `drift.migration-receipt/1`) or triage production signals (`drift case add --from-signal`), and verify multi-step UI surfaces (`drift.ui-observation/1` via `checkUiSequence` / `check_ui_sequence` and Web, Compose, or Windows UIA adapters).
+
 ---
 
 ## Level 1: Binding Tests & Enforcing the Gate
@@ -136,7 +179,7 @@ Before any test has run against the approved contract, `drift gate` reports ever
 item-get dr1:5922b40e14d7: not green (proof.not_green); 2 missing
 ```
 
-### Option A: Java / Maven (`drift-junit` + `drift-maven-plugin`)
+### Option A: Java, Scala 3 / MUnit, Maven & sbt (`drift-junit` + `drift-maven-plugin`)
 
 Add the dependency and plugin to `pom.xml`:
 
@@ -145,7 +188,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.3.2</version>
+    <version>0.3.3</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -155,7 +198,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.3.2</version>
+      <version>0.3.3</version>
       <executions>
         <execution>
           <goals>
@@ -186,6 +229,38 @@ Then run:
 
 ```bash
 mvn verify
+```
+
+In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` from your local Maven repository in `build.sbt` and call `Drift.expect(contract, caseId, level)` + `c.verify(...)` directly inside closure-based tests (no annotations required):
+
+```scala
+// build.sbt
+scalaVersion := "3.9.0"
+resolvers += Resolver.mavenLocal
+libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+Test / fork := true
+Test / javaOptions ++= Seq(
+  s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
+  s"-Ddrift.events=${baseDirectory.value}/target/drift/events"
+)
+```
+
+```scala
+// src/test/scala/example/items/ItemSuite.scala
+import drift.Drift
+
+class ItemSuite extends munit.FunSuite:
+  test("returns existing item") {
+    val c = Drift.expect("item-get", "found", "http")
+    val res = send(c.whenString("request"))
+    c.verify("status", res.status, "name", res.name)
+  }
+```
+
+```bash
+drift show .drift/contracts --as json --out target/drift/resolved
+sbt test
+drift gate .drift/contracts --events target/drift/events
 ```
 
 - **`verified` vs `bound`**: When your test reads **every** `then` field of a case through `Drift.expect` (or verifies them with `c.verify(...)` in closure-based suites like **Scala 3 / MUnit**), the case reaches **`verified`**. If the test runs and passes without reading all `then` fields, it is recorded as **`bound`**.
@@ -238,11 +313,72 @@ pytest
 drift gate .drift/contracts --events .drift/events
 ```
 
+### Option D: Rust (`bridges/rust` · `drift_rust`)
+
+```rust
+use drift_rust::{canonical_rust_test_id, run_drift_case, RunOptions};
+
+#[test]
+fn test_found() {
+    let tid = canonical_rust_test_id("catalog", module_path!(), "test_found");
+    run_drift_case(
+        RunOptions {
+            contract: "item-get".to_string(),
+            test: tid,
+            cases: vec!["found".to_string()],
+            level: "http".to_string(),
+            ..Default::default()
+        },
+        |ctx| {
+            let payload = send(ctx.when_str("found", "request")?);
+            ctx.check_projection("found", &payload)
+        },
+    ).expect("drift case verified");
+}
+```
+
+```bash
+drift show .drift/contracts --as json --out target/drift/resolved
+DRIFT_RESOLVED=target/drift/resolved DRIFT_EVENTS=target/drift/events cargo test
+drift gate .drift/contracts --events target/drift/events
+```
+
+### Option E: V (`bridges/v/drift_v`)
+
+```v
+import drift_v
+
+fn test_found() {
+	res := drift_v.run_drift_case(drift_v.RunOptions{
+		contract: 'item-get'
+		test:     'items_test#test_found'
+		cases:    ['found']
+		level:    'http'
+	}, fn (mut ctx drift_v.DriftContext) ! {
+		payload := send(ctx.when_str('found', 'request')!)
+		ctx.check_projection('found', payload)!
+	}) or { panic(err) }
+	assert res == 'passed'
+}
+```
+
+```bash
+drift show .drift/contracts --as json --out .drift-work/resolved
+DRIFT_RESOLVED=.drift-work/resolved DRIFT_EVENTS=.drift-work/events v -path "bridges/v|@vlib|@vmodules" test .
+drift gate .drift/contracts --events .drift-work/events
+```
+
+### Legacy & Monolith Carve-Out Section: Java 6+ / JUnit 4 (`bridges/legacy/junit4/DriftJUnit4.java`)
+
+While the primary bridges target the latest **LTS/stable** runtimes (`drift-junit` on Java 25 LTS / Scala 3.9 LTS / JUnit 5 Platform, `drift.mjs` on Node.js 24 LTS, `drift.py` on Python 3.14, `drift_rust` on Rust Edition 2024, `drift_v` on V 0.5.2), legacy monoliths on Java 6–8 and JUnit 4 use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`integrations/jvm/junit4/DriftJUnit4.java`):
+- Attach `DriftJUnit4.Listener` to JUnit 4 `RunListener` to emit `.meta.json` inventories and `bound` events (`read` omitted) with zero JUnit 5 dependencies.
+- Call `DriftJUnit4.verify(contract, caseId, observations, frames)` and `DriftJUnit4.replayCounterexamples(...)` inside extracted slice tests to verify postconditions, forbidden write frames, and `*.cex.json` production counterexamples, promoting the case to `verified`.
+
 ---
 
-## Level 2: Incremental Test Selection & Blast Radius (`Pro`)
+## Level 2: Incremental Selection, Blast Radius & Spec/Trace Scaffolding (`Pro`)
 
-As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph to select only the tests affected by a change—and safely widens to all tests whenever ownership is uncertain:
+As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
 
 ```bash
 # List only the test files affected by modified source paths
@@ -256,13 +392,19 @@ drift impact .drift --writes items --transitive
 drift recall query "@tree" .drift
 drift recall query "item lookup #getItem /800t" .drift
 drift plan .drift/contracts --pack ready
+
+# Scaffold contracts from OpenAPI 3.x (including 3.2 QUERY), AsyncAPI, or runtime observe() traces
+drift new .drift/contracts/item-query.toml --openapi openapi.json --operation "QUERY /items" --scaffold-profile
+drift new .drift/contracts/item-events.toml --asyncapi asyncapi.json --operation "publish items.created"
+drift new .drift/contracts/item-legacy.toml --from-upstream .drift-work/observed.jsonl --profile http-json@1
+drift export boundary .drift/contracts --out target/drift/boundary.json
 ```
 
 In Maven projects, `-Ddrift.changed=auto` captures a Git tree snapshot during `prepare` and reuses unchanged test shards automatically while keeping `gate` active.
 
 ---
 
-## Level 3: High-Assurance Policy & Mutation Testing (`Enterprise`)
+## Level 3: High-Assurance Policy, Flow Audits & Mutation Testing (`Enterprise`)
 
 For critical services, add a `[policy]` section to `.drift/config.toml` and re-approve the configuration:
 
@@ -280,14 +422,20 @@ proof = "verified"
 With `pack = "core@1"`:
 1. Only owners listed in `approvers` can seal contracts (`DR-E603` otherwise).
 2. Every case must reach at least `verified` (`bound` is no longer enough).
-3. Setting `proof = "killed"` requires every synthetic `then` mutant generated by `drift mutants` to be killed by the bound tests:
+3. Setting `proof = "killed"` requires every synthetic `then` (and `--when`) mutant generated by `drift mutants` to be killed by the bound tests, while `sweep --flow` audits cross-contract dataflow, FSM deadlocks, Saga compensations, duplicate delivery, AsyncAPI multi-epoch compatibility, and security/budget boundaries:
 
 ```bash
+# Audit area ownership, dataflow, FSM/Saga protocols, and AsyncAPI epoch compatibility
+drift sweep check .drift/contracts --root . --flow --asyncapi asyncapi.json --epoch-manifest epochs.json
+
+# Generate contract mutants, execute in-process mutation tests, and emit an OpenSSH-signed attestation
 drift mutants .drift/contracts --out .drift-work/mutants.json
 DRIFT_MUTANTS=.drift-work/mutants.json DRIFT_MUTATION_EVENTS=.drift-work/mutation-events node --test
 drift gate .drift/contracts --events .drift/events \
   --mutants .drift-work/mutants.json --mutation-events .drift-work/mutation-events \
-  --attest target/drift/attestation.json --as junit > target/drift/junit.xml
+  --attest target/drift/attestation.json --ssh-sign ~/.ssh/id_ed25519 \
+  --trust-root .drift/allowed_signers --verify-time 2026-11-08T09:00:00Z \
+  --as junit > target/drift/junit.xml
 ```
 
 ---

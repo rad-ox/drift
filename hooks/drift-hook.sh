@@ -227,18 +227,25 @@ EOF_FIRST
 			done
 			if [ "$#" -gt 0 ]; then
 				imp_flat=""
+				imp_ok=1
 				if [ -d "$contracts_dir" ]; then
-					imp_flat=$("$drift_bin" impact "$contracts_dir" "$@" --json 2>/dev/null | tr -d '\n ' || true)
+					if imp_raw=$("$drift_bin" impact "$contracts_dir" "$@" --json 2>/dev/null); then
+						imp_flat=$(printf '%s' "$imp_raw" | tr -d '\n ')
+					else
+						imp_ok=0
+					fi
 				fi
-				[ -n "$imp_flat" ] || imp_flat='{"contracts":[],"unmatched_code":["uncontracted"]}'
-				if printf '%s' "$imp_flat" | grep -q '"unmatched_code":\["'; then
-					if [ -n "$contracts_dirty" ] || printf '%s' "$imp_flat" | grep -q '"contracts":\[\]'; then
-						stamp_id=$(printf '%s:%s' "$area" "$changed" | cksum | awk '{print $1}')
-						stamp_file=${TMPDIR:-/tmp}/drift-stop-$stamp_id
-						if [ ! -f "$stamp_file" ]; then
-							: >"$stamp_file" 2>/dev/null || true
-							printf '{"decision":"block","reason":"Changed source files in %s are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root %s --sync-scope; otherwise report them and leave them unchanged."}\n' "$(json_escape "$area")" "$(json_escape "$area")"
-							exit 0
+				if [ "$imp_ok" = 1 ]; then
+					[ -n "$imp_flat" ] || imp_flat='{"contracts":[],"unmatched_code":["uncontracted"]}'
+					if printf '%s' "$imp_flat" | grep -q '"unmatched_code":\["'; then
+						if [ -n "$contracts_dirty" ] || printf '%s' "$imp_flat" | grep -q '"contracts":\[\]'; then
+							stamp_id=$(printf '%s:%s' "$area" "$changed" | cksum | awk '{print $1}')
+							stamp_file=${TMPDIR:-/tmp}/drift-stop-$stamp_id
+							if [ ! -f "$stamp_file" ]; then
+								: >"$stamp_file" 2>/dev/null || true
+								printf '{"decision":"block","reason":"Changed source files in %s are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root %s --sync-scope; otherwise report them and leave them unchanged."}\n' "$(json_escape "$area")" "$(json_escape "$area")"
+								exit 0
+							fi
 						fi
 					fi
 				fi

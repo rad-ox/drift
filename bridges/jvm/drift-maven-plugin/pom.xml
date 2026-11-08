@@ -5,13 +5,13 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <packaging>maven-plugin</packaging>
   <name>DRIFT Maven plugin</name>
   <description>Exports the DRIFT contracts before the tests and gates them after, in one Maven build.</description>
 
   <properties>
-    <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.version>3.9.9</maven.version>
     <plugin.tools.version>3.15.1</plugin.tools.version>
@@ -60,6 +60,13 @@
         <configuration>
           <goalPrefix>drift</goalPrefix>
         </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <version>9.10.1</version>
+          </dependency>
+        </dependencies>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

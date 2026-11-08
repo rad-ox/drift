@@ -13,11 +13,13 @@ const REL_KEYS: &[&str] = &[
     "ge_field",
     "eq_field",
     "in",
+    "not_in",
     "contains",
     "prefix",
     "suffix",
     "sum_fields",
     "allowed_keys",
+    "forbid_keys",
 ];
 
 pub fn escape_pointer(seg: &str) -> String {
@@ -157,24 +159,57 @@ pub fn check_relational_leaf(
     proj_then: &BTreeMap<String, String>,
     pred: &str,
 ) -> Result<(), String> {
-    if let Some(ak_v) = rel.get("allowed_keys") {
-        let arr = ak_v
-            .as_array()
-            .ok_or_else(|| format!("{}: invalid allowed_keys", pred))?;
+    if rel.contains_key("allowed_keys") || rel.contains_key("forbid_keys") {
         let act_obj = actual
             .as_object()
-            .ok_or_else(|| format!("{}: expected JSON object for allowed_keys", pred))?;
-        let allowed: std::collections::BTreeSet<&str> =
-            arr.iter().filter_map(|v| v.as_str()).collect();
-        for act_k in act_obj.keys() {
-            if !allowed.contains(act_k.as_str()) {
-                return Err(format!(
-                    "{}: unexpected key \"{}\" outside allowed_keys",
-                    pred, act_k
-                ));
+            .ok_or_else(|| format!("{}: expected JSON object for allowed_keys/forbid_keys", pred))?;
+        if let Some(ak_v) = rel.get("allowed_keys") {
+            let arr = ak_v
+                .as_array()
+                .ok_or_else(|| format!("{}: invalid allowed_keys", pred))?;
+            let allowed: std::collections::BTreeSet<&str> =
+                arr.iter().filter_map(|v| v.as_str()).collect();
+            for act_k in act_obj.keys() {
+                if !allowed.contains(act_k.as_str()) {
+                    return Err(format!(
+                        "{}: unexpected key \"{}\" outside allowed_keys",
+                        pred, act_k
+                    ));
+                }
+            }
+        }
+        if let Some(fk_v) = rel.get("forbid_keys") {
+            if let Some(arr) = fk_v.as_array() {
+                for fk in arr.iter().filter_map(|v| v.as_str()) {
+                    if act_obj.contains_key(fk) {
+                        return Err(format!("{}: forbidden key \"{}\" present on {}", pred, fk, pred));
+                    }
+                }
+            } else if let Some(fk_s) = fk_v.as_str() {
+                if !act_obj.contains_key(fk_s) {
+                    return Err(format!("{}: drop-forbid-key mutant on forbid_keys killed", pred));
+                }
+            } else {
+                return Err(format!("{}: invalid forbid_keys", pred));
             }
         }
         return Ok(());
+    }
+    if let Some(ni_v) = rel.get("not_in") {
+        if matches!(actual, JsonValue::Null) {
+            return Err(format!("{}: expected non-null value for not_in", pred));
+        }
+        if let Some(arr) = ni_v.as_array() {
+            if arr.iter().any(|item| values_equal(actual, item)) {
+                return Err(format!(
+                    "{}: forbidden value {} in not_in",
+                    pred,
+                    actual.to_json_string()
+                ));
+            }
+        } else if !values_equal(actual, ni_v) {
+            return Err(format!("{}: pick-forbidden-value mutant on not_in killed", pred));
+        }
     }
     if let Some(min_v) = rel.get("min") {
         let af = actual

@@ -534,10 +534,10 @@ public final class DriftListener implements TestExecutionListener {
             return null;
         }
         Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.3.2");
+        base.put("adapter", "drift-junit@0.3.3");
         base.put("config", "default");
         base.put("deps", "none");
-        base.put("drift", "0.3.2");
+        base.put("drift", "0.3.3");
         base.put("policy", "core@1");
         base.put("runner", "junit-platform");
         base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));

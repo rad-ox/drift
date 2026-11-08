@@ -14,11 +14,13 @@ const rel_keys = [
 	'ge_field',
 	'eq_field',
 	'in',
+	'not_in',
 	'contains',
 	'prefix',
 	'suffix',
 	'sum_fields',
 	'allowed_keys',
+	'forbid_keys',
 ]!
 
 pub fn escape_pointer(seg string) string {
@@ -221,25 +223,60 @@ fn resolve_peer_target(doc json2.Any, proj_then map[string]string, ref string) ?
 }
 
 pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]json2.Any, proj_then map[string]string, pred string) ! {
-	if ak_v := rel['allowed_keys'] {
-		if ak_v is []json2.Any {
-			if actual is map[string]json2.Any {
+	if 'allowed_keys' in rel || 'forbid_keys' in rel {
+		if actual !is map[string]json2.Any {
+			return error('${pred}: expected JSON object for allowed_keys/forbid_keys')
+		}
+		act_map := actual.as_map()
+		if ak_v := rel['allowed_keys'] {
+			if ak_v is []json2.Any {
 				mut allowed := map[string]bool{}
 				for item in ak_v {
 					if item is string {
 						allowed[item] = true
 					}
 				}
-				for act_k, _ in actual {
+				for act_k, _ in act_map {
 					if act_k !in allowed {
 						return error('${pred}: unexpected key "${act_k}" outside allowed_keys')
 					}
 				}
-				return
+			} else {
+				return error('${pred}: invalid allowed_keys')
 			}
-			return error('${pred}: expected JSON object for allowed_keys')
 		}
-		return error('${pred}: invalid allowed_keys')
+		if fk_v := rel['forbid_keys'] {
+			if fk_v is []json2.Any {
+				for item in fk_v {
+					if item is string {
+						if item in act_map {
+							return error('${pred}: forbidden key "${item}" present on ${pred}')
+						}
+					}
+				}
+			} else if fk_v is string {
+				if fk_v !in act_map {
+					return error('${pred}: drop-forbid-key mutant on forbid_keys killed')
+				}
+			} else {
+				return error('${pred}: invalid forbid_keys')
+			}
+		}
+		return
+	}
+	if ni_v := rel['not_in'] {
+		if actual is json2.Null {
+			return error('${pred}: expected non-null value for not_in')
+		}
+		if ni_v is []json2.Any {
+			for item in ni_v {
+				if values_equal(actual, item) {
+					return error('${pred}: forbidden value ${actual.json_str()} in not_in')
+				}
+			}
+		} else if !values_equal(actual, ni_v) {
+			return error('${pred}: pick-forbidden-value mutant on not_in killed')
+		}
 	}
 	if min_v := rel['min'] {
 		af := as_finite_f64(actual) or { return error('${pred}: expected finite number for min') }

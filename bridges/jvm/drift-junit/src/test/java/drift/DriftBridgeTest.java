@@ -329,7 +329,7 @@ class DriftBridgeTest {
         assertEquals(snap, metadata.get("snapshot"));
         @SuppressWarnings("unchecked")
         Map<String, Object> env = (Map<String, Object>) metadata.get("env");
-        assertEquals("drift-junit@0.3.2", env.get("adapter"));
+        assertEquals("drift-junit@0.3.3", env.get("adapter"));
         assertEquals("junit-platform", env.get("runner"));
     }
 
@@ -517,22 +517,10 @@ class DriftBridgeTest {
         private final long status;
         private final String name;
 
-        public ScalaProductRow(long status, String name) {
-            this.status = status;
-            this.name = name;
-        }
-
-        public int productArity() {
-            return 2;
-        }
-
-        public String productElementName(int n) {
-            return n == 0 ? "status" : "name";
-        }
-
-        public Object productElement(int n) {
-            return n == 0 ? status : name;
-        }
+        public ScalaProductRow(long status, String name) { this.status = status; this.name = name; }
+        public int productArity() { return 2; }
+        public String productElementName(int n) { return n == 0 ? "status" : "name"; }
+        public Object productElement(int n) { return n == 0 ? status : name; }
     }
 
     static class UnannotatedClosureSample {
@@ -575,17 +563,15 @@ class DriftBridgeTest {
         assertEquals(List.of("part"), passEv.get("read"));
         assertEquals("failed", failEv.get("outcome"));
 
-        Drift.Case typed = new Drift.Case(
-                "bridge",
-                "typed",
+        Drift.Case typed = new Drift.Case("bridge", "typed",
                 Map.of("safe", Boolean.TRUE, "limit", 10L),
                 Map.of("ok", Boolean.TRUE, "count", 42L, "items", List.of("a"), "meta", Map.of("k", "v")));
-        assertTrue(typed.whenBoolean("safe"));
+        assertTrue(typed.whenBoolean("safe") && typed.thenBoolean("ok"));
         assertEquals(10, typed.whenInt("limit"));
-        assertTrue(typed.thenBoolean("ok"));
         assertEquals(42L, typed.thenLong("count"));
         assertEquals(List.of("a"), typed.thenList("items"));
         assertEquals(Map.of("k", "v"), typed.thenMap("meta"));
+        assertEquals("java-25-lts", DriftVerify.bridgeCapabilities().get("runtime_baseline"));
     }
 }
 

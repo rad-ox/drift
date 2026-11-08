@@ -5,12 +5,12 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <name>DRIFT JUnit Platform bridge</name>
   <description>The JUnit Platform bridge of DRIFT: tagged tests read their expected values from the contract and write proof events.</description>
 
   <properties>
-    <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.12.2</junit.version>
     <junit.platform.version>1.12.2</junit.platform.version>

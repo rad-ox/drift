@@ -50,10 +50,69 @@
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "type": "object"
+        },
+        "writes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
         "then"
+      ],
+      "type": "object"
+    },
+    "concept": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "means": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "predicates": {
+          "additionalProperties": false,
+          "properties": {
+            "then": {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "when": {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        },
+        "preferred": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "replaced_by": {
+          "pattern": "^(?:|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "means"
       ],
       "type": "object"
     },
@@ -278,6 +337,16 @@
       },
       "type": "object"
     },
+    "concepts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/concept"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
     "decisions": {
       "additionalProperties": {
         "$ref": "#/$defs/decision"
@@ -298,6 +367,16 @@
       "minItems": 1,
       "type": "array",
       "uniqueItems": true
+    },
+    "invariants": {
+      "additionalProperties": {
+        "$ref": "#/$defs/toml-value"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
     },
     "kit": {
       "type": "string"

@@ -1,6 +1,7 @@
 // Zero-dependency compile-once Rust test bridge for DRIFT (SPEC §§9, 25, D253).
 
 pub mod checks;
+pub mod formal;
 pub mod json;
 
 use checks::{
@@ -8,6 +9,8 @@ use checks::{
     synthesize_leaf_witness, unescape_pointer, values_equal, write_pointer,
 };
 use json::{hash_fixture_bytes, parse_json, sha256_hex, JsonValue};
+use std::any::Any;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -17,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.3.2";
-pub const BRIDGE_VERSION: &str = "0.3.2";
+pub const ADAPTER_ID: &str = "drift_rust@0.3.3";
+pub const BRIDGE_VERSION: &str = "0.3.3";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",
@@ -121,6 +124,7 @@ pub struct DriftContext {
     pub self_stubbed: bool,
     pub in_mutation: bool,
     pub resolved_dir: String,
+    accessed_view: Cell<bool>,
 }
 
 pub fn canonical_rust_test_id(crate_name: &str, module_path: &str, fn_name: &str) -> String {
@@ -536,6 +540,13 @@ fn update_shard_and_meta(
 fn extract_then_projections(view: &BTreeMap<String, JsonValue>) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(proj) = view.get("projections").and_then(|v| v.as_object()) {
+        for (k, v) in proj {
+            if k != "when" && k != "then" {
+                if let Some(s) = v.as_str() {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
         if let Some(t_map) = proj.get("then").and_then(|v| v.as_object()) {
             for (k, v) in t_map {
                 if let Some(s) = v.as_str() {
@@ -550,6 +561,13 @@ fn extract_then_projections(view: &BTreeMap<String, JsonValue>) -> BTreeMap<Stri
 fn extract_when_projections(view: &BTreeMap<String, JsonValue>) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(proj) = view.get("projections").and_then(|v| v.as_object()) {
+        for (k, v) in proj {
+            if k != "when" && k != "then" {
+                if let Some(s) = v.as_str() {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
         if let Some(w_map) = proj.get("when").and_then(|v| v.as_object()) {
             for (k, v) in w_map {
                 if let Some(s) = v.as_str() {
@@ -616,8 +634,159 @@ fn build_projected_json(
     Ok(JsonValue::Object(built).to_json_string())
 }
 
+fn forbidden_writes_of(view: &BTreeMap<String, JsonValue>, case_id: &str) -> Vec<String> {
+    let Some(scope_writes) = view
+        .get("scope")
+        .and_then(|v| v.as_object())
+        .and_then(|s| s.get("writes"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    let Some(case_writes) = view
+        .get("cases")
+        .and_then(|v| v.as_object())
+        .and_then(|cs| cs.get(case_id))
+        .and_then(|v| v.as_object())
+        .and_then(|cm| cm.get("writes"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    let allowed: std::collections::BTreeSet<&str> =
+        case_writes.iter().filter_map(|v| v.as_str()).collect();
+    let allowed_bases: std::collections::BTreeSet<&str> = case_writes
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|s| s.split('#').next().unwrap_or(s))
+        .collect();
+    let mut out = Vec::new();
+    for item in scope_writes {
+        if let Some(r) = item.as_str() {
+            let base = r.split('#').next().unwrap_or(r);
+            if !allowed.contains(r) && !allowed.contains(base) && !allowed_bases.contains(r) {
+                out.push(r.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn required_ui_capability_for(pred: &str, ptr: &str) -> Option<&'static str> {
+    let leaf = ptr.rsplit('/').next().unwrap_or("");
+    for k in [pred, leaf] {
+        match k {
+            "min_contrast_ratio"
+            | "min_contrast_wcag22"
+            | "min_contrast_text_normal"
+            | "min_contrast_text_large"
+            | "min_contrast_ui_component"
+            | "contrast_violations_count" => return Some("wcag22_contrast"),
+            "assistive_announcement" | "active_assistive_focus" => return Some("assistive_focus"),
+            "observed_transition_ms" | "max_transition_ms" | "observed_duration_ms" => {
+                return Some("observed_transition")
+            }
+            "scroll_context_preserved" => return Some("scroll_state"),
+            "horizontal_overflow_px"
+            | "min_target_px"
+            | "clipped_elements"
+            | "unintentional_clipped_count"
+            | "obscured_focus_elements"
+            | "fully_obscured_focus_count"
+            | "partially_obscured_focus_count"
+            | "notice_precedes_detail" => return Some("geometry"),
+            "after_focus_role"
+            | "active_focus"
+            | "trigger_restored"
+            | "unexpected_focus_steals"
+            | "input_focus_role" => return Some("input_focus"),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl DriftContext {
+    pub fn check_frame(&mut self, case_id: &str, frame_json: &str) -> Result<(), TestError> {
+        let _ = self.case_map(case_id)?;
+        let forbidden = forbidden_writes_of(&self.view, case_id);
+        if forbidden.is_empty() {
+            return Ok(());
+        }
+        let doc = parse_json(frame_json)
+            .map_err(|e| TestError::assertion(format!("frame_json is not valid JSON: {}", e)))?;
+        let fmap = doc
+            .as_object()
+            .ok_or_else(|| TestError::assertion("frame_json must be a JSON object"))?;
+        for res in &forbidden {
+            let base_res = res.split('#').next().unwrap_or(res.as_str());
+            let obs = fmap.get(res).or_else(|| fmap.get(base_res)).ok_or_else(|| {
+                TestError::assertion(format!(
+                    "{}.{}: missing frame observation for forbidden write resource '{}'",
+                    self.contract_id, case_id, res
+                ))
+            })?;
+            let mut checked = false;
+            if let Some(n) = obs.as_f64() {
+                if n.is_finite() && n >= 0.0 {
+                    checked = true;
+                    if n > 0.0 {
+                        return Err(TestError::assertion(format!(
+                            "{}.{}: frame violation on resource '{}': expected 0 writes, observed {}",
+                            self.contract_id, case_id, res, n
+                        )));
+                    }
+                }
+            } else if let Some(om) = obs.as_object() {
+                for wk in ["writes", "operations", "events"] {
+                    if let Some(wv) = om.get(wk) {
+                        if let Some(wn) = wv.as_f64() {
+                            if wn.is_finite() && wn >= 0.0 {
+                                checked = true;
+                                if wn > 0.0 {
+                                    return Err(TestError::assertion(format!(
+                                        "{}.{}: frame violation on resource '{}': expected 0 writes, observed {}",
+                                        self.contract_id, case_id, res, wn
+                                    )));
+                                }
+                            }
+                        } else if let Some(arr) = wv.as_array() {
+                            checked = true;
+                            if !arr.is_empty() {
+                                return Err(TestError::assertion(format!(
+                                    "{}.{}: frame violation on resource '{}': expected 0 writes, observed {}",
+                                    self.contract_id,
+                                    case_id,
+                                    res,
+                                    arr.len()
+                                )));
+                            }
+                        }
+                    }
+                }
+                if let (Some(bef), Some(aft)) = (om.get("before"), om.get("after")) {
+                    checked = true;
+                    if !values_equal(bef, aft) {
+                        return Err(TestError::assertion(format!(
+                            "{}.{}: frame state mutation on resource '{}': before and after snapshots differ",
+                            self.contract_id, case_id, res
+                        )));
+                    }
+                }
+            }
+            if !checked {
+                return Err(TestError::assertion(format!(
+                    "{}.{}: frame observation for '{}' must supply writes/operations/events or before/after snapshots",
+                    self.contract_id, case_id, res
+                )));
+            }
+            self.mark_read(case_id, &format!("@frame:{}", res));
+        }
+        Ok(())
+    }
+
     fn case_map(&self, case_id: &str) -> Result<&BTreeMap<String, JsonValue>, TestError> {
+        self.accessed_view.set(true);
         if !self.cases.iter().any(|c| c == case_id) {
             return Err(TestError::assertion(format!(
                 "case '{}' is not tagged on test '{}'",
@@ -757,13 +926,46 @@ impl DriftContext {
         };
         let doc = parse_json(payload_json)
             .map_err(|e| TestError::assertion(format!("payload is not valid JSON: {}", e)))?;
+        if let Some(obj) = doc.as_object() {
+            if obj.get("surface_found").and_then(|v| v.as_bool()) == Some(false)
+                || obj.get("surfaceFound").and_then(|v| v.as_bool()) == Some(false)
+            {
+                return Err(TestError::assertion(format!(
+                    "{}.{}: surface.missing",
+                    self.contract_id, case_id
+                )));
+            }
+        }
+        let adapter_caps: Option<Vec<String>> = doc
+            .as_object()
+            .and_then(|o| o.get("adapter"))
+            .and_then(|a| a.as_object())
+            .and_then(|a| a.get("capabilities"))
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            });
         let proj_then = extract_then_projections(&self.view);
         for (pred, expected) in &then_map {
             self.mark_read(case_id, pred);
+            let default_ptr = format!("/{}", escape_pointer(pred));
+            let ptr = proj_then.get(pred).unwrap_or(&default_ptr);
+            if let Some(ref caps) = adapter_caps {
+                if let Some(req_cap) = required_ui_capability_for(pred, ptr) {
+                    if !caps.iter().any(|c| c == req_cap) {
+                        return Err(TestError::assertion(format!(
+                            "{}.{}: ui.capability_unverifiable:{} for then.{}",
+                            self.contract_id, case_id, req_cap, pred
+                        )));
+                    }
+                }
+            }
             if is_relational_table(expected)
                 && expected
                     .as_object()
-                    .is_some_and(|m| m.contains_key("allowed_keys"))
+                    .is_some_and(|m| m.contains_key("allowed_keys") || m.contains_key("forbid_keys"))
                 && !proj_then.contains_key(pred)
             {
                 let mut target = &doc;
@@ -803,6 +1005,11 @@ impl DriftContext {
                     actual.to_json_string(),
                     expected.to_json_string()
                 )));
+            }
+        }
+        if let Some(fr_obj) = doc.as_object().and_then(|m| m.get("_frame")) {
+            if fr_obj.as_object().is_some() {
+                self.check_frame(case_id, &fr_obj.to_json_string())?;
             }
         }
         Ok(())
@@ -859,6 +1066,7 @@ impl DriftContext {
     }
 
     pub fn build_output(&mut self, case_id: &str) -> Result<String, TestError> {
+        self.accessed_view.set(true);
         if !self.cases.iter().any(|c| c == case_id) {
             return Err(TestError::assertion(format!(
                 "case '{}' is not tagged on test '{}'",
@@ -879,6 +1087,7 @@ impl DriftContext {
         case_id: &str,
         resolved_dir: &str,
     ) -> Result<String, TestError> {
+        self.accessed_view.set(true);
         if target == self.contract_id {
             if !self.in_mutation {
                 self.self_stubbed = true;
@@ -916,7 +1125,12 @@ impl DriftContext {
             let Some(read_set) = self.read_keys.get(cid) else {
                 continue;
             };
-            if t_map.keys().all(|k| read_set.contains(k)) {
+            let forbidden = forbidden_writes_of(&self.view, cid);
+            if t_map.keys().all(|k| read_set.contains(k))
+                && forbidden
+                    .iter()
+                    .all(|r| read_set.contains(&format!("@frame:{}", r)))
+            {
                 out.push(cid.clone());
             }
         }
@@ -1038,22 +1252,74 @@ fn effective_mutant_mode(opts: &RunOptions) -> MutantMode {
     }
 }
 
-fn execute_callback<F>(ctx: &mut DriftContext, cb: &F) -> Result<(), TestError>
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "test panicked".to_string()
+    }
+}
+
+fn execute_callback_with_fixture<T, S, F>(
+    ctx: &mut DriftContext,
+    setup: &S,
+    cb: &F,
+) -> Result<(), TestError>
 where
-    F: Fn(&mut DriftContext) -> Result<(), TestError>,
+    S: Fn() -> Result<T, TestError>,
+    F: Fn(&mut DriftContext, T) -> Result<(), TestError>,
 {
-    match panic::catch_unwind(AssertUnwindSafe(|| cb(ctx))) {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e),
+    let fixture = match panic::catch_unwind(AssertUnwindSafe(setup)) {
+        Ok(Ok(val)) => val,
+        Ok(Err(e)) => {
+            return Err(TestError::harness(format!(
+                "fixture setup failed: {}",
+                e.message()
+            )))
+        }
         Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
+            return Err(TestError::harness(format!(
+                "fixture setup panicked: {}",
+                panic_payload_message(payload.as_ref())
+            )))
+        }
+    };
+    match panic::catch_unwind(AssertUnwindSafe(|| cb(ctx, fixture))) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(TestError::Assertion(msg))) => {
+            if ctx.in_mutation && !ctx.accessed_view.get() {
+                Err(TestError::harness(format!(
+                    "mutant failed before reading contract view: {}",
+                    msg
+                )))
             } else {
-                "test panicked".to_string()
-            };
-            Err(TestError::assertion(msg))
+                Err(TestError::Assertion(msg))
+            }
+        }
+        Ok(Err(TestError::Harness(msg))) => Err(TestError::Harness(msg)),
+        Err(payload) => Err(TestError::harness(format!(
+            "test panicked: {}",
+            panic_payload_message(payload.as_ref())
+        ))),
+    }
+}
+
+fn write_single_mutant_outcome(mid: &str, status: &str, message: &str) {
+    if let Ok(out_path) = env::var("DRIFT_SINGLE_MUTANT_OUT") {
+        let trimmed = out_path.trim();
+        if !trimmed.is_empty() {
+            let mut obj = BTreeMap::new();
+            obj.insert("mutant".to_string(), JsonValue::Str(mid.to_string()));
+            obj.insert("status".to_string(), JsonValue::Str(status.to_string()));
+            if !message.is_empty() {
+                obj.insert("message".to_string(), JsonValue::Str(message.to_string()));
+            }
+            let _ = fs::write(
+                trimmed,
+                format!("{}\n", JsonValue::Object(obj).to_json_string()),
+            );
         }
     }
 }
@@ -1103,16 +1369,18 @@ fn find_single_mutant_in_manifest(
     Ok(None)
 }
 
-fn run_mutants<F>(
+fn run_mutants<T, S, F>(
     opts: &RunOptions,
     base_view: &BTreeMap<String, JsonValue>,
     cls: &str,
     canon_test: &str,
     mth: &str,
+    setup: &S,
     cb: &F,
 ) -> Result<(), TestError>
 where
-    F: Fn(&mut DriftContext) -> Result<(), TestError>,
+    S: Fn() -> Result<T, TestError>,
+    F: Fn(&mut DriftContext, T) -> Result<(), TestError>,
 {
     let mut_file = env::var("DRIFT_MUTANTS").unwrap_or_default().trim().to_string();
     if !opts.events_dir.is_empty() && opts.mutation_events_dir.is_empty() {
@@ -1154,6 +1422,7 @@ where
         .map_err(|e| TestError::harness(format!("cannot create mutation events dir: {}", e)))?;
     let stem = process_shard_stem();
     let out_file = Path::new(&mut_dir).join(format!("{}-mutants.jsonl", stem));
+    let outcome_file = Path::new(&mut_dir).join(format!(".{}-single-mutant.json", stem));
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
@@ -1189,9 +1458,11 @@ where
                     let filters = derive_libtest_filters(cls, mth, &opts.cargo_test_filter);
                     let mut matched_status = None;
                     for flt in &filters {
+                        let _ = fs::remove_file(&outcome_file);
                         let st = Command::new(&exe)
                             .args(["--exact", flt, "--nocapture"])
                             .env("DRIFT_SINGLE_MUTANT", mid)
+                            .env("DRIFT_SINGLE_MUTANT_OUT", &outcome_file)
                             .output()
                             .map_err(|e| {
                                 TestError::harness(format!("subprocess mutant spawn failed: {}", e))
@@ -1203,19 +1474,75 @@ where
                         }
                     }
                     let Some(status) = matched_status else {
+                        let _ = fs::remove_file(&outcome_file);
                         return Err(TestError::harness(format!(
                             "subprocess mutant filters {:?} matched 0 tests",
                             filters
                         )));
                     };
-                    if status.status.code() == Some(99) {
-                        return Err(TestError::harness(format!(
-                            "subprocess mutant '{}' failed with harness error: {}",
+                    let outcome_raw = fs::read_to_string(&outcome_file).map_err(|_| {
+                        TestError::harness(format!(
+                            "subprocess mutant '{}' terminated abnormally without structured bridge outcome (status: {}, stderr: {})",
                             mid,
-                            String::from_utf8_lossy(&status.stderr)
+                            status.status,
+                            String::from_utf8_lossy(&status.stderr).trim()
+                        ))
+                    })?;
+                    let _ = fs::remove_file(&outcome_file);
+                    let outcome_doc = parse_json(&outcome_raw).map_err(|e| {
+                        TestError::harness(format!(
+                            "subprocess mutant '{}' wrote invalid structured outcome: {}",
+                            mid, e
+                        ))
+                    })?;
+                    let Some(out_obj) = outcome_doc.as_object() else {
+                        return Err(TestError::harness(format!(
+                            "subprocess mutant '{}' structured outcome is not an object",
+                            mid
+                        )));
+                    };
+                    if out_obj.get("mutant").and_then(|v| v.as_str()) != Some(mid) {
+                        return Err(TestError::harness(format!(
+                            "subprocess mutant '{}' structured outcome mutant mismatch",
+                            mid
                         )));
                     }
-                    !status.status.success()
+                    match out_obj.get("status").and_then(|v| v.as_str()).unwrap_or_default() {
+                        "survived" => {
+                            if !status.status.success() {
+                                return Err(TestError::harness(format!(
+                                    "subprocess mutant '{}' survived in bridge but process exited abnormally (status: {})",
+                                    mid, status.status
+                                )));
+                            }
+                            false
+                        }
+                        "killed" => {
+                            if status.status.code().is_none() {
+                                return Err(TestError::harness(format!(
+                                    "subprocess mutant '{}' terminated by signal ({})",
+                                    mid, status.status
+                                )));
+                            }
+                            true
+                        }
+                        "harness_error" => {
+                            let msg = out_obj
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("harness error");
+                            return Err(TestError::harness(format!(
+                                "subprocess mutant '{}' failed with harness error: {}",
+                                mid, msg
+                            )));
+                        }
+                        other => {
+                            return Err(TestError::harness(format!(
+                                "subprocess mutant '{}' reported unknown status '{}'",
+                                mid, other
+                            )));
+                        }
+                    }
                 }
                 _ => {
                     let mutated_view = apply_mutant_to_view(base_view, mcase, mpath, mafter)?;
@@ -1231,8 +1558,9 @@ where
                         self_stubbed: false,
                         in_mutation: true,
                         resolved_dir: opts.resolved_dir.clone(),
+                        accessed_view: Cell::new(false),
                     };
-                    match execute_callback(&mut mut_ctx, cb) {
+                    match execute_callback_with_fixture(&mut mut_ctx, setup, cb) {
                         Ok(()) => false,
                         Err(TestError::Assertion(_)) => true,
                         Err(TestError::Harness(msg)) => return Err(TestError::Harness(msg)),
@@ -1266,6 +1594,18 @@ pub fn run_drift_case<F>(opts: RunOptions, cb: F) -> Result<String, TestError>
 where
     F: Fn(&mut DriftContext) -> Result<(), TestError>,
 {
+    run_drift_case_with_fixture(opts, || Ok(()), |ctx, ()| cb(ctx))
+}
+
+pub fn run_drift_case_with_fixture<T, S, F>(
+    opts: RunOptions,
+    setup: S,
+    cb: F,
+) -> Result<String, TestError>
+where
+    S: Fn() -> Result<T, TestError>,
+    F: Fn(&mut DriftContext, T) -> Result<(), TestError>,
+{
     if opts.contract.trim().is_empty() || opts.cases.is_empty() {
         return Err(TestError::harness("contract and cases are required"));
     }
@@ -1276,15 +1616,28 @@ where
     if let Ok(single_mid) = env::var("DRIFT_SINGLE_MUTANT") {
         let single_mid = single_mid.trim();
         if !single_mid.is_empty() {
-            let Some((mcase, mpath, mafter)) =
-                find_single_mutant_in_manifest(&opts.contract, single_mid)?
-            else {
+            let found = match find_single_mutant_in_manifest(&opts.contract, single_mid) {
+                Ok(v) => v,
+                Err(e) => {
+                    write_single_mutant_outcome(single_mid, "harness_error", e.message());
+                    eprintln!("harness error: {}", e.message());
+                    process::exit(99);
+                }
+            };
+            let Some((mcase, mpath, mafter)) = found else {
                 return Ok("skipped".to_string());
             };
             if !opts.cases.iter().any(|c| c == &mcase) {
                 return Ok("skipped".to_string());
             }
-            let mut_view = apply_mutant_to_view(&base_view, &mcase, &mpath, &mafter)?;
+            let mut_view = match apply_mutant_to_view(&base_view, &mcase, &mpath, &mafter) {
+                Ok(v) => v,
+                Err(e) => {
+                    write_single_mutant_outcome(single_mid, "harness_error", e.message());
+                    eprintln!("harness error: {}", e.message());
+                    process::exit(99);
+                }
+            };
             let mut mut_ctx = DriftContext {
                 contract_id: opts.contract.clone(),
                 test_id: opts.test.clone(),
@@ -1301,11 +1654,19 @@ where
                 self_stubbed: false,
                 in_mutation: true,
                 resolved_dir: opts.resolved_dir.clone(),
+                accessed_view: Cell::new(false),
             };
-            match execute_callback(&mut mut_ctx, &cb) {
-                Ok(()) => return Ok("survived".to_string()),
-                Err(TestError::Assertion(msg)) => return Err(TestError::Assertion(msg)),
+            match execute_callback_with_fixture(&mut mut_ctx, &setup, &cb) {
+                Ok(()) => {
+                    write_single_mutant_outcome(single_mid, "survived", "");
+                    return Ok("survived".to_string());
+                }
+                Err(TestError::Assertion(msg)) => {
+                    write_single_mutant_outcome(single_mid, "killed", &msg);
+                    return Err(TestError::Assertion(msg));
+                }
                 Err(TestError::Harness(msg)) => {
+                    write_single_mutant_outcome(single_mid, "harness_error", &msg);
                     eprintln!("harness error: {}", msg);
                     process::exit(99);
                 }
@@ -1343,16 +1704,17 @@ where
         self_stubbed: false,
         in_mutation: false,
         resolved_dir: opts.resolved_dir.clone(),
+        accessed_view: Cell::new(false),
     };
 
-    let res = execute_callback(&mut ctx, &cb);
+    let res = execute_callback_with_fixture(&mut ctx, &setup, &cb);
     if let Err(TestError::Harness(msg)) = &res {
         return Err(TestError::Harness(msg.clone()));
     }
     let outcome = if res.is_ok() { "passed" } else { "failed" };
 
     if res.is_ok() {
-        run_mutants(&opts, &base_view, &cls, &canon_test, &mth, &cb)?;
+        run_mutants(&opts, &base_view, &cls, &canon_test, &mth, &setup, &cb)?;
     }
 
     if !ev_dir.is_empty() {
@@ -1396,3 +1758,33 @@ where
 
     Ok(outcome.to_string())
 }
+
+pub const BRIDGE_RUNTIME_BASELINE: &str = "rust-2024";
+
+pub const BRIDGE_CAPABILITIES: &[&str] = &[
+    "allowed_keys",
+    "case_frames",
+    "counterexample_replay",
+    "forbid_keys",
+    "inventory_sidecar",
+    "mutants",
+    "not_in",
+    "predicates",
+    "projections",
+    "relational_bounds",
+    "stubs",
+];
+
+pub fn require_capabilities(required: &[&str]) -> Result<(), TestError> {
+    for cap in required {
+        let k = cap.trim();
+        if k.is_empty() || !BRIDGE_CAPABILITIES.contains(&k) {
+            return Err(TestError::harness(format!(
+                "bridge.capability_unsupported:{}",
+                k
+            )));
+        }
+    }
+    Ok(())
+}
+

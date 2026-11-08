@@ -115,7 +115,11 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
             [Console]::Error.WriteLine('drift: release check unavailable (component missing); continuing without an update verdict.')
         }
     }
-    $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the drift skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+    if ($env:DRIFT_EDITION -eq 'free') {
+        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills. When changing code or contracts in DRIFT Free, use drift check, drift fmt, drift review --brief, drift approve --by <owner>, drift prove, and drift gate."
+    } else {
+        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the drift skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+    }
     $out = @{ additionalContext = $msg } | ConvertTo-Json -Compress
     Write-Output $out
     exit 0
@@ -180,7 +184,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
         exit 0
     }
     $gitCmd = Get-Command 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($gitCmd) {
+    if ($env:DRIFT_EDITION -ne 'free' -and $gitCmd) {
         $porcelain = & $gitCmd.Source -C $area -c core.quotepath=false status --porcelain --untracked-files=normal 2>$null
         $changed = [System.Collections.Generic.List[string]]::new()
         foreach ($ln in $porcelain) {
@@ -201,25 +205,38 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
         }
         if ($changed.Count -gt 0) {
             $impFlat = ''
+            $impOk = $true
             if (Test-Path -LiteralPath $contractsDir -PathType Container) {
                 $impArgs = [System.Collections.Generic.List[string]]::new()
                 $impArgs.Add('impact')
                 $impArgs.Add($contractsDir)
                 foreach ($cf in $changed) { $impArgs.Add('--code'); $impArgs.Add($cf) }
                 $impArgs.Add('--json')
-                $impFlat = ((& $driftExe @impArgs 2>$null) -join '') -replace '\s+', ''
+                $impOut = & $driftExe @impArgs 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $impFlat = (($impOut -join '') -replace '\s+', '')
+                } else {
+                    $impOk = $false
+                }
             }
-            if (-not $impFlat) {
-                $impFlat = '{"contracts":[],"unmatched_code":["uncontracted"]}'
-            }
-            if ($impFlat -match '"unmatched_code":\["') {
-                $dirtyContracts = & $gitCmd.Source -C $area status --porcelain --untracked-files=normal -- .drift/contracts 2>$null
-                if ($dirtyContracts -or $impFlat -match '"contracts":\[\]') {
-                    $out = @{
-                        decision = 'block'
-                        reason   = "Changed source files in $area are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root $area --sync-scope; otherwise report them and leave them unchanged."
-                    } | ConvertTo-Json -Compress
-                    Write-Output $out
+            if ($impOk) {
+                if (-not $impFlat) {
+                    $impFlat = '{"contracts":[],"unmatched_code":["uncontracted"]}'
+                }
+                if ($impFlat -match '"unmatched_code":\["') {
+                    $dirtyContracts = & $gitCmd.Source -C $area status --porcelain --untracked-files=normal -- .drift/contracts 2>$null
+                    if ($dirtyContracts -or $impFlat -match '"contracts":\[\]') {
+                        $stampId = (& $hash ("${area}:" + ($changed -join "`n"))).Substring(0, 16)
+                        $unownedStamp = [IO.Path]::Combine([IO.Path]::GetTempPath(), "drift-stop-$stampId")
+                        if (-not (Test-Path -LiteralPath $unownedStamp -PathType Leaf)) {
+                            try { [IO.File]::WriteAllText($unownedStamp, '') } catch { }
+                            $out = @{
+                                decision = 'block'
+                                reason   = "Changed source files in $area are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root $area --sync-scope; otherwise report them and leave them unchanged."
+                            } | ConvertTo-Json -Compress
+                            Write-Output $out
+                        }
+                    }
                 }
             }
         }

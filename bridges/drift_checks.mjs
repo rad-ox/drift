@@ -1,19 +1,27 @@
 import { mergePriorInventory, resolveSelectedFiles, runDriftCli } from './drift_cli.mjs';
-export { mergePriorInventory, resolveSelectedFiles, runDriftCli };
+import {
+  adaptComposeSemantics,
+  adaptPlaywrightSurface,
+  adaptUiaSnapshot,
+  bindUiEnvironment,
+  observeUiSequence,
+} from './drift_ui.mjs';
+import { captureSurfaceDom, checkSurfaceKey } from './drift_ui_surface.mjs';
+export {
+  adaptComposeSemantics,
+  adaptPlaywrightSurface,
+  adaptUiaSnapshot,
+  bindUiEnvironment,
+  mergePriorInventory,
+  observeUiSequence,
+  resolveSelectedFiles,
+  runDriftCli,
+};
 
-// Projection, relational domain, and UI view checks for the DRIFT JavaScript bridge.
-export const REL_KEYS = new Set([
-  'min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in',
-  'sum_fields', 'contains', 'prefix', 'suffix',
-]);
-export const NON_VERIFIED_OP_STATES = new Set([
-  'prepared', 'accepted', 'queued', 'running', 'in_progress',
-  'partial_failure', 'cancellation_requested', 'unknown',
-]);
-export const TERMINAL_UI_CLAIMS = new Set([
-  'completed', 'complete', 'verified', 'done', 'fulfilled',
-  'available', 'sent', 'paid', 'approved',
-]);
+// Projection, relational domain, and UI view checks for the DRIFT JS bridge.
+export const REL_KEYS = new Set(['min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys']);
+export const NON_VERIFIED_OP_STATES = new Set(['prepared', 'accepted', 'queued', 'running', 'in_progress', 'partial_failure', 'cancellation_requested', 'unknown']);
+export const TERMINAL_UI_CLAIMS = new Set(['completed', 'complete', 'verified', 'done', 'fulfilled', 'available', 'sent', 'paid', 'approved']);
 
 export const isStr = (v) => typeof v === 'string';
 export const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -23,12 +31,10 @@ export const unescapePointer = (s) => (s.includes('~') ? s.replace(/~1/gu, '/').
 export const isArrayIndex = (s) => s === '0' || /^[1-9][0-9]*$/u.test(s);
 export const isAssertErr = (e) => Boolean(e && (e.code === 'ERR_ASSERTION' || e.name === 'AssertionError'));
 
-export function throwError(message) {
-  throw new Error(message);
-}
+export function throwError(msg) { throw new Error(msg); }
 
-export function throwAssertionError(message) {
-  const err = new Error(message);
+export function throwAssertionError(msg) {
+  const err = new Error(msg);
   err.name = 'AssertionError';
   err.code = 'ERR_ASSERTION';
   throw err;
@@ -53,15 +59,13 @@ export function readPointer(target, rawPtr) {
   for (const seg of ptr.slice(1).split('/').map(unescapePointer)) {
     if (Array.isArray(cur)) {
       const idx = Number(seg);
-      if (!isArrayIndex(seg) || idx < 0 || idx >= cur.length) {
-        return { found: false, value: undefined };
-      }
+      if (!isArrayIndex(seg) || idx < 0 || idx >= cur.length) return { found: false, value: undefined };
       cur = cur[idx];
     } else if (isObj(cur) && seg in cur) {
       cur = cur[seg];
     } else if (isObj(cur) && typeof cur.__domDatasetAttr === 'function') {
       const attr = cur.__domDatasetAttr(seg);
-      if (attr === null || attr === undefined) return { found: false, value: undefined };
+      if (attr == null) return { found: false, value: undefined };
       cur = attr;
     } else if (isObj(cur) && typeof cur.getAttribute === 'function') {
       if (seg === 'dataset') {
@@ -69,39 +73,29 @@ export function readPointer(target, rawPtr) {
         cur = { __domDatasetAttr: (k) => el.getAttribute(`data-${k.replace(/[A-Z]/gu, (m) => `-${m.toLowerCase()}`)}`) };
       } else {
         const attr = cur.getAttribute(seg);
-        if (attr === null || attr === undefined) return { found: false, value: undefined };
+        if (attr == null) return { found: false, value: undefined };
         cur = attr;
       }
-    } else {
-      return { found: false, value: undefined };
-    }
+    } else return { found: false, value: undefined };
   }
   return { found: true, value: cur };
 }
 
 export function cloneJson(val) {
   if (Array.isArray(val)) return val.map(cloneJson);
-  if (isObj(val)) {
-    return Object.fromEntries(Object.entries(val).map(([k, v]) => [k, cloneJson(v)]));
-  }
-  return val;
+  return isObj(val) ? Object.fromEntries(Object.entries(val).map(([k, v]) => [k, cloneJson(v)])) : val;
 }
 
 export const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 export function valuesEqual(a, b) {
-  if (typeof a === 'number' || typeof b === 'number') {
-    return isFinNum(a) && isFinNum(b) && Math.abs(a - b) <= 1e-9;
-  }
+  if (typeof a === 'number' || typeof b === 'number') return isFinNum(a) && isFinNum(b) && Math.abs(a - b) <= 1e-9;
   if (a === b) return true;
-  if (a === null || b === null || a === undefined || b === undefined) return false;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
-  }
+  if (a == null || b == null) return false;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
   if (isObj(a) && isObj(b)) {
     const ka = Object.keys(a);
-    const kb = Object.keys(b);
-    return ka.length === kb.length && ka.every((k) => k in b && valuesEqual(a[k], b[k]));
+    return ka.length === Object.keys(b).length && ka.every((k) => k in b && valuesEqual(a[k], b[k]));
   }
   return false;
 }
@@ -109,9 +103,7 @@ export function valuesEqual(a, b) {
 export function writePointer(target, rawPtr, value) {
   const [, ptr] = splitResourcePointer(rawPtr);
   if (ptr === '') return cloneJson(value);
-  if (!isStr(ptr) || !ptr.startsWith('/')) {
-    throwError(`invalid RFC 6901 JSON Pointer "${rawPtr}"`);
-  }
+  if (!isStr(ptr) || !ptr.startsWith('/')) throwError(`invalid RFC 6901 JSON Pointer "${rawPtr}"`);
   const segs = ptr.slice(1).split('/').map(unescapePointer);
   const putAt = (cur, i) => {
     const seg = segs[i];
@@ -125,13 +117,9 @@ export function writePointer(target, rawPtr, value) {
       return copy;
     }
     const obj = isObj(cur) ? { ...cur } : {};
-    if (last) {
-      obj[seg] = cloneJson(value);
-      return obj;
-    }
+    if (last) return { ...obj, [seg]: cloneJson(value) };
     const child = seg in obj && obj[seg] !== null && typeof obj[seg] === 'object' ? obj[seg] : (nextIdx ? [] : {});
-    obj[seg] = putAt(child, i + 1);
-    return obj;
+    return { ...obj, [seg]: putAt(child, i + 1) };
   };
   return putAt(target, 0);
 }
@@ -174,24 +162,12 @@ function expandSingleDomain(spec, first = false) {
       throwError(`invalid int domain [${spec.min}, ${spec.max}]`);
     }
     if (first) return [min < 0 && max > 0 ? 0 : min];
-    return [
-      ...new Set([
-        ...(min < 0 && max > 0 ? [0] : []),
-        min,
-        min < max ? min + 1 : min,
-        Math.trunc((min + max) / 2),
-        max > min ? max - 1 : max,
-        max,
-      ]),
-    ];
+    return [...new Set([...(min < 0 && max > 0 ? [0] : []), min, min < max ? min + 1 : min, Math.trunc((min + max) / 2), max > min ? max - 1 : max, max])];
   }
   if (spec.type === 'string' && Array.isArray(spec.enum) && spec.enum.length) {
     return first ? [String(spec.enum[0])] : [...new Set(spec.enum.map(String))];
   }
-  if (spec.type === 'bool') {
-    return first ? [false] : [false, true];
-  }
-  return null;
+  return spec.type === 'bool' ? (first ? [false] : [false, true]) : null;
 }
 
 export function expandDomain(domain, first = false) {
@@ -273,6 +249,22 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
   if ('in' in exp && (!Array.isArray(exp.in) || !exp.in.some((x) => valuesEqual(act, x)))) {
     throwAssertionError(`${pfx}: expected then.${key} in ${JSON.stringify(exp.in)}, got ${JSON.stringify(act)}`);
   }
+  if ('not_in' in exp) {
+    if (act === null || act === undefined) throwAssertionError(`${pfx}: expected non-null value for then.${key}.not_in`);
+    if (Array.isArray(exp.not_in) ? exp.not_in.some((x) => valuesEqual(act, x)) : !valuesEqual(act, exp.not_in)) {
+      throwAssertionError(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in`);
+    }
+  }
+  if ('forbid_keys' in exp) {
+    if (!isObj(act)) throwAssertionError(`${pfx}: expected object for then.${key}.forbid_keys`);
+    if (Array.isArray(exp.forbid_keys)) {
+      for (const fk of exp.forbid_keys.map(String)) {
+        if (Object.hasOwn(act, fk)) throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
+      }
+    } else if (!Object.hasOwn(act, String(exp.forbid_keys))) {
+      throwAssertionError(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
+    }
+  }
   if ('sum_fields' in exp) {
     if (!Array.isArray(exp.sum_fields) || exp.sum_fields.length < 2) {
       throwAssertionError(`${pfx}: invalid sum_fields on then.${key}`);
@@ -334,11 +326,8 @@ function computeUnobservedControls(controls, thenTable, proj) {
   for (const tk of Object.keys(thenTable)) {
     if (tk === 'unobserved_controls') continue;
     if (ctrlSet.has(tk)) obs.add(tk);
-    const pStr = isStr(proj?.[tk]) ? proj[tk] : '';
-    if (pStr) {
-      for (const seg of pStr.split('/')) {
-        if (seg && ctrlSet.has(seg)) obs.add(seg);
-      }
+    for (const seg of (isStr(proj?.[tk]) ? proj[tk] : '').split('/')) {
+      if (seg && ctrlSet.has(seg)) obs.add(seg);
     }
   }
   return ctrls.filter((c) => !obs.has(c));
@@ -347,9 +336,7 @@ function computeUnobservedControls(controls, thenTable, proj) {
 export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, extra) {
   const src = Function.prototype.toString.call(fn).trim();
   const body = src.includes('=>') ? src.slice(src.indexOf('=>') + 2).trim() : src;
-  if (/^\{\s*\}$/u.test(body)) {
-    throwAssertionError(`${contractId}.${caseId}: check for then.${key} must inspect the expected value`);
-  }
+  if (/^\{\s*\}$/u.test(body)) throwAssertionError(`${contractId}.${caseId}: check for then.${key} must inspect the expected value`);
   const res = await fn(exp, extra);
   if (res === false) throwAssertionError(`${contractId}.${caseId}: check for then.${key} returned false`);
   if (res !== true && !/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(body)) {
@@ -360,23 +347,26 @@ export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, e
 export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj) {
   const v = isObj(view) ? view : {};
   const pfx = `${contractId}.${caseId}`;
+  if (v.surfaceFound === false || v.surface_found === false) throwAssertionError(`${pfx}: surface.missing`);
   const isMut = Boolean(mutationOverride);
-  const assertEq = (k, exp, act) => {
-    if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`);
-  };
-  const assertBound = (k, op, exp, act) => {
-    if (!isFinNum(act) || !isFinNum(Number(exp)) || (op === '<=' ? act > Number(exp) : act < Number(exp))) {
-      throwAssertionError(`${pfx}: expected ${k}${op}${exp}, got ${act}`);
-    }
-  };
+  const assertEq = (k, exp, act) => { if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`); };
   let proj = null;
-  for (const [k, exp] of Object.entries(thenTable)) {
+  const STATE_FIRST = new Set(['baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence']);
+  const ordered = [
+    ...Object.entries(thenTable).filter(([k]) => STATE_FIRST.has(k)),
+    ...Object.entries(thenTable).filter(([k]) => !STATE_FIRST.has(k)),
+  ];
+  for (const [k, exp] of ordered) {
     if (checks && typeof checks[k] === 'function') {
       await invokeVerifiedCallback(checks[k], contractId, caseId, k, exp, v);
       seen.add(k);
       continue;
     }
-    const els = Array.isArray(v.elements) ? v.elements : [];
+    if (v.adapter?.capabilities && proj === null) proj = getProj();
+    if (checkSurfaceKey(contractId, caseId, k, exp, v, thenTable, proj, mutationOverride, checkRelationalLeaf, throwAssertionError)) {
+      seen.add(k);
+      continue;
+    }
     if (k === 'baseline_state') {
       const hasB = Boolean(v.hasBaseline ?? (v.baseline !== undefined && v.baseline !== null));
       const lbl = lowStr(v.baselineLabel ?? v.deltaLabel);
@@ -384,9 +374,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
         throwAssertionError(`${pfx}: comparative baseline label "${lbl}" without baseline`);
       }
       const act = v.baseline_state ?? (hasB ? 'compared' : 'first_observation');
-      if (act !== exp) {
-        throwAssertionError(`${pfx}: expected baseline_state=${JSON.stringify(exp)}, got ${JSON.stringify(act)}`);
-      }
+      if (act !== exp) throwAssertionError(`${pfx}: expected baseline_state=${JSON.stringify(exp)}, got ${JSON.stringify(act)}`);
     } else if (k === 'duplicate_figures') {
       const figs = Array.isArray(v.figures)
         ? v.figures.map(String)
@@ -406,34 +394,6 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
         if (!isMut) metricsStore.set(mk, entry);
       }
       assertEq(k, exp, !conflict);
-    } else if (k === 'clipped_elements') {
-      const clipped = els.filter(
-        (el) => Number(el?.scrollWidth ?? 0) > Number(el?.clientWidth ?? 0)
-          || Number(el?.scrollHeight ?? 0) > Number(el?.clientHeight ?? 0),
-      ).length;
-      assertEq(k, exp, clipped);
-    } else if (k === 'horizontal_overflow_px') {
-      assertBound(k, '<=', exp, Math.max(0, Number(v.documentWidth ?? 0) - Number(v.viewportWidth ?? 0)));
-    } else if (k === 'min_contrast_ratio') {
-      let act = Infinity;
-      for (const el of els) {
-        if (typeof el?.contrastRatio === 'number' && el.contrastRatio < act) act = el.contrastRatio;
-      }
-      assertBound(k, '>=', exp, Number.isFinite(act) ? act : Number(v.min_contrast_ratio ?? 21));
-    } else if (k === 'min_target_px') {
-      let act = Infinity;
-      for (const el of els) {
-        if (el && typeof el.width === 'number' && typeof el.height === 'number' && el.spacingException !== true) {
-          act = Math.min(act, Number(el.width), Number(el.height));
-        }
-      }
-      assertBound(k, '>=', exp, Number.isFinite(act) ? act : Number(v.min_target_px ?? 44));
-    } else if (k === 'obscured_focus_elements') {
-      const tag = els.filter((el) => el && ('obscured' in el || 'focusObscured' in el));
-      const obscured = tag.length
-        ? tag.filter((el) => (el.focusable ?? true) && (el.obscured === true || el.focusObscured === true)).length
-        : Number(v.obscured_focus_elements ?? 0);
-      assertEq(k, exp, obscured);
     } else if (k === 'preserved_input_on_error') {
       let act = Boolean(v.preserved_input_on_error ?? true);
       if (Boolean(v.error ?? v.hasError) && isObj(v.dirtyInputs)) {
@@ -469,109 +429,8 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
   }
 }
 
-export function captureSurfaceView(rootOrSelector) {
-  const doc = typeof globalThis !== 'undefined' ? globalThis.document : null;
-  const win = typeof globalThis !== 'undefined' ? globalThis.window : null;
-  const root = typeof rootOrSelector === 'string'
-    ? (doc && typeof doc.querySelector === 'function' ? doc.querySelector(rootOrSelector) : null)
-    : (rootOrSelector || (doc ? doc.documentElement || doc.body : null));
-  if (!root) {
-    return { documentWidth: 0, viewportWidth: 0, elements: [], controls: {} };
-  }
-  const docEl = (root.ownerDocument && root.ownerDocument.documentElement) || (doc && doc.documentElement) || root;
-  const documentWidth = Number(docEl.scrollWidth ?? root.scrollWidth ?? 0);
-  const viewportWidth = Number(win?.innerWidth ?? docEl.clientWidth ?? root.clientWidth ?? documentWidth);
-  const getAttr = (el, k) => (el && typeof el.getAttribute === 'function' ? el.getAttribute(k) : (el && el.attributes && k in el.attributes ? el.attributes[k] : null));
-  const rawNodes = typeof root.querySelectorAll === 'function'
-    ? [root, ...Array.from(root.querySelectorAll('*'))]
-    : [root, ...(Array.isArray(root.children) ? root.children : [])];
-  const elements = [];
-  const controls = {};
-  const INTERACTIVE_TAGS = new Set(['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A']);
-  const INTERACTIVE_ROLES = new Set(['button', 'link', 'textbox', 'combobox', 'checkbox', 'radio', 'tab', 'switch', 'menuitem']);
-  const ownerDoc = root.ownerDocument || doc;
-  for (const el of rawNodes) {
-    if (!el || typeof el !== 'object') continue;
-    const tag = String(el.tagName || '').toUpperCase();
-    const role = getAttr(el, 'role') || '';
-    const dDrift = getAttr(el, 'data-drift');
-    const dTestId = dDrift ? null : getAttr(el, 'data-testid');
-    const fCtrl = dDrift || dTestId ? null : getAttr(el, 'formcontrolname');
-    const key = dDrift || dTestId || fCtrl || getAttr(el, 'name') || getAttr(el, 'id') || '';
-    const focusable = Boolean(el.focusable ?? (INTERACTIVE_TAGS.has(tag) || INTERACTIVE_ROLES.has(role) || getAttr(el, 'tabindex') !== null));
-    const needRect = focusable || (el.width === undefined && el.clientWidth === undefined) || (el.height === undefined && el.clientHeight === undefined);
-    const rect = needRect && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
-    const width = Number(el.width ?? rect?.width ?? el.clientWidth ?? 44);
-    const height = Number(el.height ?? rect?.height ?? el.clientHeight ?? 44);
-    const scrollWidth = Number(el.scrollWidth ?? width);
-    const clientWidth = Number(el.clientWidth ?? width);
-    const scrollHeight = Number(el.scrollHeight ?? height);
-    const clientHeight = Number(el.clientHeight ?? height);
-    let obscured = Boolean(el.obscured ?? el.focusObscured ?? false);
-    if (!obscured && focusable && rect && width > 0 && height > 0 && ownerDoc && typeof ownerDoc.elementFromPoint === 'function') {
-      const hitEl = ownerDoc.elementFromPoint(Number(rect.left ?? 0) + width / 2, Number(rect.top ?? 0) + height / 2);
-      if (hitEl && hitEl !== el && (typeof el.contains !== 'function' || !el.contains(hitEl)) && (typeof hitEl.contains !== 'function' || !hitEl.contains(el))) {
-        obscured = true;
-      }
-    }
-    elements.push({
-      ...(key ? { id: key } : {}),
-      scrollWidth,
-      clientWidth,
-      scrollHeight,
-      clientHeight,
-      width,
-      height,
-      focusable,
-      obscured,
-      ...(typeof el.contrastRatio === 'number' ? { contrastRatio: el.contrastRatio } : {}),
-    });
-    const isControl = Boolean(key && (focusable || dDrift || dTestId || fCtrl));
-    if (isControl && !(key in controls)) {
-      const hidden = Boolean(el.hidden === true || getAttr(el, 'hidden') !== null || getAttr(el, 'aria-hidden') === 'true');
-      const disabled = Boolean(el.disabled === true || getAttr(el, 'disabled') !== null || getAttr(el, 'aria-disabled') === 'true');
-      const readonly = Boolean(el.readOnly === true || getAttr(el, 'readonly') !== null || getAttr(el, 'aria-readonly') === 'true');
-      const state = hidden ? 'hidden' : (disabled ? 'disabled' : (readonly ? 'readonly' : 'enabled'));
-      const entry = {
-        state,
-        disabled,
-        readonly,
-        hidden,
-        ...(role ? { role } : {}),
-      };
-      if (typeof el.checked === 'boolean') entry.checked = el.checked;
-      else if (getAttr(el, 'aria-checked') !== null) entry.checked = getAttr(el, 'aria-checked') === 'true';
-      const val = el.value !== undefined ? el.value : getAttr(el, 'value');
-      if (val !== null && val !== undefined) entry.value = val;
-      const href = getAttr(el, 'href');
-      if (href !== null && href !== undefined) entry.href = href;
-      const txt = typeof el.textContent === 'string' ? el.textContent.trim() : (typeof el.innerText === 'string' ? el.innerText.trim() : '');
-      if (txt) entry.text = txt;
-      let scannedAttrs = false;
-      if (el.attributes) {
-        if (typeof el.attributes[Symbol.iterator] === 'function') {
-          scannedAttrs = true;
-          for (const a of el.attributes) {
-            if (a && isStr(a.name) && (a.name.startsWith('data-') || a.name.startsWith('aria-'))) entry[a.name] = a.value;
-          }
-        } else if (isObj(el.attributes)) {
-          for (const [ak, av] of Object.entries(el.attributes)) {
-            if ((ak.startsWith('data-') || ak.startsWith('aria-')) && av !== null && av !== undefined) entry[ak] = av;
-          }
-        }
-      }
-      if (!scannedAttrs) {
-        for (const dk of ['data-mode', 'data-phase', 'data-status', 'aria-expanded', 'aria-invalid']) {
-          if (!(dk in entry)) {
-            const dv = getAttr(el, dk);
-            if (dv !== null && dv !== undefined) entry[dk] = dv;
-          }
-        }
-      }
-      controls[key] = entry;
-    }
-  }
-  return { documentWidth, viewportWidth, elements, controls };
+export function captureSurfaceView(rootOrSelector, options) {
+  return captureSurfaceDom(rootOrSelector, options);
 }
 
 // Inventory sidecar fields from DRIFT_SNAPSHOT, DRIFT_EXECUTION_REF, DRIFT_PACK_REF and DRIFT_TOUCHED.

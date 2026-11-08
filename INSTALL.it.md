@@ -3,17 +3,18 @@
 [English](INSTALL.md) · **Italiano** · [Guida Pratica](GUIDE.it.md) · [Edizioni](EDITIONS.md)
 
 DRIFT è un solo comando, `drift`, con parti facoltative: una skill per
-l'agente, un bridge JUnit e plugin Maven per i progetti JVM, e i bridge senza
-dipendenze per JavaScript (`drift.mjs`) e Python (`drift.py`). L'installer
-mette tutto nel tuo account utente. Non servono diritti di amministratore né la
-rete, e un solo comando rimuove tutto ciò che ha installato.
+l'agente, un bridge JUnit / Scala MUnit e plugin Maven per i progetti JVM, e i
+bridge senza dipendenze per JavaScript (`drift.mjs`), Python (`drift.py`), Rust
+(`drift_rust`) e V (`drift_v`). L'installer mette tutto nel tuo account utente.
+Non servono diritti di amministratore né la rete, e un solo comando rimuove
+tutto ciò che ha installato.
 
 ## In breve
 
 | | Ubuntu e altri Linux | macOS (Apple Silicon & Intel) | Windows 10 e 11 |
 |---|---|---|---|
-| Ricevi | `drift-0.3.2-linux-x64.tar.gz` | `drift-0.3.2-macos-arm64.tar.gz` o `drift-0.3.2-macos-x64.tar.gz` | `drift-0.3.2-windows-x64.zip` |
-| Installa | `tar -xzf drift-0.3.2-linux-x64.tar.gz`<br>`./drift-0.3.2-linux-x64/install.sh` | `tar -xzf drift-0.3.2-macos-arm64.tar.gz`<br>`./drift-0.3.2-macos-arm64/install.sh` | Estrai lo zip, doppio clic su `install.cmd` |
+| Ricevi | `drift-0.3.3-linux-x64.tar.gz` | `drift-0.3.3-macos-arm64.tar.gz` o `drift-0.3.3-macos-x64.tar.gz` | `drift-0.3.3-windows-x64.zip` |
+| Installa | `tar -xzf drift-0.3.3-linux-x64.tar.gz`<br>`./drift-0.3.3-linux-x64/install.sh` | `tar -xzf drift-0.3.3-macos-arm64.tar.gz`<br>`./drift-0.3.3-macos-arm64/install.sh` | Estrai lo zip, doppio clic su `install.cmd` |
 | Verifica | `drift version` | `drift version` | `drift version` in un nuovo terminale |
 | Rimuovi | `~/.local/share/drift/install.sh --uninstall` | `~/.local/share/drift/install.sh --uninstall` | Impostazioni › App › DRIFT › Disinstalla |
 
@@ -31,8 +32,8 @@ confronta il valore su un secondo canale attendibile.
 - **Linux**: Ubuntu 20.04 o successivo, o qualunque Linux x86 a 64 bit (il binario è statico e non richiede librerie).
 - **macOS**: macOS 12+ su Apple Silicon (`macos-arm64`) o Intel (`macos-x64`).
 - **Windows**: Windows 10 o 11 a 64 bit (`windows-x64`).
-- Solo per il bridge JUnit: JDK 17 o successivo e Maven 3.6.3 o successivo.
-- Solo per i bridge JavaScript o Python: Node.js 18+ o Python 3.9+.
+- Solo per il bridge JUnit 5 (`drift-junit`): JDK 25 LTS e Maven 3.6.3 o successivo (per i monoliti legacy Java 6–8 / JUnit 4 usa `bridges/legacy/junit4/DriftJUnit4.java`).
+- Solo per i bridge JavaScript o Python: Node.js 24 LTS (18+ supportato) o Python 3.14 (3.11+ supportato).
   `drift` da solo non richiede altro.
 - Solo per la skill: un agente che legge le skill da `~/.copilot/skills` o
   `~/.agents/skills`, come GitHub Copilot CLI, Claude Code, Codex o Pi.
@@ -46,21 +47,21 @@ confronta il valore su un secondo canale attendibile.
    sha256sum --ignore-missing -c SHA256SUMS
    ```
 
-   Deve comparire `drift-0.3.2-linux-x64.tar.gz: OK`. Qualunque altro esito
+   Deve comparire `drift-0.3.3-linux-x64.tar.gz: OK`. Qualunque altro esito
    indica un file danneggiato o diverso: fattelo rimandare. (Se hai ricevuto
    solo il `.tar.gz`, il passo 2 verifica lo `SHA256SUMS` interno all'archivio.)
 2. Estrai e installa:
 
    ```bash
-   tar -xzf drift-0.3.2-linux-x64.tar.gz
-   (cd drift-0.3.2-linux-x64 && sha256sum -c SHA256SUMS)
-   ./drift-0.3.2-linux-x64/install.sh
+   tar -xzf drift-0.3.3-linux-x64.tar.gz
+   (cd drift-0.3.3-linux-x64 && sha256sum -c SHA256SUMS)
+   ./drift-0.3.3-linux-x64/install.sh
    ```
 
    Ogni passo stampa `✓`. Una riga con `!` ti dice cosa fare, per esempio
    `~/.local/bin entra nel PATH al prossimo login; in questo terminale
    esegui: . ~/.profile`.
-3. Verifica: `drift version` stampa `drift 0.3.2 (schema 0.2, digest dr1, build <id>)`,
+3. Verifica: `drift version` stampa `drift 0.3.3 (schema 0.2, digest dr1, build <id>)`,
    dove `<id>` indica il sorgente da cui è stato costruito il pacchetto.
 
 Dopo puoi cancellare la cartella estratta.
@@ -71,7 +72,7 @@ Dopo puoi cancellare la cartella estratta.
    cartella, apri PowerShell in quella cartella e verifica il download:
 
    ```powershell
-   (Get-FileHash .\drift-0.3.2-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
+   (Get-FileHash .\drift-0.3.3-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
    ```
 
    Deve comparire `True`. (La cartella estratta contiene inoltre uno
@@ -95,8 +96,8 @@ App. Dopo puoi cancellare la cartella estratta.
 | Bridge JS e Python | `~/.local/share/drift/bridges/drift.mjs`, `drift.py` | `%LOCALAPPDATA%\Programs\drift\bridges\drift.mjs`, `drift.py` |
 | Skill dell'agente | `~/.copilot/skills/drift/` (e `~/.agents/skills/` se presente o con `--hooks`) | `%USERPROFILE%\.copilot\skills\drift\` (e `%USERPROFILE%\.agents\skills\`) |
 | Hook dell'agente (opt-in) | `~/.pi/agent/extensions/drift.ts`, `~/.copilot/hooks/drift.json`, `~/.codex/hooks.json`, `~/.claude/settings.json` | `%USERPROFILE%\.pi\agent\extensions\drift.ts`, `%USERPROFILE%\.copilot\hooks\drift.json` |
-| Bridge JUnit | `~/.m2/repository/drift/drift-junit/0.3.2/` | `%USERPROFILE%\.m2\repository\drift\drift-junit\0.3.2\` |
-| Plugin Maven | `~/.m2/repository/drift/drift-maven-plugin/0.3.2/` | `%USERPROFILE%\.m2\repository\drift\drift-maven-plugin\0.3.2\` |
+| Bridge JUnit | `~/.m2/repository/drift/drift-junit/0.3.3/` | `%USERPROFILE%\.m2\repository\drift\drift-junit\0.3.3\` |
+| Plugin Maven | `~/.m2/repository/drift/drift-maven-plugin/0.3.3/` | `%USERPROFILE%\.m2\repository\drift\drift-maven-plugin\0.3.3\` |
 | Impostazioni modificate | nessuna: l'installer stampa solo un suggerimento sul PATH | PATH utente e una voce in Impostazioni › App |
 
 Se `~/.m2/settings.xml` imposta `<localRepository>`, il bridge e il plugin
@@ -155,7 +156,7 @@ Su Windows l'esempio è in `$env:LOCALAPPDATA\Programs\drift\example\.drift`.
 Un agente che legge `~/.copilot/skills` trova la skill `drift` al prossimo
 avvio; la skill descrive l'intero flusso di lavoro.
 
-## Progetti Maven (bridge JUnit e plugin)
+## Progetti Maven e Scala / sbt (bridge JUnit / MUnit e plugin)
 
 Aggiungi la dipendenza di test e il plugin al `pom.xml` del progetto. La skill
 installata spiega come marcare i test, in `references/jvm-bridge.md`.
@@ -164,7 +165,7 @@ installata spiega come marcare i test, in `references/jvm-bridge.md`.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -173,7 +174,7 @@ installata spiega come marcare i test, in `references/jvm-bridge.md`.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <executions>
     <execution>
       <goals>
@@ -190,6 +191,29 @@ test e interroga il gate:
 
 ```bash
 mvn verify
+```
+
+Nei progetti **Scala 3 / sbt** (ad esempio MUnit `FunSuite`), risolvi
+`drift-junit` dal repository Maven locale in `build.sbt`:
+
+```scala
+scalaVersion := "3.9.0"
+resolvers += Resolver.mavenLocal
+libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+Test / fork := true
+Test / javaOptions ++= Seq(
+  s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
+  s"-Ddrift.events=${baseDirectory.value}/target/drift/events"
+)
+```
+
+Poi esporta le viste, esegui `sbt test` (chiamando `Drift.expect(contract, caseId, level)`
+e `c.verify(...)` in ciascun test) e verifica il gate:
+
+```bash
+drift show .drift/contracts --as json --out target/drift/resolved
+sbt test
+drift gate .drift/contracts --events target/drift/events
 ```
 
 - La build fallisce quando un contratto non è verde e ne stampa il motivo. Un
@@ -326,11 +350,11 @@ organizzazione impone una policy, chiedi all'IT, oppure copia a mano
 **Windows chiede se eseguire `install.cmd`, o blocca `drift.exe`.** I file non
 sono firmati e arrivano da un altro computer. Scegli **Esegui**; per evitare la
 domanda, sblocca lo zip prima di estrarlo: clic destro › Proprietà › Annulla
-blocco, oppure `Unblock-File .\drift-0.3.2-windows-x64.zip`. Se le regole
+blocco, oppure `Unblock-File .\drift-0.3.3-windows-x64.zip`. Se le regole
 aziendali bloccano i programmi in `%LOCALAPPDATA%`, installa con `-Prefix` in
 una cartella consentita o chiedi all'IT.
 
-**Maven: `Could not find artifact drift:drift-junit:jar:0.3.2`** (o
+**Maven: `Could not find artifact drift:drift-junit:jar:0.3.3`** (o
 `drift-maven-plugin`). Maven usa un repository locale diverso da quello
 dell'installer, per esempio tramite `-Dmaven.repo.local` o un file di
 impostazioni in un altro posto. Riesegui l'installer con `--maven-repo DIR` o
@@ -356,4 +380,4 @@ proxy in `~/.m2/settings.xml`.
 **Quarantena Gatekeeper su macOS.** Se macOS blocca il binario scaricato da un
 browser perché non firmato, rimuovi l'attributo di quarantena sulla cartella
 estratta prima di eseguire `install.sh`:
-`xattr -dr com.apple.quarantine ./drift-0.3.2-macos-*`.
+`xattr -dr com.apple.quarantine ./drift-0.3.3-macos-*`.

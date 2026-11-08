@@ -192,10 +192,78 @@
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "type": "object"
+        },
+        "writes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
         "then"
+      ],
+      "type": "object"
+    },
+    "cutover": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_target": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "corpus_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        },
+        "enforce": {
+          "enum": [
+            "release",
+            "always"
+          ]
+        },
+        "intentional_diffs": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*\\.[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "legacy_target": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "migration_ids": {
+          "items": {
+            "pattern": "^(?:[a-z0-9]+(?:-[a-z0-9]+)*|[a-z][a-z0-9_]*)$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "normalization_ref": {
+          "pattern": "^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "rollback_readback": {
+          "enum": [
+            "required",
+            "not_applicable"
+          ]
+        }
+      },
+      "required": [
+        "legacy_target",
+        "candidate_target",
+        "normalization_ref",
+        "corpus_ref"
       ],
       "type": "object"
     },
@@ -305,6 +373,133 @@
         "cases",
         "evidence",
         "options"
+      ],
+      "type": "object"
+    },
+    "formal": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "linkage": {
+                "const": "in_code_harness"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "harness"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "property_kind": {
+                "const": "liveness"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fairness"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "cases": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "domain_bounds": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "enum": [
+              "loop_unwind",
+              "max_preemptions",
+              "max_steps",
+              "max_threads",
+              "input_bytes"
+            ]
+          },
+          "type": "object"
+        },
+        "enforce": {
+          "enum": [
+            "execution",
+            "release"
+          ]
+        },
+        "fairness": {
+          "enum": [
+            "none",
+            "weak",
+            "strong"
+          ]
+        },
+        "harness": {
+          "minLength": 3,
+          "type": "string"
+        },
+        "linkage": {
+          "enum": [
+            "in_code_harness",
+            "conformance_traced",
+            "declared_model"
+          ]
+        },
+        "min_evidence": {
+          "enum": [
+            "deductive",
+            "bounded_exhaustive",
+            "sampled_exploration"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "property": {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        },
+        "property_kind": {
+          "enum": [
+            "safety",
+            "liveness"
+          ]
+        },
+        "verifier": {
+          "enum": [
+            "kani",
+            "loom",
+            "tlc",
+            "cbmc",
+            "alloy",
+            "spin",
+            "shuttle",
+            "stateright",
+            "dafny"
+          ]
+        }
+      },
+      "required": [
+        "cases",
+        "verifier",
+        "property",
+        "min_evidence",
+        "linkage",
+        "enforce"
       ],
       "type": "object"
     },
@@ -522,6 +717,15 @@
         ]
       },
       "properties": {
+        "concepts": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
         "profile": {
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
           "type": "string"
@@ -564,6 +768,7 @@
           {
             "enum": [
               "profile",
+              "concepts",
               "vocabulary",
               "waive"
             ]
@@ -617,6 +822,9 @@
       },
       "type": "object"
     },
+    "cutover": {
+      "$ref": "#/$defs/cutover"
+    },
     "decisions": {
       "additionalProperties": {
         "$ref": "#/$defs/decision"
@@ -629,6 +837,15 @@
     "drift": {
       "const": "0.2"
     },
+    "formal": {
+      "additionalProperties": {
+        "$ref": "#/$defs/formal"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
+    },
     "id": {
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
       "type": "string"
@@ -636,6 +853,16 @@
     "intent": {
       "minLength": 1,
       "type": "string"
+    },
+    "invariants": {
+      "additionalProperties": {
+        "$ref": "#/$defs/toml-value"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
     },
     "note": {
       "type": "string"

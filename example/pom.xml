@@ -5,11 +5,11 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift.examples</groupId>
   <artifactId>items</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
   <name>DRIFT synthetic items service</name>
 
   <properties>
-    <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <drift.resolved>${project.build.directory}/drift/resolved</drift.resolved>
     <drift.events>${project.build.directory}/drift/events.jsonl</drift.events>
@@ -19,7 +19,7 @@
     <dependency>
       <groupId>drift</groupId>
       <artifactId>drift-junit</artifactId>
-      <version>0.3.2</version>
+      <version>0.3.3</version>
       <scope>test</scope>
     </dependency>
     <dependency>

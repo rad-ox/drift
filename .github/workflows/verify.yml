@@ -9,6 +9,16 @@ jobs:
   verify-linux-x64:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
       - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
         run: |
           git init -q .
@@ -77,7 +87,7 @@ jobs:
           assert drift.run_drift_case('item-get', 'ci.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': handle_get_item(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
           PY
 
-          # Assert real bridge sidecars (js.meta.json & py.meta.json) exist and verify field-by-field JSON equivalence (default min-proof = verified)
+          # Assert real bridge sidecars exist and verify field-by-field JSON equivalence
           test -f /tmp/drift-ci/events/js.meta.json && test -f /tmp/drift-ci/events/py.meta.json
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/gate.json
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/ver.json
@@ -88,15 +98,13 @@ jobs:
           v = json.load(open('/tmp/drift-ci/ver.json'))['contracts'][0]
           assert g['ok'] is True and v['ok'] is True
           assert g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'current'
-          assert g['reasons'] == v['reasons'] == []
-          assert g['ignored'] == v['ignored'] == 0
+          assert g['reasons'] == v['reasons'] == [] and g['ignored'] == v['ignored'] == 0
           g_states = [(r['case'], r['level'], r['state']) for r in g['results']]
           v_states = [(r['case'], r['level'], r['state']) for r in v['results']]
-          assert g_states == v_states, (g_states, v_states)
-          assert all(st == 'verified' for _, _, st in g_states), g_states
+          assert g_states == v_states and all(st == 'verified' for _, _, st in g_states), g_states
           PY
 
-          # JVM Bridge (MIT sources -> Maven build + JUnit 5 suite + live ItemServer HTTP test -> gate & verifier parity)
+          # JVM Bridge (Java 25 LTS -> Maven build + JUnit 5 suite + live ItemServer HTTP test -> gate & verifier parity)
           mkdir -p /tmp/drift-ci/jvm-events
           mvn -q -B -f bridges/jvm/drift-junit/pom.xml test install
           mvn -q -B -f example/pom.xml test -Ddrift.resolved=/tmp/drift-ci/resolved -Ddrift.events=/tmp/drift-ci/jvm-events/jvm.jsonl
@@ -169,7 +177,7 @@ jobs:
           ! drift gate /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null 2>&1
           ! python3 verifier/drift_verify.py /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null
 
-          # Adversarial Scenario D: Unapproved contract modification (DR-E601) -> both report contract.approval.stale
+          # Adversarial Scenario D: Unapproved contract modification (DR-E601) -> stale
           mkdir -p /tmp/drift-ci/tampered && cp -R example/.drift /tmp/drift-ci/tampered/.drift
           sed -i 's/status = 200/status = 201/' /tmp/drift-ci/tampered/.drift/contracts/item-get.toml
           drift gate /tmp/drift-ci/tampered/.drift/contracts --config /tmp/drift-ci/tampered/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_tamp.json || true
@@ -178,15 +186,12 @@ jobs:
           import json
           g = json.load(open('/tmp/drift-ci/g_tamp.json'))['contracts'][0]
           v = json.load(open('/tmp/drift-ci/v_tamp.json'))['contracts'][0]
-          assert g['ok'] is False and v['ok'] is False
-          assert g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'stale'
-          assert g['ignored'] == v['ignored'] == 3
-          assert g['reasons'] == v['reasons'] == ['contract.findings', 'contract.approval.stale', 'proof.not_green']
+          assert not g['ok'] and not v['ok'] and g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'stale'
+          assert g['ignored'] == v['ignored'] == 3 and g['reasons'] == v['reasons'] == ['contract.findings', 'contract.approval.stale', 'proof.not_green']
           PY
 
-          # Adversarial Scenario E: Deleted test in real js.meta.json -> both report gone == 1 and proof.not_green
-          mkdir -p /tmp/drift-ci/gone-events
-          cp /tmp/drift-ci/events/* /tmp/drift-ci/gone-events/
+          # Adversarial Scenario E: Deleted test in real js.meta.json -> gone == 1
+          mkdir -p /tmp/drift-ci/gone-events && cp /tmp/drift-ci/events/* /tmp/drift-ci/gone-events/
           printf '{"version":1,"classes":[],"tests":[]}\n' > /tmp/drift-ci/gone-events/js.meta.json
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/gone-events --json > /tmp/drift-ci/g_gone.json || true
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/gone-events --json > /tmp/drift-ci/v_gone.json || true
@@ -194,23 +199,22 @@ jobs:
           import json
           g = json.load(open('/tmp/drift-ci/g_gone.json'))['contracts'][0]
           v = json.load(open('/tmp/drift-ci/v_gone.json'))['contracts'][0]
-          assert g['ok'] is False and v['ok'] is False
-          assert g['gone'] == v['gone'] == 1
-          assert g['reasons'] == v['reasons'] == ['proof.not_green']
+          assert not g['ok'] and not v['ok'] and g['gone'] == v['gone'] == 1 and g['reasons'] == v['reasons'] == ['proof.not_green']
           PY
 
-          # Adversarial Scenario F: Malformed event line (DR-E701) -> both report events.invalid
-          mkdir -p /tmp/drift-ci/bad-events
-          cp /tmp/drift-ci/events/* /tmp/drift-ci/bad-events/
+          # Adversarial Scenario F: Malformed event line (DR-E701) + Rust bridge & v2 sidecar schema check
+          mkdir -p /tmp/drift-ci/bad-events && cp /tmp/drift-ci/events/* /tmp/drift-ci/bad-events/
           printf '{"test":"ci.mjs#bad","contract":"item-get","cases":["found"],"level":"http","outcome":"passed","unknown":1}\n' >> /tmp/drift-ci/bad-events/js.jsonl
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/g_bad.json 2>/dev/null || true
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/v_bad.json || true
+          if command -v rustc >/dev/null 2>&1; then rustc --edition=2024 --crate-name drift_rust --crate-type rlib bridges/lib.rs -O -o /tmp/drift-ci/libdrift_rust.rlib; fi
           python3 - <<'PY'
           import json
-          g = json.load(open('/tmp/drift-ci/g_bad.json'))['contracts'][0]
-          v = json.load(open('/tmp/drift-ci/v_bad.json'))['contracts'][0]
-          assert g['ok'] is False and v['ok'] is False
-          assert 'events.invalid' in g['reasons'] and 'events.invalid' in v['reasons']
+          for p in ('/tmp/drift-ci/g_bad.json', '/tmp/drift-ci/v_bad.json'):
+            c = json.load(open(p))['contracts'][0]
+            assert c['ok'] is False and 'events.invalid' in c['reasons'], c
+          inv = json.load(open('schemas/drift-proof-event-0.2.schema.json'))['$defs']['inventorySidecar']
+          assert inv['properties']['version']['enum'] == [1, 2] and 'execution_ref' in inv['properties']
           PY
 
   verify-macos-arm64:

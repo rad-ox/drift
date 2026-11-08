@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.3.2'
-pub const bridge_version = '0.3.2'
+pub const adapter_id = 'drift_v.v@0.3.3'
+pub const bridge_version = '0.3.3'
 
 const env_keys = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']!
 
@@ -303,6 +303,11 @@ fn extract_then_projections(view map[string]json2.Any) map[string]string {
 	mut out := map[string]string{}
 	if proj_any := view['projections'] {
 		if proj_any is map[string]json2.Any {
+			for k, v in proj_any {
+				if k !in ['when', 'then'] && v is string {
+					out[k] = v
+				}
+			}
 			if t_any := proj_any['then'] {
 				if t_any is map[string]json2.Any {
 					for k, v in t_any {
@@ -321,6 +326,11 @@ fn extract_when_projections(view map[string]json2.Any) map[string]string {
 	mut out := map[string]string{}
 	if proj_any := view['projections'] {
 		if proj_any is map[string]json2.Any {
+			for k, v in proj_any {
+				if k !in ['when', 'then'] && v is string {
+					out[k] = v
+				}
+			}
 			if w_any := proj_any['when'] {
 				if w_any is map[string]json2.Any {
 					for k, v in w_any {
@@ -366,6 +376,114 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 	}
 }
 
+fn forbidden_writes_of(view map[string]json2.Any, case_id string) []string {
+	mut scope_writes := []string{}
+	if sc_any := view['scope'] {
+		if sc_any is map[string]json2.Any {
+			if sw_any := sc_any['writes'] {
+				if sw_any is []json2.Any {
+					for item in sw_any {
+						if item is string {
+							scope_writes << item
+						}
+					}
+				}
+			}
+		}
+	}
+	if scope_writes.len == 0 {
+		return []string{}
+	}
+	cases_any := view['cases'] or { return []string{} }
+	if cases_any !is map[string]json2.Any {
+		return []string{}
+	}
+	c_any := cases_any.as_map()[case_id] or { return []string{} }
+	if c_any !is map[string]json2.Any {
+		return []string{}
+	}
+	cw_any := c_any.as_map()['writes'] or { return []string{} }
+	mut allowed := map[string]bool{}
+	mut allowed_bases := map[string]bool{}
+	if cw_any is []json2.Any {
+		for item in cw_any {
+			if item is string {
+				allowed[item] = true
+				allowed_bases[item.all_before('#')] = true
+			}
+		}
+	} else {
+		return []string{}
+	}
+	mut out := []string{}
+	for r in scope_writes {
+		if r !in allowed && r.all_before('#') !in allowed && r !in allowed_bases {
+			out << r
+		}
+	}
+	return out
+}
+
+pub fn (mut ctx DriftContext) check_frame(case_id string, frame_json string) ! {
+	_ := ctx.case_map(case_id)!
+	forbidden := forbidden_writes_of(ctx.view, case_id)
+	if forbidden.len == 0 {
+		return
+	}
+	doc := json2.decode[json2.Any](frame_json) or { return error('frame_json is not valid JSON') }
+	if doc !is map[string]json2.Any {
+		return error('frame_json must be a JSON object')
+	}
+	fmap := doc.as_map()
+	for res in forbidden {
+		base_res := res.all_before('#')
+		obs := fmap[res] or {
+			fmap[base_res] or {
+				return error('${ctx.contract_id}.${case_id}: missing frame observation for forbidden write resource "${res}"')
+			}
+		}
+		mut checked := false
+		if n := as_finite_f64(obs) {
+			if n >= 0 {
+				checked = true
+				if n > 0 {
+					return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${n}')
+				}
+			}
+		} else if obs is map[string]json2.Any {
+			for wk in ['writes', 'operations', 'events'] {
+				if wv := obs[wk] {
+					if wn := as_finite_f64(wv) {
+						if wn >= 0 {
+							checked = true
+							if wn > 0 {
+								return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${wn}')
+							}
+						}
+					} else if wv is []json2.Any {
+						checked = true
+						if wv.len > 0 {
+							return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${wv.len}')
+						}
+					}
+				}
+			}
+			if bef := obs['before'] {
+				if aft := obs['after'] {
+					checked = true
+					if !values_equal(bef, aft) {
+						return error('${ctx.contract_id}.${case_id}: frame state mutation on resource "${res}": before and after snapshots differ')
+					}
+				}
+			}
+		}
+		if !checked {
+			return error('${ctx.contract_id}.${case_id}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots')
+		}
+		ctx.mark_read(case_id, '@frame:${res}')
+	}
+}
+
 pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json string) ! {
 	cm := ctx.case_map(case_id)!
 	t_any := cm['then'] or { return error('case "${case_id}" has no then table') }
@@ -374,15 +492,16 @@ pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json stri
 	}
 	doc := json2.decode[json2.Any](payload_json) or { return error('payload is not valid JSON') }
 	proj_then := extract_then_projections(ctx.view)
+	check_ui_projection_guards(ctx.contract_id, case_id, doc, proj_then, t_any.as_map())!
 	for pred, expected in t_any.as_map() {
 		ctx.mark_read(case_id, pred)
-		if is_relational_table(expected) && 'allowed_keys' in expected.as_map()
-			&& pred !in proj_then {
+		if is_relational_table(expected) && ('allowed_keys' in expected.as_map()
+			|| 'forbid_keys' in expected.as_map()) && pred !in proj_then {
 			mut target := doc
 			if doc is map[string]json2.Any {
 				if sub := doc[pred] {
 					if sub is map[string]json2.Any {
-						target = sub
+						target = json2.Any(sub.clone())
 					}
 				}
 			}
@@ -397,6 +516,13 @@ pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json stri
 			check_relational_leaf(doc, actual, expected.as_map(), proj_then, pred)!
 		} else if !values_equal(actual, expected) {
 			return error('mismatch on "${pred}" (${ptr}): got ${actual.json_str()}, expected ${expected.json_str()}')
+		}
+	}
+	if doc is map[string]json2.Any {
+		if fr_any := doc['_frame'] {
+			if fr_any is map[string]json2.Any {
+				ctx.check_frame(case_id, json2.Any(fr_any).json_str())!
+			}
 		}
 	}
 }
@@ -493,6 +619,14 @@ fn (ctx &DriftContext) fully_read_cases() []string {
 			if !(ctx.read_keys[cid][k] or { false }) {
 				all_read = false
 				break
+			}
+		}
+		if all_read {
+			for fr in forbidden_writes_of(ctx.view, cid) {
+				if !(ctx.read_keys[cid]['@frame:${fr}'] or { false }) {
+					all_read = false
+					break
+				}
 			}
 		}
 		if all_read {
@@ -791,4 +925,29 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	}
 	run_in_process_mutants(opts, view, cb)!
 	return outcome
+}
+
+pub const bridge_runtime_baseline = 'v-0.5.2'
+
+pub const bridge_capabilities_list = [
+	'allowed_keys',
+	'case_frames',
+	'counterexample_replay',
+	'forbid_keys',
+	'inventory_sidecar',
+	'mutants',
+	'not_in',
+	'predicates',
+	'projections',
+	'relational_bounds',
+	'stubs',
+]!
+
+pub fn require_capabilities(required []string) ! {
+	for cap in required {
+		k := cap.trim_space()
+		if k == '' || k !in bridge_capabilities_list {
+			return error('bridge.capability_unsupported:${k}')
+		}
+	}
 }

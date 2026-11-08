@@ -2,6 +2,17 @@
 
 User-visible changes and capabilities by release.
 
+## 0.3.3
+
+- Release `0.3.3`.
+- Add fail-closed UI surface checks (`surface.missing`), `drift.ui-observation/1` sequences, Web/Compose/UIA adapters, and token sweep.
+- Add DB migration receipts (`drift.migration-receipt/1`), telemetry custody/triage (`drift.production-signal/1`), and `DriftJUnit4`.
+- Add JUnit 4 bridge (`DriftJUnit4`), DB seam discovery (`db_seams`), `[cutover]` parity receipts (`drift.parity-receipt/1`), and `--wsdl` scaffolding (D275–D278; DR-E003, DR-E104, DR-E105, DR-E406).
+- Add context-qualified `[concepts]`, `use.concepts`, `concept_changes`, `new --concept`, and `@concept` recall outside `dr1` (D274; DR-E003, DR-E101, DR-E102, DR-E104, DR-E105, DR-E202, DR-E209).
+- Add contravariant `when.narrowed`/`shifted`, `refinement` lattice, `relaxation_witnesses`, `[invariants]`, case `writes`, and `forbid_keys`/`not_in` (D270–D273; DR-E003, DR-E104, DR-E105, DR-E406).
+- Add `[formal.<id>]`, `drift.formal-receipt/1` and `drift.subject-manifest/1` checks with `violated` precedence and Rust counterexample fixtures (D269; DR-E003, DR-E102, DR-E104, DR-E202, DR-E205).
+- Harden `.security.json` anchor/case/snapshot/conflict checks, bind `--attest` SSH signatures to the subject, isolate Rust mutant aborts/panics, and add v2 sidecar schema.
+
 ## 0.3.2
 
 - Release `0.3.2`.
