@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -18,17 +19,16 @@ except ImportError:
         _cli = importlib.util.module_from_spec(_s)
         _s.loader.exec_module(_cli)
 
-_RES_PFX_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-
-
-def split_resource_pointer(ptr: str) -> tuple[str, str]:
-    if not isinstance(ptr, str) or not ptr: return ('', ptr)
-    st, col = (1 if ptr.startswith('/') else 0), ptr.find(':/', 1 if ptr.startswith('/') else 0)
-    return (ptr[st:col], ptr[col + 1:]) if col > st and _RES_PFX_RE.match(ptr[st:col]) else ('', ptr)
-
-
-def clone_json(val: Any) -> Any:
-    return [clone_json(x) for x in val] if isinstance(val, (list, tuple)) else ({str(k): clone_json(v) for k, v in val.items()} if isinstance(val, Mapping) else val)
+from drift_security import (
+    _canon_stub_ref,
+    _is_num,
+    _is_relational_map,
+    _peer_order_relation,
+    _round_num,
+    clone_json,
+    split_resource_pointer,
+    tighten_then_by_sum_residuals as _tighten_then_by_sum_residuals,
+)
 
 
 def write_pointer(target: Any, raw_ptr: str, value: Any) -> Any:
@@ -52,154 +52,10 @@ def write_pointer(target: Any, raw_ptr: str, value: Any) -> Any:
     return put_at(target, 0)
 
 
-def _is_relational_map(val: Any, rk: frozenset[str]) -> bool:
-    return isinstance(val, Mapping) and bool(val) and all(k in rk for k in val)
-
-
 def _rel_peer_rank(val: Any, rk: frozenset[str]) -> int:
     if not _is_relational_map(val, rk): return 0
     if isinstance(val.get('sum_fields'), (list, tuple)): return 2 + len(val['sum_fields'])
     return 1 if any(k in val for k in ('eq_field', 'ge_field', 'le_field')) else 0
-
-
-def _is_num(val: Any) -> bool:
-    return isinstance(val, (int, float)) and not isinstance(val, bool)
-
-
-def _canon_stub_ref(ref: Any, wp: Mapping[str, str], tp: Mapping[str, str]) -> str:
-    if not isinstance(ref, str) or not ref.strip(): return ''
-    s = ref.strip()
-    return split_resource_pointer(s if s.startswith('/') else (tp.get(s) or wp.get(s) or ('/' + s)))[1]
-
-
-def _round_num(cur_lo: Any, cur_hi: Any, raw_v: float, is_min: bool) -> int | float:
-    import math
-    if isinstance(cur_lo, int) or isinstance(cur_hi, int) or float(raw_v).is_integer():
-        return int(math.ceil(raw_v - 1e-9) if is_min else math.floor(raw_v + 1e-9))
-    return raw_v
-
-
-def _peer_order_relation(ck_a: str, ck_b: str, then_map: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> int:
-    if not ck_a or not ck_b or ck_a == ck_b or not isinstance(then_map, Mapping): return 0
-    for k, v in then_map.items():
-        if not _is_relational_map(v, rk): continue
-        ck = _canon_stub_ref(k, wp, tp)
-        if ck == ck_a:
-            for fk, code in (('eq_field', 3), ('le_field', 1), ('ge_field', 2)):
-                if fk in v and _canon_stub_ref(v[fk], wp, tp) == ck_b: return code
-        elif ck == ck_b:
-            for fk, code in (('eq_field', 3), ('ge_field', 1), ('le_field', 2)):
-                if fk in v and _canon_stub_ref(v[fk], wp, tp) == ck_a: return code
-    return 0
-
-
-def _tighten_then_by_sum_residuals(when_map: Mapping[str, Any], raw_then: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> dict[str, Any]:
-    if not isinstance(raw_then, Mapping) or not any(_is_relational_map(v, rk) and ((isinstance(v.get('sum_fields'), (list, tuple)) and len(v['sum_fields']) >= 2) or any(pk in v for pk in ('le_field', 'ge_field', 'eq_field'))) for v in raw_then.values()):
-        return dict(raw_then) if isinstance(raw_then, Mapping) else {}
-    out: dict[str, Any] = clone_json(raw_then)
-
-    def lb(ref: Any) -> tuple[int | float | None, int | float | None]:
-        ck, bare = _canon_stub_ref(ref, wp, tp), (ref.strip().lstrip('/') if isinstance(ref, str) else '')
-        for m, pm in ((out, tp), (when_map or {}, wp)):
-            for k, v in m.items():
-                if k in (ref, bare) or _canon_stub_ref(k, wp, pm) == ck:
-                    if _is_num(v): return (v, v)
-                    if _is_relational_map(v, rk): return (v['min'] if _is_num(v.get('min')) else None, v['max'] if _is_num(v.get('max')) else None)
-        return (None, None)
-
-    for _ in range(3):
-        for tk, tv in list(out.items()):
-            if not _is_relational_map(tv, rk): continue
-            ck_tgt, lo_k, hi_k = _canon_stub_ref(tk, wp, tp), (tv['min'] if _is_num(tv.get('min')) else None), (tv['max'] if _is_num(tv.get('max')) else None)
-            for pk in ('eq_field', 'le_field', 'ge_field'):
-                if pk in tv:
-                    pb_lo, pb_hi = lb(tv[pk])
-                    if pk in ('eq_field', 'ge_field') and pb_lo is not None: lo_k = pb_lo if lo_k is None else max(lo_k, pb_lo)
-                    if pk in ('eq_field', 'le_field') and pb_hi is not None: hi_k = pb_hi if hi_k is None else min(hi_k, pb_hi)
-            for pk, pv in out.items():
-                if pk == tk or not _is_relational_map(pv, rk): continue
-                p_lo, p_hi = (pv['min'] if _is_num(pv.get('min')) else None), (pv['max'] if _is_num(pv.get('max')) else None)
-                if 'eq_field' in pv and _canon_stub_ref(pv['eq_field'], wp, tp) == ck_tgt:
-                    if p_lo is not None: lo_k = p_lo if lo_k is None else max(lo_k, p_lo)
-                    if p_hi is not None: hi_k = p_hi if hi_k is None else min(hi_k, p_hi)
-                if 'le_field' in pv and _canon_stub_ref(pv['le_field'], wp, tp) == ck_tgt and p_lo is not None: lo_k = p_lo if lo_k is None else max(lo_k, p_lo)
-                if 'ge_field' in pv and _canon_stub_ref(pv['ge_field'], wp, tp) == ck_tgt and p_hi is not None: hi_k = p_hi if hi_k is None else min(hi_k, p_hi)
-            for sk, sv in out.items():
-                if sk == tk or not _is_relational_map(sv, rk) or not isinstance(sv.get('sum_fields'), (list, tuple)) or len(sv['sum_fields']) < 2: continue
-                s_lo, s_hi = (sv['min'] if _is_num(sv.get('min')) else None), (sv['max'] if _is_num(sv.get('max')) else None)
-                if s_lo is None and s_hi is None: continue
-                mult: dict[str, int] = {}
-                rep: dict[str, Any] = {}
-                for sf in sv['sum_fields']:
-                    ck = _canon_stub_ref(sf, wp, tp)
-                    if ck: mult[ck], rep[ck] = mult.get(ck, 0) + 1, rep.get(ck, sf)
-                mk = mult.get(ck_tgt, 0)
-                if mk < 1: continue
-                rem_lo, rem_hi, all_lo, all_hi = 0.0, 0.0, True, True
-                for ck, mp in mult.items():
-                    if ck == ck_tgt: continue
-                    b_lo, b_hi = lb(rep[ck])
-                    if b_lo is not None: rem_lo += mp * b_lo
-                    else: all_lo = False
-                    if b_hi is not None: rem_hi += mp * b_hi
-                    else: all_hi = False
-                for ck_p, mp in mult.items():
-                    if ck_p == ck_tgt: continue
-                    ord_rel = _peer_order_relation(ck_tgt, ck_p, out, wp, tp, rk)
-                    if ord_rel == 0: continue
-                    o_lo, o_hi, o_all_lo, o_all_hi = 0.0, 0.0, True, True
-                    for ck_q, mq in mult.items():
-                        if ck_q in (ck_tgt, ck_p): continue
-                        b_lo, b_hi = lb(rep[ck_q])
-                        if b_lo is not None: o_lo += mq * b_lo
-                        else: o_all_lo = False
-                        if b_hi is not None: o_hi += mq * b_hi
-                        else: o_all_hi = False
-                    if ord_rel in (1, 3) and s_hi is not None and o_all_lo:
-                        cnd = _round_num(lo_k, hi_k, (s_hi - o_lo) / (mk + mp), False)
-                        hi_k = cnd if hi_k is None else min(hi_k, cnd)
-                    if ord_rel in (2, 3) and s_lo is not None and o_all_hi:
-                        cnd = _round_num(lo_k, hi_k, (s_lo - o_hi) / (mk + mp), True)
-                        lo_k = cnd if lo_k is None else max(lo_k, cnd)
-                for bk, bv in out.items():
-                    if bk in (sk, tk) or not _is_relational_map(bv, rk) or not isinstance(bv.get('sum_fields'), (list, tuple)) or len(bv['sum_fields']) < 2: continue
-                    b_lo, b_hi = (bv['min'] if _is_num(bv.get('min')) else None), (bv['max'] if _is_num(bv.get('max')) else None)
-                    if b_lo is None and b_hi is None: continue
-                    mult_b: dict[str, int] = {}
-                    for sf in bv['sum_fields']:
-                        ck = _canon_stub_ref(sf, wp, tp)
-                        if ck: mult_b[ck] = mult_b.get(ck, 0) + 1
-                    if ck_tgt in mult_b: continue
-                    if len(bv['sum_fields']) < len(sv['sum_fields']) and all(mult.get(ck, 0) >= m for ck, m in mult_b.items()):
-                        ex_lo, ex_hi, ex_all_lo, ex_all_hi = 0.0, 0.0, True, True
-                        for ck, mp in mult.items():
-                            if ck != ck_tgt and mp > mult_b.get(ck, 0):
-                                d, (r_lo, r_hi) = mp - mult_b.get(ck, 0), lb(rep[ck])
-                                if r_lo is not None: ex_lo += d * r_lo
-                                else: ex_all_lo = False
-                                if r_hi is not None: ex_hi += d * r_hi
-                                else: ex_all_hi = False
-                        if b_lo is not None and ex_all_lo: rem_lo, all_lo = (max(rem_lo, b_lo + ex_lo) if all_lo else (b_lo + ex_lo)), True
-                        if b_hi is not None and ex_all_hi: rem_hi, all_hi = (min(rem_hi, b_hi + ex_hi) if all_hi else (b_hi + ex_hi)), True
-                    if len(mult) == 2 and len(mult_b) == 2:
-                        y_ck = next((x for x in mult if x != ck_tgt), '')
-                        if y_ck and mult.get(y_ck) == 1 and mult_b.get(y_ck) == 1:
-                            z_ck = next((x for x in mult_b if x != y_ck), '')
-                            for ck3, cv3 in out.items():
-                                if ck3 in (sk, bk, tk) or not _is_relational_map(cv3, rk) or not isinstance(cv3.get('sum_fields'), (list, tuple)) or len(cv3['sum_fields']) != len(sv['sum_fields']): continue
-                                mult_c: dict[str, int] = {}
-                                for sf in cv3['sum_fields']:
-                                    ck = _canon_stub_ref(sf, wp, tp)
-                                    if ck: mult_c[ck] = mult_c.get(ck, 0) + 1
-                                if len(mult_c) == 2 and mult_c.get(ck_tgt) == mk and mult_c.get(z_ck) == 1:
-                                    c_lo, c_hi = (cv3['min'] if _is_num(cv3.get('min')) else None), (cv3['max'] if _is_num(cv3.get('max')) else None)
-                                    if s_lo is not None and c_lo is not None and b_hi is not None: lo_k = _round_num(lo_k, hi_k, (s_lo + c_lo - b_hi) / (2 * mk), True) if lo_k is None else max(lo_k, _round_num(lo_k, hi_k, (s_lo + c_lo - b_hi) / (2 * mk), True))
-                                    if s_hi is not None and c_hi is not None and b_lo is not None: hi_k = _round_num(lo_k, hi_k, (s_hi + c_hi - b_lo) / (2 * mk), False) if hi_k is None else min(hi_k, _round_num(lo_k, hi_k, (s_hi + c_hi - b_lo) / (2 * mk), False))
-                if s_lo is not None and all_hi: lo_k = _round_num(lo_k, hi_k, (s_lo - rem_hi) / mk, True) if lo_k is None else max(lo_k, _round_num(lo_k, hi_k, (s_lo - rem_hi) / mk, True))
-                if s_hi is not None and all_lo: hi_k = _round_num(lo_k, hi_k, (s_hi - rem_lo) / mk, False) if hi_k is None else min(hi_k, _round_num(lo_k, hi_k, (s_hi - rem_lo) / mk, False))
-            if lo_k is not None and (hi_k is None or lo_k <= hi_k): tv['min'] = lo_k
-            if hi_k is not None and (lo_k is None or lo_k <= hi_k): tv['max'] = hi_k
-    return out
 
 
 def read_pointer(target: Any, raw_ptr: str) -> tuple[bool, Any]:
@@ -462,6 +318,93 @@ def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mappin
 
     dfs(0, 0)
     return out
+
+
+def discover_events_dir(cwd: Path, environ: Mapping[str, str]) -> str:
+    sd = environ.get('DRIFT_STATE_DIR', '').strip()
+    if sd:
+        sd_p = Path(sd).resolve()
+        for sub in ('.drift', '.drift-work'):
+            cand = sd_p / sub / 'events'
+            if cand.is_dir():
+                return str(cand)
+        if not environ.get('DRIFT_RESOLVED', '').strip():
+            return str(sd_p / '.drift-work' / 'events')
+    cur = cwd.resolve()
+    area_root: Path | None = None
+    while True:
+        for sub in ('.drift', '.drift-work'):
+            cand = cur / sub / 'events'
+            if cand.is_dir():
+                return str(cand)
+        if (cur / '.drift' / 'config.toml').is_file() or (cur / '.drift' / 'contracts').is_dir():
+            area_root = cur
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return str(area_root / '.drift-work' / 'events') if area_root is not None and not environ.get('DRIFT_RESOLVED', '').strip() else ''
+
+
+
+def resolve_seam_mutated_then(cur_ctx: Any, prod_view: Mapping[str, Any], id_or_res: str, resolved_case_id: str, escape_ptr_fn: Callable[[str], str], apply_mut_fn: Callable[..., dict[str, Any]]) -> dict[str, Any] | None:
+    m = getattr(cur_ctx, 'mutation_override', None) if cur_ctx is not None else None
+    if not isinstance(m, Mapping) or not isinstance(m.get('path'), str):
+        return None
+    prod_id = str(prod_view.get('id') or id_or_res)
+    pfx = f"/cases/{escape_ptr_fn(str(m.get('case', '')))}/seam/{escape_ptr_fn(prod_id)}#{escape_ptr_fn(resolved_case_id)}/"
+    if not m['path'].startswith(pfx):
+        return None
+    sub_path = f"/cases/{escape_ptr_fn(resolved_case_id)}/then/{m['path'][len(pfx):]}"
+    raw_then = dict(((prod_view.get('cases') or {}).get(resolved_case_id) or {}).get('then') or {})
+    return apply_mut_fn(raw_then, prod_id, resolved_case_id, sub_path, m.get('after'), 'then', None)
+
+
+def run_seam_bounds_checks(ctx: Any, case_id: str, id_or_res: str, prod_case_or_when: Any, checks: Any, base: Mapping[str, Any] | None, resolve_stub_fn: Callable[..., tuple[dict[str, Any], str]], build_variants_fn: Callable[..., list[Any]]) -> None:
+    ctx._require_tagged(case_id)
+    prod_view, prod_case_id = resolve_stub_fn(id_or_res, prod_case_or_when, base)
+    prod_id = str(prod_view.get('id') or id_or_res)
+    variants = build_variants_fn(prod_view, prod_case_id, base)
+    exec_fn = checks if callable(checks) else (checks.get('execute') if isinstance(checks, Mapping) and callable(checks.get('execute')) else None)
+    if exec_fn is None:
+        raise ValueError(f'check_seam_bounds for {ctx.contract_id}.{case_id} requires an execute callable or mapping with execute')
+    proj_checks = checks if isinstance(checks, Mapping) else None
+    for variant in variants:
+        try:
+            observed = exec_fn(variant)
+            ctx.check_projection(case_id, observed, proj_checks)
+        except AssertionError as e:
+            if '[seam counterexample:' not in str(e):
+                raise AssertionError(f'{ctx.contract_id}.{case_id} failed on seam {prod_id}#{prod_case_id} [seam counterexample: {json.dumps(variant, sort_keys=True)}]: {e}') from e
+            raise
+
+
+def run_case_mutants(mut_cfg: Mapping[str, Any], mut_out: Any, ctx: Any, contract: str, passed: bool, elapsed: float, time_mod: Any, with_mut_fn: Callable[..., Any], make_ctx_fn: Callable[[Any], Any], fn: Callable[[Any], Any], dump_json_fn: Callable[[Any], str]) -> None:
+    targets = [m for cid in ctx.cases for m in mut_cfg['by_case'].get(f'{contract}\x00{cid}', ())]
+    if not targets:
+        return
+    budget_s, mut_start, over, lines = max(0.25 * len(targets), 20.0 * len(targets) * elapsed), time_mod.perf_counter(), False, []
+    for target in targets:
+        outcome = 'inconclusive'
+        if not passed or over or time_mod.perf_counter() - mut_start > budget_s:
+            over = over or passed
+        else:
+            thrown: BaseException | None = None
+            failed = False
+            try:
+                with_mut_fn(target, lambda t=target: fn(make_ctx_fn(t)))
+            except BaseException as m_err:
+                failed, thrown = True, m_err
+            if time_mod.perf_counter() - mut_start > budget_s:
+                over = True
+            elif not failed:
+                outcome = 'survived'
+            elif isinstance(thrown, AssertionError):
+                outcome = 'killed'
+        lines.append(dump_json_fn({'manifest': mut_cfg['manifest_id'], 'contract': target['contract'], 'digest': target['digest'], 'mutant': target['id'], 'case': target['case'], 'outcome': outcome, 'control': 'passed' if passed else 'failed'}))
+    with mut_out.open('a', encoding='utf-8') as fh:
+        fh.write('\n'.join(lines) + '\n')
+
 
 
 

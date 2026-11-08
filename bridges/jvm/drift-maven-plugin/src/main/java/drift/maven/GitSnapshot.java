@@ -207,6 +207,7 @@ final class GitSnapshot {
         cmd.addAll(args);
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.environment().put("GIT_OPTIONAL_LOCKS", "0");
             pb.environment().put("GIT_NO_REPLACE_OBJECTS", "1");
             pb.environment().putAll(extraEnv);
             Process p = pb.start();

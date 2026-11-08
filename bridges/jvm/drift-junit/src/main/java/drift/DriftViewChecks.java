@@ -186,11 +186,16 @@ final class DriftViewChecks {
             boolean withAt,
             String missMsg) {
         String pfx = c.contract() + "." + c.id();
+        boolean isUiObs = payload instanceof Map<?, ?> pm
+                && ("drift.ui-observation/1".equals(pm.get("schema")) || pm.get("evidence") instanceof Map<?, ?>);
         if (thenProj.containsKey(key)) {
             String ptr = thenProj.get(key);
             Json.PointerLookup lookup = Json.readJsonPointer(payload, ptr);
             if (!lookup.found()) {
                 throw new AssertionError(pfx + ": missing projected path \"" + ptr + "\" for then." + key);
+            }
+            if (isUiObs && expected != null && lookup.value() == null) {
+                throw new AssertionError(pfx + ": unverifiable then." + key + ": unmeasured value at \"" + ptr + "\"");
             }
             if (checkRelationalConstraint(c, key, expected, lookup.value(), payload, thenProj)) {
                 return;
@@ -203,6 +208,9 @@ final class DriftViewChecks {
         }
         if (payload instanceof Map<?, ?> m && m.containsKey(key)) {
             Object actual = m.get(key);
+            if (isUiObs && expected != null && actual == null) {
+                throw new AssertionError(pfx + ": unverifiable then." + key + ": unmeasured value");
+            }
             if (checkRelationalConstraint(c, key, expected, actual, payload, thenProj)) {
                 return;
             }
@@ -233,8 +241,18 @@ final class DriftViewChecks {
         String id = c.id();
         Map<String, Object> then = c.thenRaw();
             Map<String, Object> v = view == null ? Map.of() : view;
-            if (Boolean.FALSE.equals(v.get("surfaceFound")) || Boolean.FALSE.equals(v.get("surface_found"))) {
+            if (Boolean.FALSE.equals(v.get("surfaceFound"))
+                    || Boolean.FALSE.equals(v.get("surface_found"))
+                    || ("drift.ui-observation/1".equals(v.get("schema"))
+                            && !Boolean.TRUE.equals(v.get("surface_found"))
+                            && !Boolean.TRUE.equals(v.get("surfaceFound")))) {
                 throw new AssertionError(contract + "." + id + ": surface.missing");
+            }
+            if ((v.get("collector") instanceof Map<?, ?> coll && Boolean.TRUE.equals(coll.get("settle_timed_out")))
+                    || (v.get("evidence") instanceof Map<?, ?> ev
+                            && ev.get("unverifiable_reasons") instanceof List<?> ur
+                            && ur.contains("ui.settle_timeout"))) {
+                throw new AssertionError(contract + "." + id + ": ui.settle_timeout");
             }
             Map<String, String> thenProj = null;
             for (Map.Entry<String, Object> e : then.entrySet()) {

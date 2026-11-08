@@ -99,7 +99,7 @@ def _resolve_env() -> dict[str, str] | None:
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key:
         return _env_cache[1]
-    base = {'adapter': 'drift.py@0.3.3', 'config': 'default', 'deps': 'none', 'drift': '0.3.3', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.4.0', 'config': 'default', 'deps': 'none', 'drift': '0.4.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -146,14 +146,19 @@ def _resolve_stub_contract(id_or_res: str, case_id: str | Mapping[str, Any], bas
     if up is not None and cur is not None and id_or_res != cur.contract_id:
         cur.record_input(up[1])
     v = up[0] if up is not None else _load_view(id_or_res)
-    if cur is not None and (id_or_res == cur.contract_id or (up is None and v.get('id') == cur.contract_id)):
-        cur.record_input(f'.drift/self-stub/{cur.contract_id}', 'sha256:self-stub')
-    return (v, _checks.resolve_stub_case_id(v, id_or_res, case_id, base))
+    resolved_id = _checks.resolve_stub_case_id(v, id_or_res, case_id, base)
+    if cur is not None:
+        if id_or_res == cur.contract_id or (up is None and v.get('id') == cur.contract_id):
+            cur.record_input(f'.drift/self-stub/{cur.contract_id}', 'sha256:self-stub')
+        else:
+            cur.record_input(f'.drift/seam-stub/{v.get("id") or id_or_res}#{resolved_id}', str(v.get('ref') or v.get('digest') or 'sha256:seam-stub'))
+    return (v, resolved_id)
 
 
 def build_stub(id_or_res: str, case_id: str | Mapping[str, Any], base: Mapping[str, Any] | None = None) -> Any:
     v, resolved_id = _resolve_stub_contract(id_or_res, case_id, base)
-    return _checks.build_projected_output(v, resolved_id, base)
+    mut_then = _checks._up.resolve_seam_mutated_then(_CTX_VAR.get(), v, id_or_res, resolved_id, _escape_ptr, _apply_mutation)
+    return _checks.build_projected_output(v, resolved_id, base, mut_then)
 
 
 def build_stub_variants(id_or_res: str, case_id: str | Mapping[str, Any], base: Mapping[str, Any] | None = None) -> list[Any]:
@@ -226,23 +231,8 @@ def should_run(contract_id: str, test_id: str, cases: tuple[str, ...] | list[str
 
 def _discover_events_dir() -> str:
     global _ev_dir_cache
-    if _ev_dir_cache is not None:
-        return _ev_dir_cache
-    cur = Path.cwd().resolve()
-    area_root: Path | None = None
-    while True:
-        for sub in ('.drift', '.drift-work'):
-            cand = cur / sub / 'events'
-            if cand.is_dir():
-                _ev_dir_cache = str(cand)
-                return _ev_dir_cache
-        if (cur / '.drift' / 'config.toml').is_file() or (cur / '.drift' / 'contracts').is_dir():
-            area_root = cur
-            break
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    _ev_dir_cache = str(area_root / '.drift-work' / 'events') if area_root is not None and not os.environ.get('DRIFT_RESOLVED', '').strip() else ''
+    if _ev_dir_cache is None:
+        _ev_dir_cache = _checks._up.discover_events_dir(Path.cwd(), os.environ)
     return _ev_dir_cache
 
 
@@ -387,24 +377,12 @@ class DriftContext:
                 raise ValueError(f'contract "{contract_id}" has no case "{c}"')
             self.reads[c] = set()
         m = eff_mut
-        is_w = bool(
-            m is not None
-            and m.get('contract') == contract_id
-            and (
-                m.get('is_when') is True
-                or (isinstance(m.get('path'), str) and m['path'].startswith(f"/cases/{_escape_ptr(m['case'])}/when/"))
-            )
-        )
-        self._mutated_when = (
-            _apply_mutation(dict(vc[m['case']].get('when') or {}), contract_id, m['case'], m['path'], m['after'], 'when', m.get('segments'))
-            if is_w and m is not None
-            else None
-        )
-        self._mutated_then = (
-            _apply_mutation(dict(vc[m['case']].get('then') or {}), contract_id, m['case'], m['path'], m['after'], 'then', m.get('segments'))
-            if m is not None and m.get('contract') == contract_id and not is_w
-            else None
-        )
+        mp = m.get('path') if isinstance(m, Mapping) and isinstance(m.get('path'), str) else ''
+        mc = _escape_ptr(str(m.get('case', ''))) if isinstance(m, Mapping) else ''
+        is_w = bool(m is not None and m.get('contract') == contract_id and (m.get('is_when') is True or mp.startswith(f'/cases/{mc}/when/')))
+        is_s = bool(m is not None and mp.startswith(f'/cases/{mc}/seam/'))
+        self._mutated_when = _apply_mutation(dict(vc[m['case']].get('when') or {}), contract_id, m['case'], mp, m['after'], 'when', m.get('segments')) if is_w and m is not None else None
+        self._mutated_then = _apply_mutation(dict(vc[m['case']].get('then') or {}), contract_id, m['case'], mp, m['after'], 'then', m.get('segments')) if m is not None and m.get('contract') == contract_id and not is_w and not is_s else None
 
     def _require_tagged(self, c: str) -> None:
         if c not in self.reads:
@@ -528,6 +506,9 @@ class DriftContext:
     def check_adverse(self, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         _checks.run_adverse_checks(self, case_id, harness, checks)
 
+    def check_seam_bounds(self, case_id: str, id_or_res: str, prod_case: Any, checks: Any, base: Mapping[str, Any] | None = None) -> None:
+        _checks._up.run_seam_bounds_checks(self, case_id, id_or_res, prod_case, checks, base, _resolve_stub_contract, _checks.build_projected_variants)
+
     def check_frame(self, case_id: str, frame_obs: Mapping[str, Any]) -> None:
         _checks._sec.verify_case_frame(self, case_id, frame_obs, _checks.values_mismatch, True)
 
@@ -609,30 +590,7 @@ def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...],
     _write_event(ev)
     elapsed = max(0.001, time.perf_counter() - start)
     if mut_cfg is not None:
-        targets = [m for cid in ctx.cases for m in mut_cfg['by_case'].get(f'{contract}\x00{cid}', ())]
-        if targets:
-            mut_out = _resolve_mutation_file(mut_cfg['out_t'])
-            budget_s, mut_start, over, lines = max(0.25 * len(targets), 20.0 * len(targets) * elapsed), time.perf_counter(), False, []
-            for target in targets:
-                outcome = 'inconclusive'
-                if not passed or over or time.perf_counter() - mut_start > budget_s:
-                    over = over or passed
-                else:
-                    thrown: BaseException | None = None
-                    failed = False
-                    try:
-                        with_mutation(target, lambda t=target: fn(DriftContext(contract, test, cases, level, t)))
-                    except BaseException as m_err:
-                        failed, thrown = True, m_err
-                    if time.perf_counter() - mut_start > budget_s:
-                        over = True
-                    elif not failed:
-                        outcome = 'survived'
-                    elif isinstance(thrown, AssertionError):
-                        outcome = 'killed'
-                lines.append(_dump_json({'manifest': mut_cfg['manifest_id'], 'contract': target['contract'], 'digest': target['digest'], 'mutant': target['id'], 'case': target['case'], 'outcome': outcome, 'control': 'passed' if passed else 'failed'}))
-            with mut_out.open('a', encoding='utf-8') as fh:
-                fh.write('\n'.join(lines) + '\n')
+        _checks._up.run_case_mutants(mut_cfg, _resolve_mutation_file(mut_cfg['out_t']), ctx, contract, passed, elapsed, time, with_mutation, lambda t: DriftContext(contract, test, cases, level, t), fn, _dump_json)
     if not passed and control_err is not None:
         raise control_err
     return 'passed'

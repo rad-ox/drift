@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DRIFT Independent Reference Proof Verifier (MIT License)."""
-import argparse, hashlib, json, math, re, sys, tomllib
+import argparse, hashlib, json, math, os, re, sys, tomllib
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from drift_verify_perf import evaluate_contract_budgets, evaluate_contract_mutations_impl, extract_contract_budgets, load_measurement_bundle, load_mutation_events_impl
@@ -17,7 +17,7 @@ CLASS_TOKEN_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
 METHOD_TOKEN_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
 OUTCOMES = frozenset(("passed", "failed", "skipped", "disabled", "interrupted", "timeout"))
 EVENT_KEYS = frozenset(("test", "contract", "cases", "level", "outcome", "read", "digest"))
-META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "self_stubbed", "inputs", "env", "execution_ref", "subject_ref"))
+META_KEYS = frozenset(("version", "classes", "tests", "snapshot", "pack_ref", "touched", "self_stubbed", "inputs", "env", "execution_ref", "subject_ref", "shadow_run"))
 ENV_KEYS = frozenset(("toolchain", "deps", "config", "runner", "drift", "adapter", "policy"))
 _ESC_MAP = {0x22: '\\"', 0x5C: "\\\\", 0x08: "\\b", 0x0C: "\\f", 0x0A: "\\n", 0x0D: "\\r", 0x09: "\\t"}
 
@@ -109,10 +109,18 @@ def validate_inventory_text(text):
  if "self_stubbed" in doc and (not isinstance(doc["self_stubbed"], list) or any(not isinstance(x, str) or x not in t_set for x in doc["self_stubbed"])): raise ValueError("stub")
  if "inputs" in doc and (not isinstance(ri := doc["inputs"], dict) or any(tid not in t_set or not isinstance(fm, dict) or any(not isinstance(fp, str) or not fp.strip() or not isinstance(ov, str) or not ov.strip() for fp, ov in fm.items()) for tid, fm in ri.items())): raise ValueError("in")
  if "env" in doc and (not isinstance(re_e := doc["env"], dict) or set(re_e) != ENV_KEYS or any(not isinstance(ev, str) or not ev.strip() for ev in re_e.values())): raise ValueError("env")
- return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": doc.get("execution_ref", ""), "subject_ref": doc.get("subject_ref", ""), "touched": set(doc.get("touched", []))}
+ if "shadow_run" in doc:
+  from drift_shadow_junit import validate_shadow_run_dict
+  validate_shadow_run_dict(doc["shadow_run"])
+ return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": doc.get("execution_ref", ""), "subject_ref": doc.get("subject_ref", ""), "touched": set(doc.get("touched", [])), "shadow_run": doc.get("shadow_run")}
 
 
 def validate_inventory_sidecar(path): return validate_inventory_text(path.read_text("utf-8"))
+
+
+def resolve_shadow_roots(path, state_dir=""):
+ from drift_shadow_junit import resolve_shadow_roots_impl
+ return resolve_shadow_roots_impl(path, state_dir)
 
 
 def verify_config_toml(path):
@@ -199,28 +207,40 @@ def verify_contract_toml(path, profiles_dir):
  own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d, dict)] if isinstance(raw.get("decisions"), dict) else []
  decs = [d for s in (raw.get("decisions"), prof.get("decisions")) if isinstance(s, dict) for d in s.values() if isinstance(d, dict)]
  blk = lambda ph: any(isinstance(q, dict) and q.get("blocks") == ph for q in open_m.values()) or any(d.get("pick", "") == "" and d.get("decide_by") == ph for d in decs)
- area_root = path.parent.parent.parent if path.parent.name == "contracts" and path.parent.parent.name == ".drift" else path.parent
- return {"id": cid, "digest": dig, "ref": dr1_ref(dig), "approval": st, "approver": str(appr.get("by", "")) if has_ref else "", "profile_proof": p_proof, "profile_security": p_sec, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": inv_k, "cases": eff, "budgets": budgets, "formal": formal, "cutover": cutover, "area_root": area_root, "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in eff.values())}
+ roots = resolve_shadow_roots(path)
+ area_root = roots["source_root"]
+ return {"id": cid, "digest": dig, "ref": dr1_ref(dig), "approval": st, "approver": str(appr.get("by", "")) if has_ref else "", "profile_proof": p_proof, "profile_security": p_sec, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": inv_k, "cases": eff, "budgets": budgets, "formal": formal, "cutover": cutover, "area_root": area_root, "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in eff.values())}
 
 
-def load_proof_events(events_paths):
+def load_proof_events(events_paths, area_root=None):
+ from drift_shadow_junit import shadow_inputs_fresh
  shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".jsonl") else []))]
  events, gone, inc, errs, snaps, shard_subs, all_snap, sh_hashes = [], {}, 0, [], set(), set(), bool(shards), []
+ parsed_shards, class_latest = [], {}
  for sf in shards:
   raw = sf.read_bytes()
   sh_hashes.append("sha256:" + hashlib.sha256(raw).hexdigest())
   mp = sf.with_suffix(".meta.json")
-  has_inv, c_set, t_set, snap = mp.is_file(), set(), set(), ""
+  has_inv, c_set, t_set, snap, sr = mp.is_file(), set(), set(), "", None
   if has_inv:
    try:
     inv = validate_inventory_sidecar(mp)
-    c_set, t_set, snap = inv["classes"], inv["tests"], inv["snapshot"]
+    c_set, t_set, snap, sr = set(inv["classes"]), set(inv["tests"]), inv["snapshot"], inv.get("shadow_run")
     if snap: snaps.add(snap)
     else: all_snap = False
     if inv.get("subject_ref"): shard_subs.add(inv["subject_ref"])
    except Exception as exc:
     errs.append(f"{mp.name}: {exc}"); all_snap = False; continue
   else: all_snap = False
+  sel_t = set(sr.get("selected_tests") or ()) if isinstance(sr, dict) else set()
+  for cls in c_set:
+   prev_t = class_latest.get(cls, set())
+   if sel_t and prev_t:
+    t_set |= {pt for pt in prev_t if pt.startswith(f"{cls}#") and pt not in sel_t}
+   class_latest[cls] = {t for t in t_set if t.startswith(f"{cls}#")}
+  parsed_shards.append((sf, raw, has_inv, c_set, t_set, snap, sr))
+ for sf, raw, has_inv, c_set, t_set, snap, sr in parsed_shards:
+  stale_sr = bool(sr and not shadow_inputs_fresh(sr, sf, area_root))
   cnt = 0
   for idx, line in enumerate(raw.decode("utf-8").splitlines(), 1):
    if not line.strip(): continue
@@ -228,8 +248,11 @@ def load_proof_events(events_paths):
    except Exception as exc:
     errs.append(f"events:{sf.name}:{idx}: DR-E701 {exc}"); continue
    cnt += 1
+   if stale_sr: continue
    tid = ev["test"].split("[", 1)[0]
-   if not has_inv or (tid.split("#", 1)[0] if "#" in tid else "") not in c_set or tid not in t_set: gone[ev["contract"]] = gone.get(ev["contract"], 0) + 1
+   cls = tid.split("#", 1)[0] if "#" in tid else ""
+   lat_t = class_latest.get(cls, t_set)
+   if not has_inv or cls not in c_set or tid not in t_set or tid not in lat_t: gone[ev["contract"]] = gone.get(ev["contract"], 0) + 1
    else: events.append(ev)
   if has_inv and snap and t_set and cnt == 0: inc += 1
  sec_recs, sec_errs = load_security_receipts_impl(events_paths, _decode_no_dup_keys)
@@ -283,8 +306,8 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
  s_rsn, s_checks = evaluate_contract_security_impl(contract, sec_receipts or [], pol if pol_on else {}, expected_snapshot, digest_matches)
  exp_sref = (expected_subject or {}).get("artifact_ref", "")
  f_rsn, pend_f, f_checks = evaluate_contract_formal_impl(contract, formal_receipts or [], phase, exp_sref, expected_snapshot, shard_subject_refs or set(), contract.get("area_root"), manifest_sources, digest_matches)
- par_rsn, par_checks = evaluate_contract_parity_impl(contract, parity_receipts or [], phase, digest_matches)
  m_rsn, m_checks = evaluate_contract_migration_impl(contract, mig_receipts or [], pol if pol_on else {}, expected_snapshot, exp_sref, digest_matches)
+ par_rsn, par_checks = evaluate_contract_parity_impl(contract, parity_receipts or [], phase, digest_matches, exp_sref, shard_subject_refs or set(), m_checks)
  for r in (*p_rsn, *s_rsn, *f_rsn, *par_rsn, *m_rsn):
   if r not in rsn: rsn.append(r)
  out = {"id": cid, "digest": dig, "ref": contract["ref"], "approval": contract["approval"], "ok": not rsn, "reasons": rsn, "ignored": ignored, "superseded": sup, "gone": gone, "results": res}
@@ -298,39 +321,20 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
  return out
 
 
-def _expect_err(fn, arg):
- try:
-  fn(arg)
-  raise AssertionError(arg)
- except ValueError: pass
-
-
 def run_self_test():
- assert canonical_json(-0.0) == "0" and canonical_json(1e21) == "1e+21" and canonical_json(1e-6) == "0.000001" and canonical_json(1e-7) == "1e-7" and canonical_json({"\ue000": 1, "\U0001f600": 2}) == '{"\U0001f600":2,"\ue000":1}'
- for b in (1 << 53, -(1 << 53), float("nan"), float("inf")): _expect_err(canonical_json, b)
- eb = '"contract":"a","cases":["c"],"level":"unit","outcome":"passed"'
- for b in (f'"test":"t#1","test":"t#2",{eb}', f'"test":"t#1",{eb},"extra":1', f'"test":"t#1",{eb},"read":["other"]', '"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"', '"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"', f'"test":"t#1",{eb},"digest":"dr1:UPPER0000000"'): _expect_err(validate_event_line, "{" + b + "}")
- _expect_err(validate_event_line, '{"a":' * 65 + '1' + '}' * 65)
- assert len(validate_inventory_text(json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0" * 40, "pack_ref": "dr1:" + "0" * 12, "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": dict.fromkeys(ENV_KEYS, "v")}))["tests"]) == 2
- assert validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))["version"] == 2
- ib = '"version":1,"classes":["a"],"tests":["a#t1"]'
- for sfx in ('"version":2,"classes":[],"tests":[]', '"version":true,"classes":[],"tests":[]', '"version":1,"classes":["b","a"],"tests":[]', '"version":1,"classes":["a/b"],"tests":[]', '"version":1,"classes":["a"],"tests":["other#t1"]', f'{ib},"snapshot":"bad"', f'{ib},"pack_ref":"dr1:bad"', f'{ib},"touched":["/abs"]', f'{ib},"touched":["../e"]', f'{ib},"inputs":{{"u#t":{{"f":"1"}}}}', f'{ib},"env":{{"toolchain":"v1"}}', f'{ib},"extra":1'): _expect_err(validate_inventory_text, "{" + sfx + "}")
- assert _is_unanchored_prose_source("observed in prod") and not _is_unanchored_prose_source("src/a/Item.java") and _has_approval_blocker({"scope": {"indirect": "unknown"}}, {})
- ck = {"id": "svc", "digest": "dr1:sha256:" + "a" * 64, "ref": "dr1:" + "a" * 12, "approval": "current", "approver": "o", "profile_proof": "killed", "cases": {"ok": {"at": ["unit"], "then": {"status": 200}}}, "open_cnt": 0, "exec_blk": False, "rel_blk": False}
- ev = [{"test": "T#ok", "contract": "svc", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": ck["ref"]}]
- assert not evaluate_contract(ck, "current", ev, 0, 0, [])["ok"] and evaluate_contract(ck, "current", ev, 0, 0, [], mutations_ok=True)["ok"]
- run_sec_self_test(ck, digest_matches)
- print("drift_verify.py self-test: ok (RFC 8785 JCS, event & full inventory schema vectors passed)")
- return 0
+ from drift_shadow_junit import run_verifier_self_test
+ return run_verifier_self_test()
+
 
 
 def main(argv):
  if "--self-test" in argv: return run_self_test()
  ap = argparse.ArgumentParser(prog="drift_verify.py")
- ap.add_argument("targets", nargs="+", type=Path)
- ap.add_argument("--config", type=Path, required=True)
+ ap.add_argument("targets", nargs="*", type=Path)
+ ap.add_argument("--state-dir", type=Path)
+ ap.add_argument("--config", type=Path)
  ap.add_argument("--profiles", type=Path)
- ap.add_argument("--events", type=Path, action="append", required=True)
+ ap.add_argument("--events", type=Path, action="append")
  for fl in ("--mutants", "--measurements", "--subject", "--attest", "--attest-sig", "--trust-root"): ap.add_argument(fl, type=Path)
  ap.add_argument("--mutation-events", type=Path, action="append")
  for fl in ("--subject-artifact", "--subject-tree", "--run-id", "--verify-time"): ap.add_argument(fl, default="")
@@ -338,11 +342,22 @@ def main(argv):
  ap.add_argument("--phase", choices=("execution", "release"), default="")
  ap.add_argument("--json", action="store_true")
  args = ap.parse_args(argv)
+ from drift_shadow_junit import lookup_registered_shadow_py
+ explicit_sd = str(args.state_dir) if args.state_dir else ""
+ sd_env = explicit_sd or os.environ.get("DRIFT_STATE_DIR", "").strip() or lookup_registered_shadow_py(Path.cwd())
+ sd_path = Path(sd_env) if sd_env else None
+ targets = args.targets or ([sd_path / ".drift" / "contracts"] if sd_path else [])
+ cfg_path = args.config or ((sd_path / ".drift" / "config.toml") if sd_path else None)
+ ev_paths = args.events or ([sd_path / ".drift-work" / "events"] if sd_path and (sd_path / ".drift-work" / "events").is_dir() else [])
+ if not targets or not cfg_path or not ev_paths: ap.error("targets, --config and --events are required unless --state-dir/DRIFT_STATE_DIR provides them")
  if bool(args.mutants) != bool(args.mutation_events): ap.error("--mutants and --mutation-events must be supplied together")
- cfg_st, cfg_dig, pol = verify_config_toml(args.config)
- p_dir = args.profiles or (args.config.parent / "profiles")
- c_files = [cf for t in args.targets for cf in (sorted(t.glob("*.toml")) if t.is_dir() else [t])]
- evs, gone, inc, ev_errs, sec_recs, form_recs, par_recs, mig_recs, shard_subs, exp_snap, sh_h, sn_l, sn_ok = load_proof_events(args.events)
+ try: roots = resolve_shadow_roots(targets[0], explicit_sd)
+ except Exception as exc:
+  print(f"drift_verify.py: {exc}", file=sys.stderr); return 2
+ cfg_st, cfg_dig, pol = verify_config_toml(cfg_path)
+ p_dir = args.profiles or (cfg_path.parent / "profiles")
+ c_files = [cf for t in targets for cf in (sorted(t.glob("*.toml")) if t.is_dir() else [t])]
+ evs, gone, inc, ev_errs, sec_recs, form_recs, par_recs, mig_recs, shard_subs, exp_snap, sh_h, sn_l, sn_ok = load_proof_events(ev_paths, roots["area_root"])
  m_man, lat_m, m_errs = None, {}, []
  if args.mutants and args.mutation_events:
   try:

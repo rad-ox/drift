@@ -249,39 +249,7 @@ def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], to
     return up[0] if up is not None else None
 
 
-def _capture_worktree_snapshot(area: Path) -> str:
-    try:
-        st_p = subprocess.run(['git', '-C', str(area), 'status', '--porcelain', '--untracked-files=normal'], capture_output=True, text=True, check=False)
-        if st_p.returncode == 0 and not st_p.stdout.strip():
-            tr_p = subprocess.run(['git', '-C', str(area), 'rev-parse', '--verify', '--quiet', 'HEAD^{tree}'], capture_output=True, text=True, check=False)
-            tr = tr_p.stdout.strip()
-            if len(tr) in (40, 64):
-                return tr
-        rev_p = subprocess.run(['git', '-C', str(area), 'rev-parse', '--show-toplevel', '--git-dir'], capture_output=True, text=True, check=False)
-        rev_lines = [ln.strip() for ln in rev_p.stdout.splitlines() if ln.strip()]
-        if rev_p.returncode != 0 or len(rev_lines) < 2:
-            return ''
-        top = (area / rev_lines[0]).resolve()
-        git_dir = (area / rev_lines[1]).resolve()
-        real_idx = git_dir / 'index'
-        tmp_idx = area / '.drift-work' / f'.git-index-{os.getpid()}'
-        try:
-            if real_idx.is_file():
-                shutil.copy2(real_idx, tmp_idx)
-            elif tmp_idx.exists():
-                tmp_idx.unlink()
-            env = {**os.environ, 'GIT_INDEX_FILE': str(tmp_idx)}
-            subprocess.run(['git', '-C', str(top), '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', ':(exclude).drift-work', ':(exclude).build', ':(exclude)target'], env=env, capture_output=True, check=False)
-            tr_p = subprocess.run(['git', '-C', str(top), 'write-tree'], env=env, capture_output=True, text=True, check=False)
-            tr = tr_p.stdout.strip()
-            if tr_p.returncode == 0 and len(tr) in (40, 64):
-                return tr
-        finally:
-            if tmp_idx.exists():
-                tmp_idx.unlink()
-    except Exception:
-        pass
-    return ''
+from drift_security import capture_worktree_snapshot as _capture_worktree_snapshot
 
 
 def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any, Any], list[str]]) -> int:

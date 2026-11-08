@@ -71,12 +71,15 @@ if ($payload) {
 }
 if (-not $eventName) {
     if ($Mode -match '^(?i)(stop|agentstop)$') { $eventName = 'Stop' }
+    elseif ($Mode -match '^(?i)(prompt|userpromptsubmit|userpromptsubmitted|before_agent_start|beforeagentstart)$') { $eventName = 'UserPromptSubmit' }
+    elseif ($payload -and ($payload.PSObject.Properties['stop_hook_active'] -or $payload.PSObject.Properties['stopReason'] -or $payload.PSObject.Properties['stop_reason'])) { $eventName = 'Stop' }
+    elseif ($payload -and $payload.PSObject.Properties['prompt'] -and -not $payload.PSObject.Properties['source']) { $eventName = 'UserPromptSubmit' }
     else { $eventName = 'SessionStart' }
 }
 $norm = ($eventName.ToLowerInvariant() -replace '[_-]', '')
 $contractsDir = [IO.Path]::Combine($area, '.drift', 'contracts')
 $session = ''
-foreach ($key in @('session_id', 'sessionId')) {
+foreach ($key in @('parentAgentId', 'parent_agent_id', 'session_id', 'sessionId')) {
     if (-not $session -and $payload -and $payload.PSObject.Properties[$key] -and $payload.$key) { $session = [string]$payload.$key }
 }
 $turn = ''
@@ -86,15 +89,24 @@ foreach ($key in @('prompt_id', 'promptId', 'turn_id', 'turnId', 'interaction_id
 $sha = [Security.Cryptography.SHA256]::Create()
 $hash = { param([string]$s) -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString('x2') }) }
 $baseKey = (& $hash "${area}:$session").Substring(0, 16)
+$turnSuffix = if ($turn) { '-' + (& $hash $turn).Substring(0, 12) } else { '' }
 
 if ($norm -in @('userpromptsubmit', 'userpromptsubmitted')) {
+    $promptText = if ($payload -and $payload.PSObject.Properties['prompt'] -and $payload.prompt) { [string]$payload.prompt } else { '' }
+    if (($promptText.StartsWith('DRIFT area check found ') -and $promptText.Contains('(no trusted task attribution).')) -or
+        ($promptText.StartsWith('DRIFT area check could not run in ') -and $promptText.Contains('No check verdict is available.')) -or
+        ($promptText.StartsWith('Changed source files in ') -and $promptText.Contains('(working-tree evidence, not task attribution).'))) {
+        exit 0
+    }
     Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-check-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-unowned-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     exit 0
 }
 
 if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
     if ($norm -eq 'beforeagentstart') {
         Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-check-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-unowned-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     }
     $summary = "DRIFT area active at $area."
     if (Test-Path -LiteralPath $contractsDir -PathType Container) {
@@ -118,7 +130,15 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
     if ($env:DRIFT_EDITION -eq 'free') {
         $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills. When changing code or contracts in DRIFT Free, use drift check, drift fmt, drift review --brief, drift approve --by <owner>, drift prove, and drift gate."
     } else {
-        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the drift skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+        $driftSkill = 'drift'
+        if ((Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.copilot', 'skills', 'drift-enterprise'))) -or
+            (Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.agents', 'skills', 'drift-enterprise')))) {
+            $driftSkill = 'drift-enterprise'
+        } elseif ((Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.copilot', 'skills', 'drift-pro'))) -or
+            (Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.agents', 'skills', 'drift-pro')))) {
+            $driftSkill = 'drift-pro'
+        }
+        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $driftSkill skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
     }
     $out = @{ additionalContext = $msg } | ConvertTo-Json -Compress
     Write-Output $out
@@ -130,7 +150,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
         [Console]::Error.WriteLine('drift: continued stop; the previous DRIFT outcome was not re-evaluated and is not treated as passing.')
         exit 0
     }
-    $stampName = if ($turn) { "drift-stop-check-${baseKey}-" + (& $hash $turn).Substring(0, 12) } else { "drift-stop-check-${baseKey}" }
+    $stampName = "drift-stop-check-${baseKey}${turnSuffix}"
     $stampFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), $stampName)
     $driftDir = [IO.Path]::Combine($area, '.drift')
     $checkCode = 0
@@ -227,7 +247,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
                     $dirtyContracts = & $gitCmd.Source -C $area status --porcelain --untracked-files=normal -- .drift/contracts 2>$null
                     if ($dirtyContracts -or $impFlat -match '"contracts":\[\]') {
                         $stampId = (& $hash ("${area}:" + ($changed -join "`n"))).Substring(0, 16)
-                        $unownedStamp = [IO.Path]::Combine([IO.Path]::GetTempPath(), "drift-stop-$stampId")
+                        $unownedStamp = [IO.Path]::Combine([IO.Path]::GetTempPath(), "drift-stop-unowned-${baseKey}${turnSuffix}-$stampId")
                         if (-not (Test-Path -LiteralPath $unownedStamp -PathType Leaf)) {
                             try { [IO.File]::WriteAllText($unownedStamp, '') } catch { }
                             $out = @{
@@ -237,8 +257,12 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
                             Write-Output $out
                         }
                     }
+                } else {
+                    Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-unowned-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
                 }
             }
+        } else {
+            Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter "drift-stop-unowned-${baseKey}*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
         }
     }
 }

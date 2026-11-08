@@ -14,104 +14,23 @@ final class DriftStubs {
     }
 
     static Map<String, Object> tightenThenMapBySumResiduals(Map<String, Object> whenMap, Map<String, Object> rawThen, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        return Json.tightenThenMapBySumResiduals(whenMap, rawThen, whenProjections, thenProjections);
+        return ExecutionContext.tightenThenMapBySumResiduals(whenMap, rawThen, whenProjections, thenProjections);
     }
 
     static Map<String, Object> buildPeerIndex(Map<String, Object> whenMap, Map<String, Object> rawThenMap, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        Map<String, Object> thenMap = tightenThenMapBySumResiduals(whenMap, rawThenMap, whenProjections, thenProjections);
-        Map<String, Object> idx = new LinkedHashMap<>();
-        if (whenMap != null) {
-            for (Map.Entry<String, Object> e : whenMap.entrySet()) {
-                if (isRelationalMap(e.getValue())) continue;
-                idx.put(e.getKey(), e.getValue());
-                String wp = whenProjections == null ? "" : Json.splitResourcePointer(whenProjections.getOrDefault(e.getKey(), ""))[1];
-                if (wp.startsWith("/")) idx.put(wp, e.getValue());
-            }
-        }
-        List<Map.Entry<String, Object>> relEntries = new ArrayList<>();
-        if (thenMap != null) {
-            for (Map.Entry<String, Object> e : thenMap.entrySet()) {
-                if (isRelationalMap(e.getValue())) {
-                    relEntries.add(e);
-                    continue;
-                }
-                idx.put(e.getKey(), e.getValue());
-                String tp = thenProjections == null ? "" : Json.splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
-                if (tp.startsWith("/")) idx.put(tp, e.getValue());
-            }
-        }
-        if (!relEntries.isEmpty()) {
-            relEntries.sort((a, b) -> relPeerRank(a.getValue()) != relPeerRank(b.getValue()) ? Integer.compare(relPeerRank(a.getValue()), relPeerRank(b.getValue())) : a.getKey().compareTo(b.getKey()));
-            for (int pass = 0; pass < 8; pass++) {
-                boolean progress = false;
-                for (Map.Entry<String, Object> e : relEntries) {
-                    if (idx.containsKey(e.getKey()) || !(e.getValue() instanceof Map<?, ?> m)) continue;
-                    if ((m.containsKey("eq_field") && !resolveStubPeer(m.get("eq_field"), Map.of(), idx, whenProjections, thenProjections).found())
-                            || (m.containsKey("ge_field") && !resolveStubPeer(m.get("ge_field"), Map.of(), idx, whenProjections, thenProjections).found())
-                            || (m.containsKey("le_field") && !resolveStubPeer(m.get("le_field"), Map.of(), idx, whenProjections, thenProjections).found())
-                            || (m.get("sum_fields") instanceof List<?> sfList && sfList.stream().anyMatch(sf -> !resolveStubPeer(sf, Map.of(), idx, whenProjections, thenProjections).found()))) {
-                        continue;
-                    }
-                    Object w = witnessVariants(e.getValue(), Map.of(), idx, whenProjections, thenProjections).get(0);
-                    idx.put(e.getKey(), w);
-                    String tp = thenProjections == null ? "" : Json.splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
-                    if (tp.startsWith("/")) idx.put(tp, w);
-                    progress = true;
-                }
-                if (!progress) break;
-            }
-        }
-        return idx;
+        return ExecutionContext.buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections);
     }
 
     static int relPeerRank(Object val) {
-        if (!isRelationalMap(val) || !(val instanceof Map<?, ?> m)) return 0;
-        return m.get("sum_fields") instanceof List<?> sf ? 2 + sf.size() : (m.containsKey("eq_field") || m.containsKey("ge_field") || m.containsKey("le_field") ? 1 : 0);
+        return ExecutionContext.relPeerRank(val);
     }
 
     static Json.PointerLookup resolveStubPeer(Object rawRef, Object base, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        if (!(rawRef instanceof String ref) || ref.isBlank()) return new Json.PointerLookup(false, null);
-        String s = ref.trim();
-        String bare = s.replaceFirst("^/+", "");
-        if (s.startsWith("/")) {
-            Json.PointerLookup r = Json.readJsonPointer(base, s);
-            if (r.found() && !isRelationalMap(r.value())) return r;
-        } else {
-            if (base instanceof Map<?, ?> bm && bm.containsKey(s) && !isRelationalMap(bm.get(s))) {
-                return new Json.PointerLookup(true, bm.get(s));
-            }
-            for (Map<String, String> pm : List.of(thenProjections == null ? Map.<String, String>of() : thenProjections, whenProjections == null ? Map.<String, String>of() : whenProjections)) {
-                if (pm.containsKey(s)) {
-                    Json.PointerLookup r = Json.readJsonPointer(base, pm.get(s));
-                    if (r.found() && !isRelationalMap(r.value())) return r;
-                }
-            }
-            Json.PointerLookup r = Json.readJsonPointer(base, "/" + bare);
-            if (r.found() && !isRelationalMap(r.value())) return r;
-        }
-        String rawTgt = s.startsWith("/") ? s : (thenProjections != null && thenProjections.containsKey(s) ? thenProjections.get(s) : (whenProjections != null && whenProjections.containsKey(s) ? whenProjections.get(s) : ("/" + bare)));
-        String tgt = Json.splitResourcePointer(rawTgt)[1];
-        if (peerIdx != null) {
-            for (String cand : List.of(s, bare, tgt)) {
-                if (!cand.isEmpty() && peerIdx.containsKey(cand)) {
-                    return new Json.PointerLookup(true, peerIdx.get(cand));
-                }
-            }
-        }
-        return new Json.PointerLookup(false, null);
+        return ExecutionContext.resolveStubPeer(rawRef, base, peerIdx, whenProjections, thenProjections);
     }
 
-    static Number maxNum(Number a, Number b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.doubleValue() >= b.doubleValue() ? a : b;
-    }
-
-    static Number minNum(Number a, Number b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.doubleValue() <= b.doubleValue() ? a : b;
-    }
+    static Number maxNum(Number a, Number b) { return ExecutionContext.maxNum(a, b); }
+    static Number minNum(Number a, Number b) { return ExecutionContext.minNum(a, b); }
 
     static Object witnessValue(Object val, Object base, Map<String, Object> whenMap, Map<String, Object> thenMap, Map<String, String> whenProjections, Map<String, String> thenProjections) {
         return witnessVariants(val, base, buildPeerIndex(whenMap, thenMap, whenProjections, thenProjections), whenProjections, thenProjections).get(0);
@@ -398,9 +317,22 @@ final class DriftStubs {
         return cm;
     }
 
+    private static void recordSeamIfExternal(Map<String, Object> v, String contractOrResource, String caseId, boolean inTest) {
+        if (!inTest) return;
+        DriftCase tag = Drift.tag();
+        if (tag == null) return;
+        String prodId = v.get("id") instanceof String s ? s : contractOrResource;
+        if (tag.contract().equals(contractOrResource) || tag.contract().equals(prodId)) return;
+        String prodRef = v.get("ref") instanceof String r
+                ? r
+                : (v.get("digest") instanceof String d ? d : "sha256:seam-stub");
+        Drift.recordSeamStub(prodId, caseId, prodRef);
+    }
+
     static Map<String, Object> buildStub(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
         Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
+        recordSeamIfExternal(v, contractOrResource, caseId, inTest);
         Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
         Map<String, String> whenProjections = extractProjectionMap(v, "when");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");
@@ -411,6 +343,7 @@ final class DriftStubs {
     static List<Map<String, Object>> buildStubVariants(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
         Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
+        recordSeamIfExternal(v, contractOrResource, caseId, inTest);
         Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
         Map<String, String> whenProjections = extractProjectionMap(v, "when");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");

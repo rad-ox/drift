@@ -436,7 +436,7 @@ def load_parity_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str
     return out, errs
 
 
-def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: list[dict[str, Any]], phase: str, digest_matches_fn: Callable[[str, str], bool]) -> tuple[list[str], list[dict[str, Any]]]:
+def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: list[dict[str, Any]], phase: str, digest_matches_fn: Callable[[str, str], bool], expected_subject_ref: str = "", shard_subject_refs: set[str] | None = None, mig_checks: list[dict[str, Any]] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
     cm = contract.get("cutover") or {}
     if not cm:
         return [], []
@@ -455,13 +455,24 @@ def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: lis
     needs_frames = bool((contract.get("scope_writes") or []) or any(isinstance(c, dict) and "writes" in c for c in raw_cases.values()))
     allowed = set(cm.get("intentional_diffs") or [])
     comp_ok = rec["legacy_subject_ref"] != rec["candidate_subject_ref"] and all(ac in rec["legacy_cases"] and ac in rec["candidate_cases"] for ac in active)
+    sh_refs = shard_subject_refs or set()
+    sub_ok = (not expected_subject_ref or digest_matches_fn(rec["candidate_subject_ref"], expected_subject_ref)) and (not sh_refs or any(digest_matches_fn(rec["candidate_subject_ref"], s) for s in sh_refs))
     norm_ok = rec["legacy_target"] == cm.get("legacy_target") and rec["candidate_target"] == cm.get("candidate_target") and digest_matches_fn(rec["normalization_ref"], str(cm.get("normalization_ref", ""))) and digest_matches_fn(rec["corpus_ref"], str(cm.get("corpus_ref", ""))) and (not cm.get("requirement_ref") or digest_matches_fn(rec["requirement_ref"], cm["requirement_ref"]))
     obs_ok = all(d in allowed for d in rec["diverged_observations"])
     eff_ok = not rec["effect_violations"] and (not needs_frames or rec["frame_verified"])
     rb_ok = cm.get("rollback_readback", "not_applicable") != "required" or rec["rollback_readback"] == "verified"
+    req_migs = cm.get("migration_ids") or []
+    m_list = mig_checks or []
+    migs_ok = all(
+        any(mr.get("migration_id") == mid and mr.get("effective_outcome") == "passed" and digest_matches_fn(str(mr.get("subject_ref", "")), rec["candidate_subject_ref"]) for mr in m_list)
+        and not any(mr.get("migration_id") == mid and mr.get("effective_outcome") != "passed" for mr in m_list)
+        for mid in req_migs
+    )
     reasons = []
     if not comp_ok:
         reasons.append("parity.incomplete_target")
+    if not sub_ok:
+        reasons.append("parity.subject_mismatch")
     if not norm_ok:
         reasons.append("parity.normalization_mismatch")
     if not obs_ok:
@@ -470,6 +481,8 @@ def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: lis
         reasons.append("parity.effect_mismatch")
     if not rb_ok:
         reasons.append("parity.rollback_incompatible")
+    if not migs_ok:
+        reasons.append("parity.migration_unverified")
     if rec["outcome"] != "passed" and not reasons:
         reasons.append("parity.observation_mismatch")
     eff_out = "passed" if not reasons and rec["outcome"] == "passed" else "failed"

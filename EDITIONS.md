@@ -6,7 +6,7 @@
 
 DRIFT is packaged into three progressive editions—**Free**, **Pro**, and **Enterprise**—across Linux (`x86_64`), macOS (`arm64` Apple Silicon and `x86_64` Intel), and Windows (`x86_64`).
 
-Every edition is a **self-contained standalone package**: installing **Pro** or **Enterprise** gives you the complete CLI, the full progressive-superset Agent Skill (`skill/drift/SKILL.md` + `references/`), all five language bridges (`drift-junit` for Java & Scala/MUnit, `drift-maven-plugin`, `drift.mjs`, `drift.py`, `bridges/v/drift_v`, `bridges/rust` / `drift_rust`), editor JSON Schemas, and agent hooks in one step.
+Every edition is a **self-contained standalone package**: installing **Pro** or **Enterprise** gives you the complete CLI, the full progressive-superset Agent Skill (`skill/drift/SKILL.md` + `references/`), all language bridges (`drift-junit` for Java & Scala/MUnit, `drift-maven-plugin`, `drift.mjs`, `drift.py`, `bridges/v/drift_v`, `bridges/rust` / `drift_rust`, `Drift.php`, `drift_cobol.py`, and `bridges/legacy/junit4/DriftJUnit4.java`), editor JSON Schemas, and agent hooks in one step.
 
 ---
 
@@ -26,7 +26,7 @@ Every edition is a **self-contained standalone package**: installing **Pro** or 
 
 | Command | Free | Pro | Enterprise | Description |
 |---|:---:|:---:|:---:|---|
-| `drift init` | ✅ | ✅ | ✅ | Initialize an area configuration (`.drift/config.toml`) |
+| `drift init` | ✅ | ✅ | ✅ | Initialize an area configuration (`.drift/config.toml`, or external shadow state via `--state-dir` / `DRIFT_STATE_DIR`) |
 | `drift new` | ✅ | ✅ | ✅ | Scaffold a new contract or profile |
 | `drift case` | ✅ | ✅ | ✅ | Append draft cases to an existing contract (`case add`; `--from-intent` in **Pro**) |
 | `drift check` | ✅ | ✅ | ✅ | Static validation of contracts, profiles, `[concepts]`, `[invariants]`, `[cutover]`, `[budgets.<id>]`, `[requires].security`, `[formal.<id>]`, UI surfaces, and `.drift/config.toml` |
@@ -53,12 +53,12 @@ Several core commands belong to **DRIFT Free** in their standard usage and unloc
 | Command | Free Usage | Pro Subcommands / Options | Enterprise Subcommands / Options |
 |---|---|---|---|
 | `drift case` | `drift case add <file> [<id>] --ask <text> [--blocks <phase>]` | `--from-intent`, `--from-signal <file>` | *(all Pro options)* |
-| `drift export` | `drift export views [<path>...] --out <dir>` | `drift export boundary [<path>...] --out <file> [--area ...] [--openapi ... \| --asyncapi ... \| --wsdl ...]` | *(all Pro options)* |
+| `drift export` | `drift export views [<path>...] --out <dir>` | `drift export boundary [<path>...] --out <file> [--area ...] [--openapi ... \| --asyncapi ... \| --wsdl ... \| --copybook ...]` | *(all Pro options)* |
 | `drift review` | `drift review <path> [--brief] [--as json\|summary] [--detail full\|summary\|guided]` | `--base <ref>` (`budget-coarsened`, `security-coarsened`, `concept_changes`, `when.narrowed`/`when.shifted`, `writes.widened`, `allowed_keys`/`forbid_keys`/`not_in` `then.widened`, `refinement`, `relaxation_witnesses`), `--delta`, `--base-profiles`, `--events`, `--measurements` (`budget-at-risk` & `revisit_triggered`), `--subject*`, `--run-id`, `--upstream`, `--as md` | *(all Pro options)* |
-| `drift new` | `drift new <file> [--profile REF] [--concept ID...] [--from <sibling>] [--code ...] [--intent ...]` | `--openapi <file>`, `--asyncapi <file>`, `--wsdl <file>`, `--from-upstream`, `--resource`, `--from-recall <id>`, `--from-intent` | *(all Pro options)* |
+| `drift new` | `drift new <file> [--profile REF] [--concept ID...] [--from <sibling>] [--code ...] [--intent ...]` | `--openapi <file>`, `--asyncapi <file>`, `--wsdl <file>`, `--copybook <file>`, `--from-upstream`, `--resource`, `--from-recall <id>`, `--from-intent` | *(all Pro options)* |
 | `drift prove` | `drift prove <path> --events <dir> [--measurements <file> --subject* --run-id ...] [--at LEVEL...] [--explain] [--json]` | `--base <ref>`, `--changed`, `--changed-list`, `--changed-none` | `--mutants <file>`, `--mutation-events <dir>` |
 | `drift gate` | `drift gate <path> --events <dir> [--execution-context <file> [--base-snapshot ... --result-snapshot ...]] [--measurements <file> --subject* --run-id ...] [--at LEVEL...] [--phase ...] [--explain] [--as summary\|json] [--detail full\|summary\|guided]` | `--base <ref>` (including `performance_reuse = "execution"` and security receipt reuse), `--changed`, `--changed-list`, `--changed-none`, `--upstream` | `--mutants`, `--mutation-events`, `--attest <file>` (with `performance`, `security_checks`, `--ssh-sign`, `--trust-root`, `--verify-time`), `--as junit`, `--compare-before` |
-| `drift sweep` | — | `sweep check`, `sweep sync-scope [--apply]`, `--root <dir>`, `--base <ref>`, `--delta`, `--recall`, `--sync-scope` | `sweep simplify`, `sweep promote`, `--flow` (resource, DB seam, budget, security & AsyncAPI epoch checks), `--openapi`, `--asyncapi`, `--wsdl`, `--epoch-manifest`, `--scaffold-profile`, `--promote`, `--simplify`, `--apply`, `--upstream` |
+| `drift sweep` | — | `sweep check`, `sweep sync-scope [--apply]`, `--root <dir>`, `--base <ref>`, `--delta`, `--recall`, `--sync-scope` | `sweep simplify`, `sweep promote`, `--flow` (resource, DB seam, budget, security & AsyncAPI epoch checks), `--openapi`, `--asyncapi`, `--wsdl`, `--copybook`, `--epoch-manifest`, `--scaffold-profile`, `--promote`, `--simplify`, `--apply`, `--upstream` |
 
 ---
 

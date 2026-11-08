@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.3.3'
-pub const bridge_version = '0.3.3'
+pub const adapter_id = 'drift_v.v@0.4.0'
+pub const bridge_version = '0.4.0'
 
 const env_keys = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']!
 
@@ -376,111 +376,38 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 	}
 }
 
-fn forbidden_writes_of(view map[string]json2.Any, case_id string) []string {
-	mut scope_writes := []string{}
-	if sc_any := view['scope'] {
-		if sc_any is map[string]json2.Any {
-			if sw_any := sc_any['writes'] {
-				if sw_any is []json2.Any {
-					for item in sw_any {
-						if item is string {
-							scope_writes << item
-						}
-					}
-				}
-			}
-		}
-	}
-	if scope_writes.len == 0 {
-		return []string{}
-	}
-	cases_any := view['cases'] or { return []string{} }
-	if cases_any !is map[string]json2.Any {
-		return []string{}
-	}
-	c_any := cases_any.as_map()[case_id] or { return []string{} }
-	if c_any !is map[string]json2.Any {
-		return []string{}
-	}
-	cw_any := c_any.as_map()['writes'] or { return []string{} }
-	mut allowed := map[string]bool{}
-	mut allowed_bases := map[string]bool{}
-	if cw_any is []json2.Any {
-		for item in cw_any {
-			if item is string {
-				allowed[item] = true
-				allowed_bases[item.all_before('#')] = true
-			}
-		}
-	} else {
-		return []string{}
-	}
-	mut out := []string{}
-	for r in scope_writes {
-		if r !in allowed && r.all_before('#') !in allowed && r !in allowed_bases {
-			out << r
-		}
-	}
-	return out
-}
-
 pub fn (mut ctx DriftContext) check_frame(case_id string, frame_json string) ! {
 	_ := ctx.case_map(case_id)!
 	forbidden := forbidden_writes_of(ctx.view, case_id)
-	if forbidden.len == 0 {
-		return
-	}
 	doc := json2.decode[json2.Any](frame_json) or { return error('frame_json is not valid JSON') }
 	if doc !is map[string]json2.Any {
 		return error('frame_json must be a JSON object')
 	}
 	fmap := doc.as_map()
+	pfx := '${ctx.contract_id}.${case_id}'
+	mut checked_keys := map[string]bool{}
 	for res in forbidden {
 		base_res := res.all_before('#')
+		checked_keys[res] = true
+		checked_keys[base_res] = true
 		obs := fmap[res] or {
 			fmap[base_res] or {
-				return error('${ctx.contract_id}.${case_id}: missing frame observation for forbidden write resource "${res}"')
+				return error('${pfx}: missing frame observation for forbidden write resource "${res}"')
 			}
 		}
-		mut checked := false
-		if n := as_finite_f64(obs) {
-			if n >= 0 {
-				checked = true
-				if n > 0 {
-					return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${n}')
-				}
-			}
-		} else if obs is map[string]json2.Any {
-			for wk in ['writes', 'operations', 'events'] {
-				if wv := obs[wk] {
-					if wn := as_finite_f64(wv) {
-						if wn >= 0 {
-							checked = true
-							if wn > 0 {
-								return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${wn}')
-							}
-						}
-					} else if wv is []json2.Any {
-						checked = true
-						if wv.len > 0 {
-							return error('${ctx.contract_id}.${case_id}: frame violation on resource "${res}": expected 0 writes, observed ${wv.len}')
-						}
-					}
-				}
-			}
-			if bef := obs['before'] {
-				if aft := obs['after'] {
-					checked = true
-					if !values_equal(bef, aft) {
-						return error('${ctx.contract_id}.${case_id}: frame state mutation on resource "${res}": before and after snapshots differ')
-					}
-				}
-			}
-		}
-		if !checked {
-			return error('${ctx.contract_id}.${case_id}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots')
-		}
+		verify_single_frame_obs(pfx, res, obs, false)!
 		ctx.mark_read(case_id, '@frame:${res}')
+	}
+	allowed, allowed_bases, _ := allowed_write_sets_of(ctx.view, case_id)
+	mut fkeys := fmap.keys()
+	fkeys.sort()
+	for k in fkeys {
+		if k in checked_keys || is_write_resource_allowed(k, allowed, allowed_bases) {
+			continue
+		}
+		if obs_k := fmap[k] {
+			verify_single_frame_obs(pfx, k, obs_k, true)!
+		}
 	}
 }
 
@@ -588,6 +515,17 @@ pub fn (mut ctx DriftContext) build_stub(target string, case_id string, resolved
 		return build_projected_json(ctx.view, case_id)
 	}
 	up_view := load_contract_view(target, resolved_dir)!
+	if !ctx.in_mutation {
+		prod_id := if id_any := up_view['id'] { id_any.str() } else { target }
+		prod_ref := if r_any := up_view['ref'] {
+			r_any.str()
+		} else if d_any := up_view['digest'] {
+			d_any.str()
+		} else {
+			'sha256:seam-stub'
+		}
+		ctx.record_input('.drift/seam-stub/${prod_id}#${case_id}', prod_ref)
+	}
 	return build_projected_json(up_view, case_id)
 }
 

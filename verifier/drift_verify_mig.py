@@ -11,13 +11,20 @@ MIG_KEYS = frozenset(("schema", "contract", "digest", "resource", "migration_id"
 MIG_PHASES = frozenset(("expand", "backfill", "contract"))
 
 
+def collect_receipt_files(events_paths: list[Path], suffix: str) -> list[Path]:
+    out, seen = [], set()
+    for p in events_paths:
+        cands = sorted(p.glob(f"*{suffix}")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(suffix) else [])
+        for f in cands:
+            if f not in seen:
+                seen.add(f)
+                out.append(f)
+    return out
+
+
 def load_migration_receipts_core(events_paths: list[Path], decode_fn: Any, valid_rel_scope_fn: Any) -> tuple[list[dict[str, Any]], list[str]]:
-    files = [f for p in events_paths for f in (sorted(p.glob("*.migration.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".migration.json") else []))]
-    out, errs, seen = [], [], set()
-    for mf in files:
-        if mf in seen:
-            continue
-        seen.add(mf)
+    out, errs = [], []
+    for mf in collect_receipt_files(events_paths, ".migration.json"):
         try:
             doc = decode_fn(mf.read_text(encoding="utf-8"))
             if not isinstance(doc, dict) or set(doc) != MIG_KEYS or doc.get("schema") != "drift.migration-receipt/1":
@@ -63,7 +70,7 @@ def evaluate_contract_migration_core(contract: dict[str, Any], mig_receipts: lis
     pol = policy or {}
     req_mig = pol.get("pack") == "core@1" and pol.get("migration") == "required"
     scope_code = contract.get("scope_code") or []
-    res_set = {str(r).split("#", 1)[0].strip() for r in (contract.get("scope_reads") or []) + (contract.get("scope_writes") or []) if str(r).split("#", 1)[0].strip()}
+    res_set = {str(r).strip() for r in (contract.get("scope_reads") or []) + (contract.get("scope_writes") or []) if str(r).strip()}
     raw_cases = contract.get("cases") or {}
     active_cases = {cid for cid, cm in raw_cases.items() if isinstance(cm, dict) and "status" not in cm}
     inv_keys = set(contract.get("invariants") or ())
@@ -85,9 +92,10 @@ def evaluate_contract_migration_core(contract: dict[str, Any], mig_receipts: lis
         grp_viol, grp_evals = False, []
         for rec in group:
             eff, rsn = rec["outcome"], ""
-            rbase = rec["resource"].split("#", 1)[0].strip()
+            r_res = rec["resource"].strip()
+            res_ok = bool(r_res) and (r_res in res_set or ("#" in r_res and r_res.split("#", 1)[0].strip() in res_set))
             ec, dc, osaf = rec["epoch_compatibility"], rec["data_correctness"], rec["operational_safety"]
-            if not rbase or rbase not in res_set or not scope_code or not all(any(cov_matches_fn(c, sc) for c in rec["covered_scope"]) for sc in scope_code) or not active_cases or not all(c in active_cases for c in rec["cases"]):
+            if not res_ok or not scope_code or not all(any(cov_matches_fn(c, sc) for c in rec["covered_scope"]) for sc in scope_code) or not active_cases or not all(c in active_cases for c in rec["cases"]):
                 eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.incomplete_scope"
             elif expected_snapshot and rec["code_snapshot"] != expected_snapshot:
                 eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.snapshot_mismatch"
@@ -137,3 +145,72 @@ def evaluate_contract_migration_core(contract: dict[str, Any], mig_receipts: lis
     if has_inc and not has_viol and "migration.inconclusive" not in reasons:
         reasons.append("migration.inconclusive")
     return reasons, eval_list
+
+
+def run_mig_parity_self_test(ck: dict[str, Any], digest_matches_fn: Any) -> None:
+    from drift_verify_ssh import evaluate_contract_parity_impl
+    h1, h2, h3 = "sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64
+    p_ck = {**ck, "scope_reads": ["db#orders"], "scope_writes": ["db#users"], "scope_code": ["src/svc.py"], "invariants": [], "cutover": {"legacy_target": "leg", "candidate_target": "cand", "normalization_ref": h1, "corpus_ref": h1, "requirement_ref": ck["digest"], "migration_ids": ["mig-1"], "rollback_readback": "required", "enforce": "always"}}
+    p_rec = {"schema": "drift.parity-receipt/1", "contract": "svc", "digest": ck["digest"], "requirement_ref": ck["digest"], "legacy_target": "leg", "candidate_target": "cand", "legacy_subject_ref": h1, "candidate_subject_ref": h2, "normalization_ref": h1, "corpus_ref": h1, "legacy_cases": ["ok"], "candidate_cases": ["ok"], "diverged_observations": [], "effect_violations": [], "frame_verified": True, "rollback_readback": "verified", "outcome": "passed"}
+    rsn_miss, _ = evaluate_contract_parity_impl(p_ck, [p_rec], "release", digest_matches_fn, h2, set(), [])
+    rsn_sub, _ = evaluate_contract_parity_impl(p_ck, [p_rec], "release", digest_matches_fn, h3, set(), [])
+    assert "parity.migration_unverified" in rsn_miss and "parity.subject_mismatch" in rsn_sub
+
+
+
+ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+DIGEST_RE = re.compile(r"^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
+THEN_MUT_OPS = frozenset(("negate", "add-one", "minus-one", "set-one", "multiply-two", "divide-two", "append-tilde", "drop-last", "seed-array", "swap-peer-then", "zero-sum-shear"))
+WHEN_MUT_OPS = frozenset(("swap-case-when", "perturb-case-when"))
+
+
+def validate_mutation_manifest_core(text: str, decode_fn: Any) -> dict[str, Any]:
+    import hashlib
+    doc = decode_fn(text)
+    if not isinstance(doc, dict) or set(doc) != {"version", "contracts"} or doc.get("version") != 1 or isinstance(doc.get("version"), bool) or not isinstance(cs := doc["contracts"], list) or not cs:
+        raise ValueError("manifest")
+    by_id, targets, prev_c = {}, {}, ""
+    for c in cs:
+        if not isinstance(c, dict) or set(c) != {"id", "digest", "mutants"}:
+            raise ValueError("contract")
+        cid, cdig, muts = c["id"], c["digest"], c["mutants"]
+        if not isinstance(cid, str) or not ID_RE.match(cid) or not isinstance(cdig, str) or not DIGEST_RE.match(cdig) or not isinstance(muts, list) or (prev_c and cid <= prev_c):
+            raise ValueError("contract")
+        prev_c, prev_m, m_list = cid, "", []
+        for m in muts:
+            if not isinstance(m, dict) or any(k not in ("id", "case", "path", "operator", "before", "after", "witness") for k in m) or any(r not in m for r in ("id", "case", "path", "operator", "before", "after")):
+                raise ValueError("mutant")
+            mid, mc, mp, mop = m["id"], m["case"], m["path"], m["operator"]
+            if not all(isinstance(x, str) for x in (mid, mc, mp, mop)) or not ID_RE.match(mc) or mid != f"{mc}:{mp}" or (prev_m and mid <= prev_m):
+                raise ValueError("mutant")
+            esc = mc.replace("~", "~0").replace("/", "~1")
+            tp, wp = f"/cases/{esc}/then/", f"/cases/{esc}/when/"
+            if not ((mp.startswith(tp) and len(mp) > len(tp) and mop in THEN_MUT_OPS) or (mp.startswith(wp) and len(mp) > len(wp) and mop in WHEN_MUT_OPS)):
+                raise ValueError("mutant")
+            prev_m = mid
+            targets[(cid, mid)] = rec = {"id": mid, "contract": cid, "digest": cdig, "case": mc, "path": mp}
+            m_list.append(rec)
+        by_id[cid] = {"id": cid, "digest": cdig, "mutants": m_list}
+    return {"digest": "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(), "contracts": by_id, "targets": targets}
+
+
+def run_sec_self_test_core(ck: dict[str, Any], digest_matches_fn: Any, eval_sec_fn: Any) -> None:
+    import tempfile, drift_verify as _dv
+    run_mig_parity_self_test(ck, digest_matches_fn)
+    sec_ck = {**ck, "profile_security": ["sast"], "scope_code": ["src/api.rs#authorize"]}
+    base_rec = {"category": "sast", "tool": "semgrep", "tool_ref": "sha256:" + "1" * 64, "ruleset_ref": "sha256:" + "2" * 64, "contract": "svc", "digest": ck["ref"], "code_snapshot": "a" * 40, "covered_scope": ["src/api.rs#authorize"], "cases": ["ok"], "outcome": "passed"}
+    assert eval_sec_fn(sec_ck, [base_rec], {}, "a" * 40, digest_matches_fn)[0] == []
+    for bad in ({"covered_scope": ["src/api.rs#unrelated"]}, {"cases": ["nonexistent"]}):
+        assert "security.inconclusive" in eval_sec_fn(sec_ck, [{**base_rec, **bad}], {}, "a" * 40, digest_matches_fn)[0]
+    assert "security.inconclusive" in eval_sec_fn(sec_ck, [base_rec], {}, "", digest_matches_fn)[0]
+    r_viol = {**base_rec, "ruleset_ref": "sha256:" + "3" * 64, "outcome": "violated"}
+    c1 = eval_sec_fn(sec_ck, [r_viol, base_rec], {}, "a" * 40, digest_matches_fn)
+    c2 = eval_sec_fn(sec_ck, [base_rec, r_viol], {}, "a" * 40, digest_matches_fn)
+    assert c1 == c2 and "security.inconclusive" in c1[0] and all(x.get("reason") == "security.conflicting_receipts" for x in c1[1])
+    with tempfile.TemporaryDirectory() as td:
+        tp = Path(td)
+        (tp / "p@1.toml").write_text('drift = "0.2"\nprofile = "p@1"\n[vocabulary]\nwhen = ["op"]\nthen = ["status", "inv_p"]\n[projections.then]\nstatus = "/status"\ninv_p = "/ip"\n[concepts."orders.c"]\nmeans = "Cancel order."\n', "utf-8")
+        for fn_n, u_c in (("c1.toml", 'concepts = ["orders.c"]\n'), ("c2.toml", "")):
+            (tp / fn_n).write_text(f'drift = "0.2"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
+        assert _dv.verify_contract_toml(tp / "c1.toml", tp)["digest"] == _dv.verify_contract_toml(tp / "c2.toml", tp)["digest"]
+

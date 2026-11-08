@@ -605,7 +605,16 @@ write_dropin_hook() { # target_file
         "type": "command",
         "bash": "$data/hooks/drift-hook.sh session",
         "command": "$data/hooks/drift-hook.sh session",
-        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%LOCALAPPDATA%\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\" -Mode session",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode session\"",
+        "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "$data/hooks/drift-hook.sh prompt",
+        "command": "$data/hooks/drift-hook.sh prompt",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode prompt\"",
         "timeoutSec": 5
       }
     ],
@@ -614,7 +623,7 @@ write_dropin_hook() { # target_file
         "type": "command",
         "bash": "$data/hooks/drift-hook.sh stop",
         "command": "$data/hooks/drift-hook.sh stop",
-        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%LOCALAPPDATA%\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\" -Mode stop",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode stop\"",
         "timeoutSec": 10
       }
     ]
@@ -641,7 +650,20 @@ write_or_merge_shared_hook() { # target_file
           {
             "type": "command",
             "command": "$data/hooks/drift-hook.sh session",
-            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%LOCALAPPDATA%\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\" -Mode session",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode session\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "_drift": true,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$data/hooks/drift-hook.sh prompt",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode prompt\"",
             "timeout": 5
           }
         ]
@@ -654,7 +676,7 @@ write_or_merge_shared_hook() { # target_file
           {
             "type": "command",
             "command": "$data/hooks/drift-hook.sh stop",
-            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%LOCALAPPDATA%\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\" -Mode stop",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode stop\"",
             "timeout": 10
           }
         ]
@@ -690,8 +712,8 @@ if not isinstance(doc, dict):
 hooks = doc.setdefault('hooks', {})
 if not isinstance(hooks, dict):
     sys.exit(0)
-win_cmd = r'powershell -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\drift\hooks\drift-hook.ps1"'
-for ev, mode, tmo in [('SessionStart', 'session', 5), ('Stop', 'stop', 10)]:
+win_cmd = r'powershell -NoProfile -ExecutionPolicy Bypass -Command "& \"$env:LOCALAPPDATA\Programs\drift\hooks\drift-hook.ps1\"'
+for ev, mode, tmo in [('SessionStart', 'session', 5), ('UserPromptSubmit', 'prompt', 5), ('Stop', 'stop', 10)]:
     arr = hooks.setdefault(ev, [])
     if not isinstance(arr, list):
         continue
@@ -701,7 +723,7 @@ for ev, mode, tmo in [('SessionStart', 'session', 5), ('Stop', 'stop', 10)]:
         'hooks': [{
             'type': 'command',
             'command': f'{hook_sh} {mode}',
-            'commandWindows': f'{win_cmd} -Mode {mode}',
+            'commandWindows': f'{win_cmd} -Mode {mode}"',
             'timeout': tmo,
         }],
     })

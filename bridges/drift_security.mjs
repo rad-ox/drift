@@ -1,9 +1,12 @@
-// Security probing and pre-projection payload checks for the DRIFT JavaScript bridge (D249).
+// Security probing and pre-projection payload checks for the DRIFT JavaScript bridge.
 import {
+  applyMutation,
   checkProjectedLeaf,
   escapePointer,
   invokeVerifiedCallback,
+  isAssertErr,
   isObj,
+  isStr,
   readPointer,
   throwAssertionError,
   throwError,
@@ -38,58 +41,87 @@ export function checkNegativeLeaf(pfx, key, exp, act, mutationOverride) {
   }
 }
 
+function allowedWriteSetsOf(view, caseId) {
+  const scopeWrites = Array.isArray(view?.scope?.writes) ? view.scope.writes.map(String) : [];
+  const caseWrites = view?.cases?.[caseId]?.writes;
+  const rawAllowed = Array.isArray(caseWrites) ? caseWrites.map(String) : scopeWrites;
+  const allowed = new Set(rawAllowed);
+  const allowedBases = new Set(rawAllowed.map((w) => w.split('#')[0]));
+  return [allowed, allowedBases];
+}
+
+function isWriteResourceAllowed(res, allowed, allowedBases) {
+  const base = res.split('#')[0];
+  return allowed.has(res) || allowed.has(base) || (!res.includes('#') && allowedBases.has(res));
+}
+
 export function forbiddenWritesOf(view, caseId) {
   const scopeWrites = Array.isArray(view?.scope?.writes) ? view.scope.writes.map(String) : [];
   const caseWrites = view?.cases?.[caseId]?.writes;
   if (!Array.isArray(caseWrites)) return [];
-  const allowed = new Set(caseWrites.map(String));
-  const allowedBases = new Set(caseWrites.map((w) => String(w).split('#')[0]));
-  return scopeWrites.filter((r) => !allowed.has(r) && !allowed.has(r.split('#')[0]) && !allowedBases.has(r));
+  const [allowed, allowedBases] = allowedWriteSetsOf(view, caseId);
+  return scopeWrites.filter((r) => !isWriteResourceAllowed(r, allowed, allowedBases));
+}
+
+function verifySingleFrameObs(pfx, res, obs, isAmbient) {
+  let checkedAny = false;
+  const writeLabel = isAmbient ? `undeclared write on perimeter resource "${res}"` : `frame violation on resource "${res}"`;
+  const snapLabel = isAmbient ? `undeclared state mutation on perimeter resource "${res}"` : `frame state mutation on resource "${res}"`;
+  if (typeof obs === 'number' && Number.isFinite(obs) && obs >= 0) {
+    checkedAny = true;
+    if (obs > 0) {
+      throwAssertionError(`${pfx}: ${writeLabel}: expected 0 writes, observed ${obs}`);
+    }
+  } else if (isObj(obs)) {
+    const wCount = typeof obs.writes === 'number'
+      ? obs.writes
+      : (typeof obs.operations === 'number'
+        ? obs.operations
+        : (Array.isArray(obs.writes) ? obs.writes.length : (Array.isArray(obs.events) ? obs.events.length : null)));
+    if (wCount !== null) {
+      checkedAny = true;
+      if (wCount > 0) {
+        throwAssertionError(`${pfx}: ${writeLabel}: expected 0 writes, observed ${wCount}`);
+      }
+    }
+    if ('before' in obs && 'after' in obs) {
+      checkedAny = true;
+      if (!valuesEqual(obs.before, obs.after)) {
+        throwAssertionError(`${pfx}: ${snapLabel}: before and after snapshots differ`);
+      }
+    }
+  }
+  if (!checkedAny) {
+    throwAssertionError(`${pfx}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots`);
+  }
 }
 
 export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
   ctx._tag(caseId);
   const forbidden = forbiddenWritesOf(ctx.view, caseId);
-  if (!forbidden.length) return;
+  const pfx = `${ctx.contractId}.${caseId}`;
   const seen = ctx.reads.get(caseId);
+  const checkedKeys = new Set();
   for (const res of forbidden) {
     const baseRes = res.split('#')[0];
+    checkedKeys.add(res);
+    checkedKeys.add(baseRes);
     const obs = isObj(frameObs) ? (res in frameObs ? frameObs[res] : (baseRes in frameObs ? frameObs[baseRes] : undefined)) : undefined;
     if (obs === undefined) {
       if (strict) {
-        throwAssertionError(`${ctx.contractId}.${caseId}: missing frame observation for forbidden write resource "${res}"`);
+        throwAssertionError(`${pfx}: missing frame observation for forbidden write resource "${res}"`);
       }
       continue;
     }
-    let checkedAny = false;
-    if (typeof obs === 'number') {
-      checkedAny = true;
-      if (obs > 0) {
-        throwAssertionError(`${ctx.contractId}.${caseId}: frame violation on resource "${res}": expected 0 writes, observed ${obs}`);
-      }
-    } else if (isObj(obs)) {
-      const wCount = typeof obs.writes === 'number'
-        ? obs.writes
-        : (typeof obs.operations === 'number'
-          ? obs.operations
-          : (Array.isArray(obs.writes) ? obs.writes.length : (Array.isArray(obs.events) ? obs.events.length : null)));
-      if (wCount !== null) {
-        checkedAny = true;
-        if (wCount > 0) {
-          throwAssertionError(`${ctx.contractId}.${caseId}: frame violation on resource "${res}": expected 0 writes, observed ${wCount}`);
-        }
-      }
-      if ('before' in obs && 'after' in obs) {
-        checkedAny = true;
-        if (!valuesEqual(obs.before, obs.after)) {
-          throwAssertionError(`${ctx.contractId}.${caseId}: frame state mutation on resource "${res}": before and after snapshots differ`);
-        }
-      }
-    }
-    if (!checkedAny) {
-      throwAssertionError(`${ctx.contractId}.${caseId}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots`);
-    }
+    verifySingleFrameObs(pfx, res, obs, false);
     seen.add(`@frame:${res}`);
+  }
+  if (isObj(frameObs)) {
+    const [allowed, allowedBases] = allowedWriteSetsOf(ctx.view, caseId);
+    for (const k of Object.keys(frameObs).sort()) {
+      if (checkedKeys.has(k) || isWriteResourceAllowed(k, allowed, allowedBases)) continue;
+      verifySingleFrameObs(pfx, k, frameObs[k], true);
+    }
   }
 }
 
@@ -115,6 +147,7 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}) {
       if (Array.isArray(exp.allowed_keys)) {
         const allowedSet = new Set(exp.allowed_keys.map(String));
         for (const actKey of Object.keys(targetObj)) {
+          if (targetObj === payload && actKey === '_frame' && isObj(targetObj._frame)) continue;
           if (!allowedSet.has(actKey)) {
             throwAssertionError(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(exp.allowed_keys)}`);
           }
@@ -166,6 +199,60 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
   }
 }
 
+export function extractTestOrigin(t) {
+  if (!t || typeof t !== 'object') return ['', ''];
+  if (isStr(t.filePath) && t.filePath) {
+    return [t.filePath, isStr(t.fullName) && t.fullName ? t.fullName : String(t.name ?? '')];
+  }
+  if (isStr(t.file) && t.file) {
+    const tp = Array.isArray(t.titlePath)
+      ? t.titlePath.filter((s) => isStr(s) && s && !/\.(?:spec|test|e2e)\.[A-Za-z0-9]+$/u.test(s))
+      : [];
+    const title = tp.length ? tp.join(' > ') : String(t.title ?? t.name ?? '');
+    return [t.file, title];
+  }
+  if (isObj(t.task) && isStr(t.task.file?.filepath)) {
+    return [t.task.file.filepath, String(t.task.name ?? t.name ?? '')];
+  }
+  if (isStr(t.testPath) && t.testPath) {
+    return [t.testPath, String(t.currentTestName ?? t.name ?? '')];
+  }
+  return ['', ''];
+}
+
+export function resolveSeamMutatedThen(curCtx, prodView, idOrRes, resolvedCaseId) {
+  const m = curCtx?.mutationOverride;
+  if (!m || !isStr(m.path)) return null;
+  const prodId = prodView?.id || idOrRes;
+  const pfx = `/cases/${escapePointer(m.case)}/seam/${escapePointer(prodId)}#${escapePointer(resolvedCaseId)}/`;
+  if (!m.path.startsWith(pfx)) return null;
+  const subPath = `/cases/${escapePointer(resolvedCaseId)}/then/${m.path.slice(pfx.length)}`;
+  return applyMutation(prodView?.cases?.[resolvedCaseId]?.then || {}, prodId, resolvedCaseId, subPath, m.after, 'then');
+}
+
+export async function runSeamBoundsChecks(ctx, caseId, idOrRes, prodCaseOrWhen, checks, base, resolveStubFn, synthesizeVariantsFn) {
+  ctx._tag(caseId);
+  const [prodView, prodCaseId] = resolveStubFn(idOrRes, prodCaseOrWhen, base);
+  const prodId = prodView?.id || idOrRes;
+  const variants = synthesizeVariantsFn(prodView, prodCaseId, base);
+  const execFn = typeof checks === 'function' ? checks : (isObj(checks) && typeof checks.execute === 'function' ? checks.execute : null);
+  if (!execFn) {
+    throwError(`checkSeamBounds for ${ctx.contractId}.${caseId} requires an execute function or { execute } object`);
+  }
+  const projChecks = isObj(checks) ? checks : {};
+  for (const variant of variants) {
+    try {
+      const observed = await execFn(variant);
+      await runProjectionChecks(ctx, caseId, observed, projChecks);
+    } catch (e) {
+      if (isAssertErr(e) && !String(e.message || '').includes('[seam counterexample:')) {
+        throwAssertionError(`${ctx.contractId}.${caseId} failed on seam ${prodId}#${prodCaseId} [seam counterexample: ${JSON.stringify(variant)}]: ${e.message}`);
+      }
+      throw e;
+    }
+  }
+}
+
 export const BRIDGE_CAPABILITIES = Object.freeze([
   'allowed_keys',
   'case_frames',
@@ -186,7 +273,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.3.3',
+    version: '0.4.0',
   };
 }
 

@@ -294,11 +294,24 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
 
 def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, with_at: bool, miss_msg: str) -> None:
     pfx = f'{contract_id}.{case_id}'
+    is_ui_obs = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
+
+    def bump_unverifiable() -> None:
+        ev_map = payload.get('evidence') if isinstance(payload, Mapping) else None
+        if isinstance(ev_map, dict) and isinstance(ev_map.get('unverifiable_checks'), int):
+            ev_map['unverifiable_checks'] += 1
+            if isinstance(ev_map.get('unverifiable_reasons'), list):
+                ev_map['unverifiable_reasons'].append(f'unverifiable_then:{key}')
+
     if key in proj:
         ptr = proj[key]
         found, act = read_pointer(payload, ptr)
         if not found:
+            bump_unverifiable()
             raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{key}')
+        if is_ui_obs and exp is not None and (act is None or (act == '' and isinstance(exp, str) and exp != '')):
+            bump_unverifiable()
+            raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value at "{ptr}"')
         if check_relational_leaf(contract_id, case_id, key, exp, act, payload, proj, mutation_override):
             return
         if values_mismatch(act, exp):
@@ -306,11 +319,15 @@ def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, pay
             raise AssertionError(f'{pfx}: exp then.{key}={exp!r}{at_suffix}, got {act!r}')
         return
     if isinstance(payload, Mapping) and key in payload:
+        if is_ui_obs and exp is not None and payload[key] is None:
+            bump_unverifiable()
+            raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value')
         if check_relational_leaf(contract_id, case_id, key, exp, payload[key], payload, proj, mutation_override):
             return
         if values_mismatch(payload[key], exp):
             raise AssertionError(f'{pfx}: exp then.{key}={exp!r}, got {payload[key]!r}')
         return
+    bump_unverifiable()
     raise AssertionError(f'{pfx}: {miss_msg} then.{key}')
 
 
@@ -339,7 +356,11 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
     is_mut = mutation_override is not None
     proj: Mapping[str, str] | None = None
 
-    if v.get('surfaceFound') is False or v.get('surface_found') is False:
+    if (
+        v.get('surfaceFound') is False
+        or v.get('surface_found') is False
+        or (v.get('schema') == 'drift.ui-observation/1' and v.get('surface_found') is not True and v.get('surfaceFound') is not True)
+    ):
         raise AssertionError(f'{pfx}: surface.missing')
 
     def assert_eq(key: str, exp: Any, act: Any) -> None:
@@ -355,9 +376,11 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
             raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
 
     state_first = {'baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence'}
+    unverif_last = {'unverifiable_checks', 'unverified_elements'}
     ordered_items = [
         *(item for item in then_table.items() if item[0] in state_first),
-        *(item for item in then_table.items() if item[0] not in state_first),
+        *(item for item in then_table.items() if item[0] not in state_first and item[0] not in unverif_last),
+        *(item for item in then_table.items() if item[0] in unverif_last),
     ]
     for key, exp in ordered_items:
         if isinstance(checks, Mapping) and callable(checks.get(key)):

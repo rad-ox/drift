@@ -22,7 +22,7 @@ the four impacts with the approval request.
 
 ## Steps
 
-1. Create `.drift/config.toml`; it needs one table besides `[approval]`:
+1. Create `.drift/config.toml` (or initialize an external shadow area outside a read-only/shared repository with `drift init <owner> <repo> --state-dir <state-dir>` and `DRIFT_STATE_DIR=<state-dir>`, which writes `<state-dir>/.drift/config.toml` and `<state-dir>/shadow.toml` without touching the repository worktree or `.git`); it needs one table besides `[approval]`:
 
    ```toml
    drift = "0.2"

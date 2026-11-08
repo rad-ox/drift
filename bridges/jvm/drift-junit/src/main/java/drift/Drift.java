@@ -166,26 +166,7 @@ public final class Drift {
     }
 
     static boolean inputsUnchanged() {
-        for (Map.Entry<Path, String> e : TEST_INPUT_PATHS.get().entrySet()) {
-            try {
-                Path abs = e.getKey();
-                if (!Files.isRegularFile(abs)) {
-                    return false;
-                }
-                String v = e.getValue();
-                int sep = v.indexOf('|');
-                String sig = v.substring(0, sep);
-                String dig = v.substring(sep + 1);
-                if (sig.startsWith("L:")
-                        ? !DriftInternal.fileSignature(abs).equals(sig)
-                        : !DriftInternal.sha256File(abs).equals(dig)) {
-                    return false;
-                }
-            } catch (RuntimeException ex) {
-                return false;
-            }
-        }
-        return true;
+        return ExecutionContext.inputsUnchanged(TEST_INPUT_PATHS.get());
     }
 
     static Map<String, String> recordedInputs() {
@@ -195,6 +176,12 @@ public final class Drift {
     static void recordSelfStub(String contract) {
         if (Boolean.TRUE.equals(IN_TEST.get()) && !mutationRun()) {
             TEST_INPUTS.get().put(".drift/self-stub/" + contract, "sha256:self-stub");
+        }
+    }
+
+    static void recordSeamStub(String producer, String caseId, String ref) {
+        if (Boolean.TRUE.equals(IN_TEST.get()) && !mutationRun()) {
+            TEST_INPUTS.get().put(".drift/seam-stub/" + producer + "#" + caseId, ref);
         }
     }
 
@@ -550,20 +537,8 @@ public final class Drift {
         }
 
         /** Synthesizes an input map over {@code base} via {@code projections.when} RFC 6901 JSON Pointers (D86). */
-        @SuppressWarnings("unchecked")
         public Map<String, Object> buildInput(Map<String, Object> base) {
-            Map<String, String> whenProj = projectionMap("when");
-            Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
-            for (Map.Entry<String, Object> e : when.entrySet()) {
-                String key = e.getKey();
-                Object val = e.getValue();
-                if (whenProj.containsKey(key)) {
-                    out = Json.writeJsonPointer(out, whenProj.get(key), val);
-                } else if (out instanceof Map<?, ?> m) {
-                    ((Map<String, Object>) m).put(key, Json.cloneJsonValue(val));
-                }
-            }
-            return out instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+            return ExecutionContext.buildInput(when, projectionMap("when"), base);
         }
 
         /** Synthesizes an output map via {@code projections.then} RFC 6901 JSON Pointers (D104). */

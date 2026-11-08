@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `drift:drift-junit:0.3.3` and
-`drift:drift-maven-plugin:0.3.3` (from `maven/` in the release package) into
+The release installer puts `drift:drift-junit:0.4.0` and
+`drift:drift-maven-plugin:0.4.0` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -26,7 +26,7 @@ id, and reruns then collapse them.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.3</version>
+  <version>0.4.0</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -37,7 +37,7 @@ id, and reruns then collapse them.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.3.3</version>
+  <version>0.4.0</version>
   <executions>
     <execution>
       <goals>
@@ -186,7 +186,7 @@ pass `drift.resolved` and `drift.events` to the forked test JVM:
 ```scala
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -366,7 +366,7 @@ file digests in `.meta.json` `inputs` alongside optional `DRIFT_ENV` /
 
 ## Legacy Monolith Bridges (`bridges/legacy/junit4/DriftJUnit4.java`)
 
-Main JVM support (`drift:drift-junit`) targets LTS Java 25 (`--release 25`), Scala 3.9 LTS, and JUnit 5 Platform. For legacy Java 6–8 / JUnit 4 monoliths without JUnit 5 on the classpath, use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`integrations/jvm/junit4/DriftJUnit4.java` / `~/.local/share/drift/bridges/legacy/junit4/DriftJUnit4.java`):
+Main JVM support (`drift:drift-junit`) targets LTS Java 25 (`--release 25`), Scala 3.9 LTS, and JUnit 5 Platform. For legacy Java 6–8 / JUnit 4 monoliths without JUnit 5 on the classpath, use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`bridges/legacy/junit4/DriftJUnit4.java` / `~/.local/share/drift/bridges/legacy/junit4/DriftJUnit4.java`):
 - `@DriftJUnit4.Case(contract = "<id>", value = {"<case>"}, level = "unit")` tags JUnit 4 methods.
 - `DriftJUnit4.Listener` records `.meta.json` inventories and `bound` proof events (`passed`, `failed`, `skipped` on assumption failure, `disabled` on `@Ignore`).
 - `DriftJUnit4.verify(contract, caseId, observations, frames)` checks projections, relational bounds, and forbidden write frames to promote a case to `verified`, and `DriftJUnit4.replayCounterexamples(...)` replays `*.cex.json` regression fixtures.

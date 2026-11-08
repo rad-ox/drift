@@ -2,6 +2,20 @@
 
 User-visible changes and capabilities by release.
 
+## 0.4.0
+
+- Release `0.4.0`.
+- Add 3-stage `collectPlaywrightSequence`, observed-only capabilities, `async-action-feedback@1`/`wizard-form@1` recovery, CSS Color 5 token sweep, and scenario matrices.
+- Add shadow mode (`--state-dir`/`DRIFT_STATE_DIR`, `shadow.toml`, 3-root resolver, `GIT_OPTIONAL_LOCKS=0`, and 2-phase XML adapter `drift_shadow_junit.py`).
+- Add COBOL and PHP symbolic slicing (`WORKING-STORAGE` preamble guard), `EXEC SQL`/`CICS`/PDO/ORM seam discovery, `--copybook` scaffolding, and PHP/COBOL bridges.
+- Add `checkSeamBounds` / `check_seam_bounds` 2-skeleton neighbor probing and `prove.seam_mutants` / `buildStub` incoming-seam fault mutation.
+- Record `.drift/seam-stub/` producer provenance in `.meta.json`, isolate from `test_inputs`, and emit `oracle.unverified_seam` / `oracle.stale_seam_stub`.
+- Add `code.undeclared_seam` in `sweep --root --flow` and route `policy.ignore` helper edits to importing contracts in `select`/`gate --base`.
+- Enforce ambient world-frame checks outside permitted writes across all 6 bridges and compose root `_frame` envelopes with `allowed_keys`.
+- Add deterministic `workflow_progress` stage/percent bands to `drift.guided/1` views and `schedule.progress` to event-backed or guided schedules.
+- Harden observeUiSequence fail-closed nulls, bind parity candidate_subject_ref (`parity.subject_mismatch`), preserve migration `#` partitions, and align GUIDE TOML blocks.
+- Add federated composition manifests (`drift.composition-manifest/1`), bidirectional boundary bundles (`offers`/`requires`), and causal incrementality.
+
 ## 0.3.3
 
 - Release `0.3.3`.

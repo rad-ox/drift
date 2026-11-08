@@ -28,7 +28,7 @@ import org.junit.runner.notification.Failure;
 import org.junit.runner.notification.RunListener;
 
 /**
-* Zero-dependency Java 6 source-compatible JUnit 4 legacy bridge for DRIFT (SPEC sections 30.1, 31.3, D275, D281).
+* Zero-dependency Java 6 source-compatible JUnit 4 legacy bridge for DRIFT.
 */
 public final class DriftJUnit4 {
   private DriftJUnit4() {}
@@ -61,7 +61,7 @@ public final class DriftJUnit4 {
     out.put("capabilities", caps);
     out.put("runtime_baseline", "java-8-legacy");
     out.put("schema", "drift.bridge-capabilities/1");
-    out.put("version", "0.3.3");
+    out.put("version", "0.4.0");
     return out;
   }
 
@@ -151,14 +151,26 @@ public final class DriftJUnit4 {
     Map<String, Object> scopeMap = asMap(view.get("scope"));
     List<Object> scopeWrites = scopeMap != null ? asList(scopeMap.get("writes")) : null;
     List<Object> caseWrites = caseMap.containsKey("writes") ? asList(caseMap.get("writes")) : null;
+    List<Object> rawAllowed = caseWrites != null ? caseWrites : (scopeWrites != null ? scopeWrites : java.util.Collections.emptyList());
+    Set<String> allowedWrites = new HashSet<String>();
+    Set<String> allowedBases = new HashSet<String>();
+    for (int i = 0; i < rawAllowed.size(); i++) {
+      String w = String.valueOf(rawAllowed.get(i));
+      allowedWrites.add(w);
+      int h = w.indexOf('#');
+      allowedBases.add(h >= 0 ? w.substring(0, h) : w);
+    }
     boolean allFramesObserved = true;
+    Set<String> checkedReq = new HashSet<String>();
     if (scopeWrites != null && caseWrites != null) {
-      Set<String> allowedWrites = new HashSet<String>();
-      for (int i = 0; i < caseWrites.size(); i++) allowedWrites.add(String.valueOf(caseWrites.get(i)));
       for (int i = 0; i < scopeWrites.size(); i++) {
         String res = String.valueOf(scopeWrites.get(i));
-        if (allowedWrites.contains(res)) continue;
-        Map<String, Object> frameObs = frames != null ? frames.get(res) : null;
+        int h = res.indexOf('#');
+        String baseRes = h >= 0 ? res.substring(0, h) : res;
+        if (allowedWrites.contains(res) || allowedWrites.contains(baseRes) || (h < 0 && allowedBases.contains(res))) continue;
+        checkedReq.add(res);
+        checkedReq.add(baseRes);
+        Map<String, Object> frameObs = frames != null ? (frames.containsKey(res) ? frames.get(res) : frames.get(baseRes)) : null;
         if (frameObs == null) { allFramesObserved = false; continue; }
         boolean checkedAny = false;
         if (frameObs.containsKey("writes")) {
@@ -173,6 +185,26 @@ public final class DriftJUnit4 {
           }
         }
         if (!checkedAny) allFramesObserved = false;
+      }
+    }
+    if (frames != null) {
+      for (Iterator<Map.Entry<String, Map<String, Object>>> fit = frames.entrySet().iterator(); fit.hasNext(); ) {
+        Map.Entry<String, Map<String, Object>> fe = fit.next();
+        String k = fe.getKey();
+        int h = k.indexOf('#');
+        String baseK = h >= 0 ? k.substring(0, h) : k;
+        if (checkedReq.contains(k) || allowedWrites.contains(k) || allowedWrites.contains(baseK) || (h < 0 && allowedBases.contains(k))) {
+          continue;
+        }
+        Map<String, Object> frameObs = fe.getValue();
+        if (frameObs == null) continue;
+        if (frameObs.containsKey("writes") && toLong(frameObs.get("writes")) != 0L) {
+          throw new AssertionError("DRIFT undeclared write on perimeter resource " + contractId + "." + caseId + " " + k);
+        }
+        if (frameObs.containsKey("before") && frameObs.containsKey("after")
+            && !valuesEqual(frameObs.get("before"), frameObs.get("after"))) {
+          throw new AssertionError("DRIFT undeclared state mutation on perimeter resource " + contractId + "." + caseId + " " + k);
+        }
       }
     }
     if (allFramesObserved) currentVerifiedSet().add(contractId + ":" + caseId);
@@ -197,6 +229,7 @@ public final class DriftJUnit4 {
         for (int i = 0; i < allowed.size(); i++) allowSet.add(String.valueOf(allowed.get(i)));
         for (Iterator<String> kit = observations.keySet().iterator(); kit.hasNext(); ) {
           String ok = kit.next();
+          if ("_frame".equals(ok) && observations.get(ok) instanceof Map) continue;
           if (!allowSet.contains(ok)) throw new AssertionError("DRIFT allowed_keys violation: " + ok);
         }
       }

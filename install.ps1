@@ -689,6 +689,15 @@ try {
         "timeoutSec": 5
       }
     ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "~/.local/share/drift/hooks/drift-hook.sh prompt",
+        "command": "~/.local/share/drift/hooks/drift-hook.sh prompt",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$hookPs1\" -Mode prompt",
+        "timeoutSec": 5
+      }
+    ],
     "agentStop": [
       {
         "type": "command",
@@ -714,18 +723,18 @@ try {
             Write-DropinHook (Join @($HooksDir, 'drift.json'))
         } else {
             $anyAgent = $false
-            if ((Test-Path -LiteralPath (Join @([string]$HOME, '.pi'))) -or (Test-Path -LiteralPath $piDir)) {
+            if ($detectedAgents.Contains('pi')) {
                 $anyAgent = $true
                 $piExt = Join @($piDir, 'extensions', 'drift.ts')
                 Write-PiExtension $piExt
                 $newHooks.Add($piExt)
                 Ok "Pi extension -> $(Show-Path $piExt)" "estensione Pi -> $(Show-Path $piExt)"
             }
-            if (Test-Path -LiteralPath (Join @([string]$HOME, '.copilot'))) {
+            if ($detectedAgents.Contains('copilot')) {
                 $anyAgent = $true
                 Write-DropinHook (Join @([string]$HOME, '.copilot', 'hooks', 'drift.json'))
             }
-            if (Test-Path -LiteralPath (Join @([string]$HOME, '.cursor'))) {
+            if ($detectedAgents.Contains('cursor')) {
                 $anyAgent = $true
                 Write-DropinHook (Join @([string]$HOME, '.cursor', 'hooks', 'drift.json'))
             }

@@ -1,7 +1,11 @@
 package drift;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Fail-closed UI surface, WCAG 2.2 category contrast, multi-point focus obscuration,
@@ -135,7 +139,7 @@ final class DriftUiChecks {
         if ("clipped_elements".equals(key) || "unintentional_clipped_count".equals(key)) {
             Map<?, ?> clipSub = presMap.get("clipping") instanceof Map<?, ?> cm ? cm : Map.of();
             Object expClipObj = v.containsKey(key) ? v.get(key) : clipSub.get("unintentional_clipped_count");
-            if (!hasSurfaceEvidence && !(expClipObj instanceof Number)) {
+            if (rawEls.isEmpty() && !(expClipObj instanceof Number)) {
                 throw new AssertionError(contract + "." + id + ": unverifiable then." + key + ": empty surface view");
             }
             long clipped = 0L;
@@ -159,12 +163,12 @@ final class DriftUiChecks {
                     ? v.get("horizontal_overflow_px")
                     : presMap.get("horizontal_overflow_px");
             double vpW = v.get("viewportWidth") instanceof Number n ? n.doubleValue() : 0.0;
-            boolean hasVp = vpW > 0.0 || Boolean.TRUE.equals(v.get("surfaceFound")) || Boolean.TRUE.equals(v.get("surface_found"));
+            boolean hasVp = vpW > 0.0 && v.get("documentWidth") instanceof Number;
             if (!hasVp && !(expOvObj instanceof Number)) {
                 throw new AssertionError(contract + "." + id + ": unverifiable then.horizontal_overflow_px: missing viewportWidth");
             }
             double docW = v.get("documentWidth") instanceof Number n ? n.doubleValue() : 0.0;
-            double overflow = (expOvObj instanceof Number n && vpW <= 0.0) ? n.doubleValue() : Math.max(0.0, docW - vpW);
+            double overflow = (expOvObj instanceof Number n && !hasVp) ? n.doubleValue() : Math.max(0.0, docW - vpW);
             double want = expected instanceof Number n ? n.doubleValue() : -1.0;
             if (overflow > want) {
                 throw new AssertionError(contract + "." + id + ": expected horizontal_overflow_px<=" + expected + ", got " + overflow);
@@ -269,6 +273,45 @@ final class DriftUiChecks {
                         if (checkPartial ? cov > 0 : cov == pts.size()) {
                             obscured++;
                         }
+                    } else if (el.get("visualOverlays") instanceof List<?> overlays && !overlays.isEmpty()
+                            && el.get("width") instanceof Number ew && el.get("height") instanceof Number eh
+                            && ew.doubleValue() > 0 && eh.doubleValue() > 0) {
+                        hasFlag = true;
+                        double w = ew.doubleValue();
+                        double h = eh.doubleValue();
+                        double left = el.get("left") instanceof Number n ? n.doubleValue() : (el.get("x") instanceof Number nx ? nx.doubleValue() : 0.0);
+                        double top = el.get("top") instanceof Number n ? n.doubleValue() : (el.get("y") instanceof Number ny ? ny.doubleValue() : 0.0);
+                        double ix = Math.min(2.0, w / 4.0);
+                        double iy = Math.min(2.0, h / 4.0);
+                        double[][] samplePts = {
+                            {left + w / 2.0, top + h / 2.0},
+                            {left + ix, top + iy},
+                            {left + w - ix, top + iy},
+                            {left + ix, top + h - iy},
+                            {left + w - ix, top + h - iy}
+                        };
+                        long cov = 0L;
+                        for (double[] pt : samplePts) {
+                            for (Object ovObj : overlays) {
+                                if (ovObj instanceof Map<?, ?> ov && !isElementHidden(ov)) {
+                                    double op = ov.get("opacity") instanceof Number on ? on.doubleValue() : 1.0;
+                                    if (op <= 0.0) {
+                                        continue;
+                                    }
+                                    double ol = ov.get("left") instanceof Number n ? n.doubleValue() : (ov.get("x") instanceof Number nx ? nx.doubleValue() : 0.0);
+                                    double ot = ov.get("top") instanceof Number n ? n.doubleValue() : (ov.get("y") instanceof Number ny ? ny.doubleValue() : 0.0);
+                                    double ow = ov.get("width") instanceof Number n ? n.doubleValue() : 0.0;
+                                    double oh = ov.get("height") instanceof Number n ? n.doubleValue() : 0.0;
+                                    if (ow > 0.0 && oh > 0.0 && pt[0] >= ol && pt[0] <= ol + ow && pt[1] >= ot && pt[1] <= ot + oh) {
+                                        cov++;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (checkPartial ? cov > 0 : cov == samplePts.length) {
+                            obscured++;
+                        }
                     } else if (el.containsKey("fullyObscured") || el.containsKey("partiallyObscured")
                             || el.containsKey("obscured") || el.containsKey("focusObscured")) {
                         hasFlag = true;
@@ -286,7 +329,7 @@ final class DriftUiChecks {
             Object expFocus = v.containsKey(key)
                     ? v.get(key)
                     : fvSub.get(checkPartial ? "partially_obscured_count" : "fully_obscured_count");
-            if (!hasFlag && !hasSurfaceEvidence && !(expFocus instanceof Number)) {
+            if (!hasFlag && !(expFocus instanceof Number)) {
                 throw new AssertionError(contract + "." + id + ": unverifiable then." + key + ": no measured elements");
             }
             if (!hasFlag && expFocus instanceof Number n) {
@@ -304,7 +347,10 @@ final class DriftUiChecks {
                     ? v.get("unverified_elements")
                     : (v.containsKey("unverifiable_checks")
                             ? v.get("unverifiable_checks")
-                            : mapOr(evSub, "unverifiable_checks", 0L));
+                            : evSub.get("unverifiable_checks"));
+            if (!(rawU instanceof Number) && rawEls.isEmpty()) {
+                throw new AssertionError(contract + "." + id + ": unverifiable then." + key + ": empty surface view");
+            }
             long actU = rawU instanceof Number n ? n.longValue() : 0L;
             long want = expected instanceof Number n ? n.longValue() : -1L;
             if (actU != want) {
@@ -313,5 +359,130 @@ final class DriftUiChecks {
             return true;
         }
         return false;
+    }
+
+    static List<Set<String>> allowedWriteSetsOf(Map<String, Object> view, String caseId) {
+        List<?> swList = (view.get("scope") instanceof Map<?, ?> scopeMap && scopeMap.get("writes") instanceof List<?> sl)
+                ? sl
+                : List.of();
+        List<?> cwList = (view.get("cases") instanceof Map<?, ?> casesMap
+                        && casesMap.get(caseId) instanceof Map<?, ?> cm
+                        && cm.get("writes") instanceof List<?> cl)
+                ? cl
+                : null;
+        List<?> rawAllowed = cwList != null ? cwList : swList;
+        Set<String> allowed = new LinkedHashSet<>();
+        Set<String> allowedBases = new LinkedHashSet<>();
+        for (Object item : rawAllowed) {
+            String w = String.valueOf(item);
+            allowed.add(w);
+            int h = w.indexOf('#');
+            allowedBases.add(h >= 0 ? w.substring(0, h) : w);
+        }
+        return List.of(allowed, allowedBases);
+    }
+
+    static boolean isWriteResourceAllowed(String res, Set<String> allowed, Set<String> allowedBases) {
+        int h = res.indexOf('#');
+        String base = h >= 0 ? res.substring(0, h) : res;
+        return allowed.contains(res) || allowed.contains(base) || (h < 0 && allowedBases.contains(res));
+    }
+
+    static List<String> forbiddenWritesOf(Map<String, Object> view, String caseId) {
+        if (!(view.get("scope") instanceof Map<?, ?> scopeMap)
+                || !(scopeMap.get("writes") instanceof List<?> swList)
+                || !(view.get("cases") instanceof Map<?, ?> casesMap)
+                || !(casesMap.get(caseId) instanceof Map<?, ?> cm)
+                || !(cm.get("writes") instanceof List<?>)) {
+            return List.of();
+        }
+        List<Set<String>> sets = allowedWriteSetsOf(view, caseId);
+        Set<String> allowed = sets.get(0);
+        Set<String> allowedBases = sets.get(1);
+        List<String> out = new ArrayList<>();
+        for (Object item : swList) {
+            String r = String.valueOf(item);
+            if (!isWriteResourceAllowed(r, allowed, allowedBases)) {
+                out.add(r);
+            }
+        }
+        return out;
+    }
+
+    private static void verifySingleFrameObs(String pfx, String res, Object obs, boolean isAmbient) {
+        boolean checked = false;
+        String writeLbl = isAmbient
+                ? "undeclared write on perimeter resource \"" + res + "\""
+                : "frame violation on resource \"" + res + "\"";
+        String snapLbl = isAmbient
+                ? "undeclared state mutation on perimeter resource \"" + res + "\""
+                : "frame state mutation on resource \"" + res + "\"";
+        if (Json.isFiniteNumber(obs) && ((Number) obs).doubleValue() >= 0.0) {
+            checked = true;
+            if (((Number) obs).doubleValue() > 0.0) {
+                throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + obs);
+            }
+        } else if (obs instanceof Map<?, ?> om) {
+            for (String wk : new String[] {"writes", "operations", "events"}) {
+                if (om.containsKey(wk)) {
+                    Object wv = om.get(wk);
+                    if (Json.isFiniteNumber(wv) && ((Number) wv).doubleValue() >= 0.0) {
+                        checked = true;
+                        if (((Number) wv).doubleValue() > 0.0) {
+                            throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + wv);
+                        }
+                    } else if (wv instanceof java.util.Collection<?> col) {
+                        checked = true;
+                        if (!col.isEmpty()) {
+                            throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + col.size());
+                        }
+                    }
+                }
+            }
+            if (om.containsKey("before") && om.containsKey("after")) {
+                checked = true;
+                if (!Json.valuesEqual(om.get("before"), om.get("after"))) {
+                    throw new AssertionError(pfx + ": " + snapLbl + ": before and after snapshots differ");
+                }
+            }
+        }
+        if (!checked) {
+            throw new AssertionError(pfx + ": frame observation for \"" + res + "\" must supply writes/operations/events or before/after snapshots");
+        }
+    }
+
+    static void checkFrame(Drift.Case c, Map<String, Object> frameObs) {
+        Map<String, Object> view = Drift.view(c.contract());
+        List<String> forbidden = forbiddenWritesOf(view, c.id());
+        String pfx = c.contract() + "." + c.id();
+        Set<String> checkedKeys = new LinkedHashSet<>();
+        for (String res : forbidden) {
+            int h = res.indexOf('#');
+            String baseRes = h >= 0 ? res.substring(0, h) : res;
+            checkedKeys.add(res);
+            checkedKeys.add(baseRes);
+            Object obs = frameObs == null ? null : (frameObs.containsKey(res) ? frameObs.get(res) : frameObs.get(baseRes));
+            if (obs == null) {
+                throw new AssertionError(pfx + ": missing frame observation for forbidden write resource \"" + res + "\"");
+            }
+            verifySingleFrameObs(pfx, res, obs, false);
+            Drift.mark(c.contract(), c.id(), "@frame:" + res);
+        }
+        if (frameObs != null) {
+            List<Set<String>> sets = allowedWriteSetsOf(view, c.id());
+            Set<String> allowed = sets.get(0);
+            Set<String> allowedBases = sets.get(1);
+            List<String> sortedKeys = new ArrayList<>();
+            for (Object kObj : frameObs.keySet()) {
+                sortedKeys.add(String.valueOf(kObj));
+            }
+            Collections.sort(sortedKeys);
+            for (String k : sortedKeys) {
+                if (checkedKeys.contains(k) || isWriteResourceAllowed(k, allowed, allowedBases)) {
+                    continue;
+                }
+                verifySingleFrameObs(pfx, k, frameObs.get(k), true);
+            }
+        }
     }
 }

@@ -169,7 +169,10 @@ pub fn check_relational_leaf(
                 .ok_or_else(|| format!("{}: invalid allowed_keys", pred))?;
             let allowed: std::collections::BTreeSet<&str> =
                 arr.iter().filter_map(|v| v.as_str()).collect();
-            for act_k in act_obj.keys() {
+            for (act_k, act_v) in act_obj {
+                if act_k == "_frame" && act_v.as_object().is_some() {
+                    continue;
+                }
                 if !allowed.contains(act_k.as_str()) {
                     return Err(format!(
                         "{}: unexpected key \"{}\" outside allowed_keys",

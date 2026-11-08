@@ -420,31 +420,7 @@ final class DriftVerify {
     }
 
     static List<String> forbiddenWritesOf(Map<String, Object> view, String caseId) {
-        if (!(view.get("scope") instanceof Map<?, ?> scopeMap)
-                || !(scopeMap.get("writes") instanceof List<?> swList)
-                || !(view.get("cases") instanceof Map<?, ?> casesMap)
-                || !(casesMap.get(caseId) instanceof Map<?, ?> cm)
-                || !(cm.get("writes") instanceof List<?> cwList)) {
-            return List.of();
-        }
-        Set<String> allowed = new LinkedHashSet<>();
-        Set<String> allowedBases = new LinkedHashSet<>();
-        for (Object item : cwList) {
-            String w = String.valueOf(item);
-            allowed.add(w);
-            int h = w.indexOf('#');
-            allowedBases.add(h >= 0 ? w.substring(0, h) : w);
-        }
-        List<String> out = new ArrayList<>();
-        for (Object item : swList) {
-            String r = String.valueOf(item);
-            int h = r.indexOf('#');
-            String base = h >= 0 ? r.substring(0, h) : r;
-            if (!allowed.contains(r) && !allowed.contains(base) && !allowedBases.contains(r)) {
-                out.add(r);
-            }
-        }
-        return out;
+        return DriftUiChecks.forbiddenWritesOf(view, caseId);
     }
 
     static boolean allFramesRead(Map<String, Object> view, String caseId, Set<String> seen) {
@@ -457,53 +433,7 @@ final class DriftVerify {
     }
 
     static void checkFrame(Drift.Case c, Map<String, Object> frameObs) {
-        List<String> forbidden = forbiddenWritesOf(Drift.view(c.contract()), c.id());
-        if (forbidden.isEmpty()) {
-            return;
-        }
-        String pfx = c.contract() + "." + c.id();
-        for (String res : forbidden) {
-            int h = res.indexOf('#');
-            String baseRes = h >= 0 ? res.substring(0, h) : res;
-            Object obs = frameObs == null ? null : (frameObs.containsKey(res) ? frameObs.get(res) : frameObs.get(baseRes));
-            if (obs == null) {
-                throw new AssertionError(pfx + ": missing frame observation for forbidden write resource \"" + res + "\"");
-            }
-            boolean checked = false;
-            if (Json.isFiniteNumber(obs) && ((Number) obs).doubleValue() >= 0.0) {
-                checked = true;
-                if (((Number) obs).doubleValue() > 0.0) {
-                    throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + obs);
-                }
-            } else if (obs instanceof Map<?, ?> om) {
-                for (String wk : new String[] {"writes", "operations", "events"}) {
-                    if (om.containsKey(wk)) {
-                        Object wv = om.get(wk);
-                        if (Json.isFiniteNumber(wv) && ((Number) wv).doubleValue() >= 0.0) {
-                            checked = true;
-                            if (((Number) wv).doubleValue() > 0.0) {
-                                throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + wv);
-                            }
-                        } else if (wv instanceof java.util.Collection<?> col) {
-                            checked = true;
-                            if (!col.isEmpty()) {
-                                throw new AssertionError(pfx + ": frame violation on resource \"" + res + "\": expected 0 writes, observed " + col.size());
-                            }
-                        }
-                    }
-                }
-                if (om.containsKey("before") && om.containsKey("after")) {
-                    checked = true;
-                    if (!Json.valuesEqual(om.get("before"), om.get("after"))) {
-                        throw new AssertionError(pfx + ": frame state mutation on resource \"" + res + "\": before and after snapshots differ");
-                    }
-                }
-            }
-            if (!checked) {
-                throw new AssertionError(pfx + ": frame observation for \"" + res + "\" must supply writes/operations/events or before/after snapshots");
-            }
-            Drift.mark(c.contract(), c.id(), "@frame:" + res);
-        }
+        DriftUiChecks.checkFrame(c, frameObs);
     }
 
     static boolean checkObjectKeysAndNotIn(String pfx, String key, Map<?, ?> exp, Object actual) {
@@ -520,7 +450,11 @@ final class DriftVerify {
                     allowedSet.add(String.valueOf(item));
                 }
                 for (Object actKey : actMap.keySet()) {
-                    if (!allowedSet.contains(String.valueOf(actKey))) {
+                    String ak = String.valueOf(actKey);
+                    if ("_frame".equals(ak) && actMap.get(actKey) instanceof Map<?, ?>) {
+                        continue;
+                    }
+                    if (!allowedSet.contains(ak)) {
                         throw new AssertionError(pfx + ": unexpected key \"" + actKey + "\" outside allowed_keys " + allowedList);
                     }
                 }
@@ -578,7 +512,7 @@ final class DriftVerify {
         out.put("capabilities", new ArrayList<>(new java.util.TreeSet<>(CAPABILITIES)));
         out.put("runtime_baseline", "java-25-lts");
         out.put("schema", "drift.bridge-capabilities/1");
-        out.put("version", "0.3.3");
+        out.put("version", "0.4.0");
         return out;
     }
 

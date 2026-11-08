@@ -7,11 +7,11 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { applyMutation, bindUiEnvironment, captureSurfaceView, checkProjectedLeaf, checkViewTable, cloneJson, escapePointer, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, writePointer } from './drift_checks.mjs';
-import { runAdverseChecks, runProjectionChecks, forbiddenWritesOf, verifyCaseFrame } from './drift_security.mjs';
+import { applyMutation, bindUiEnvironment, captureSurfaceView, checkProjectedLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, writePointer } from './drift_checks.mjs';
+import { extractTestOrigin, runAdverseChecks, runProjectionChecks, runSeamBoundsChecks, resolveSeamMutatedThen, forbiddenWritesOf, verifyCaseFrame } from './drift_security.mjs';
 import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
 
-export { bindUiEnvironment, captureSurfaceView, checkViewTable, expandDomain, observeUiSequence };
+export { bindUiEnvironment, captureSurfaceView, checkViewTable, collectPlaywrightSequence, collectUiSequence, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, observeUiSequence };
 
 const VIEWS = new Map();
 const METRICS = new Map();
@@ -79,10 +79,10 @@ function resolveEnv() {
   const key = `${pk}\u0000${raw}`;
   if (envCache && envCache.key === key) return envCache.value;
   const base = {
-    adapter: 'drift.mjs@0.3.3',
+    adapter: 'drift.mjs@0.4.0',
     config: 'default',
     deps: 'none',
-    drift: '0.3.3',
+    drift: '0.4.0',
     policy: 'core@1',
     runner: 'node:test',
     toolchain: `node@${process.versions.node}`,
@@ -131,16 +131,20 @@ function resolveStubContract(idOrRes, caseId, base = {}) {
   const curCtx = CTX_ALS.getStore();
   if (up && curCtx && up.file && idOrRes !== curCtx.contractId) curCtx.recordInput(up.file);
   const v = up ? up.view : loadView(idOrRes);
-  if (curCtx && (idOrRes === curCtx.contractId || (!up && v.id === curCtx.contractId))) {
-    curCtx.recordInput(`.drift/self-stub/${curCtx.contractId}`, 'sha256:self-stub');
-  }
   const resolvedId = resolveStubCaseId(v, idOrRes, caseId, base, err);
+  if (curCtx) {
+    if (idOrRes === curCtx.contractId || (!up && v.id === curCtx.contractId)) {
+      curCtx.recordInput(`.drift/self-stub/${curCtx.contractId}`, 'sha256:self-stub');
+    } else {
+      curCtx.recordInput(`.drift/seam-stub/${v.id || idOrRes}#${resolvedId}`, v.ref || v.digest || 'sha256:seam-stub');
+    }
+  }
   return [v, resolvedId];
 }
 
 export function buildStub(idOrRes, caseId, base = {}) {
   const [v, resolvedId] = resolveStubContract(idOrRes, caseId, base);
-  return synthesizeViewOutput(v, resolvedId, base);
+  return synthesizeViewOutput(v, resolvedId, base, resolveSeamMutatedThen(CTX_ALS.getStore(), v, idOrRes, resolvedId));
 }
 
 export function buildStubVariants(idOrRes, caseId, base = {}) {
@@ -216,6 +220,14 @@ export function shouldRun(contractId, testId, cases = []) {
 
 function discoverEventsDir() {
   if (eventsDirCache !== null) return eventsDirCache;
+  const sd = (process.env.DRIFT_STATE_DIR || '').trim();
+  if (sd) {
+    for (const sub of ['.drift', '.drift-work']) {
+      const c = path.join(sd, sub, 'events');
+      if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return (eventsDirCache = c);
+    }
+    if (!(process.env.DRIFT_RESOLVED || '').trim()) return (eventsDirCache = path.join(sd, '.drift-work', 'events'));
+  }
   let cur = process.cwd();
   let areaRoot = '';
   while (true) {
@@ -394,10 +406,11 @@ export class DriftContext {
     const isW = Boolean(
       m && m.contract === contractId && (m.isWhen === true || (isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/when/`))),
     );
+    const isS = Boolean(m && isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/seam/`));
     this.mutatedWhen = isW
       ? applyMutation(this.view.cases[m.case]?.when || {}, contractId, m.case, m.path, m.after, 'when', m.segments || null)
       : null;
-    this.mutatedThen = (m && m.contract === contractId && !isW)
+    this.mutatedThen = (m && m.contract === contractId && !isW && !isS)
       ? applyMutation(this.view.cases[m.case]?.then || {}, contractId, m.case, m.path, m.after, 'then', m.segments || null)
       : null;
     this.reads = new Map();
@@ -474,7 +487,7 @@ export class DriftContext {
   }
 
   recordInput(filePath, pre = null) {
-    const isSelf = pre === 'sha256:self-stub';
+    const isSelf = pre === 'sha256:self-stub' || (typeof pre === 'string' && String(filePath).startsWith('.drift/seam-stub/'));
     const abs = isSelf ? String(filePath) : path.resolve(process.cwd(), String(filePath));
     const relRaw = isSelf ? abs : path.relative(process.cwd(), abs).split(path.sep).join('/');
     const rel = relRaw && !relRaw.startsWith('..') ? relRaw : String(filePath).split(path.sep).join('/');
@@ -606,6 +619,10 @@ export class DriftContext {
     return runAdverseChecks(this, caseId, harness, checks);
   }
 
+  async checkSeamBounds(caseId, idOrRes, prodCase, checks, base = {}) {
+    return runSeamBoundsChecks(this, caseId, idOrRes, prodCase, checks, base, resolveStubContract, synthesizeViewVariants);
+  }
+
   checkFrame(caseId, frameObs) {
     return verifyCaseFrame(this, caseId, frameObs, true);
   }
@@ -649,27 +666,6 @@ export function resetDriftCache() {
 export function selectFiles(sel = process.env.DRIFT_SELECT || '', rootDir = process.cwd()) {
   const raw = isStr(sel) ? (sel && fs.existsSync(sel) ? readJson(sel) : null) : sel;
   return resolveSelectedFiles(raw, rootDir, fs, path);
-}
-
-function extractTestOrigin(t) {
-  if (!t || typeof t !== 'object') return ['', ''];
-  if (isStr(t.filePath) && t.filePath) {
-    return [t.filePath, isStr(t.fullName) && t.fullName ? t.fullName : String(t.name ?? '')];
-  }
-  if (isStr(t.file) && t.file) {
-    const tp = Array.isArray(t.titlePath)
-      ? t.titlePath.filter((s) => isStr(s) && s && !/\.(?:spec|test|e2e)\.[A-Za-z0-9]+$/u.test(s))
-      : [];
-    const title = tp.length ? tp.join(' > ') : String(t.title ?? t.name ?? '');
-    return [t.file, title];
-  }
-  if (isObj(t.task) && isStr(t.task.file?.filepath)) {
-    return [t.task.file.filepath, String(t.task.name ?? t.name ?? '')];
-  }
-  if (isStr(t.testPath) && t.testPath) {
-    return [t.testPath, String(t.currentTestName ?? t.name ?? '')];
-  }
-  return ['', ''];
 }
 
 export function testIdOf(t) {

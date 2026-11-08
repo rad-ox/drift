@@ -131,6 +131,20 @@ If `drift check` reports a finding, run `drift explain <code>` (for example `dri
 Beyond point scalars, **DRIFT Free** contracts can express rich domain constraints and evidence obligations directly in `.toml`:
 
 ```toml
+drift = "0.2"
+id = "item-get"
+intent = "Return one item by id with bounded latency and formal total safety."
+
+[use]
+profile = "http-json@1"
+
+[scope]
+surface = "GET /items/{id}"
+writes = []
+reads = ["items"]
+indirect = "none"
+code = ["src/main/java/example/items/**"]
+
 [invariants]
 status = { in = [200, 400, 404] }
 body = { forbid_keys = ["password_hash", "internal_token"] }
@@ -140,34 +154,44 @@ at = ["http"]
 writes = []
 when.request = "GET /items/1"
 then.status = 200
-then.body = { allowed_keys = ["id", "name", "price", "tax", "total"], non_empty = true }
+then.name = { non_empty = true }
+then.body = { allowed_keys = ["id", "name", "price", "tax", "total"] }
+then.price = 10.0
+then.tax = 2.0
 then.total = { min = 0.0, max = 10000.0, sum_fields = ["price", "tax"] }
 then.currency = { not_in = ["UNKNOWN"] }
 
 [budgets.p99-latency]
-kind = "request_latency"
-metric = "p99_ns"
-max = 15000000
-warn_ratio = 0.85
-sampling_unit = "request"
+case = "found"
+metric = "request_latency"
+unit = "ns"
+aggregation = "p99"
+op = "le"
+limit = 15000000
+evidence = "statistical"
+min_confidence = 0.95
 enforce = "release"
-
-[requires]
-security = ["sast-clean", "no-secret-leak"]
+workload_ref = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+protocol_ref = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+environment_ref = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+warn_ratio = 0.85
 
 [formal.no-negative-total]
 cases = ["found"]
 verifier = "cbmc"
-property = "total >= price && price >= 0"
+property = "no_negative_total"
 property_kind = "safety"
-min_evidence = "exhausted_within_bounds"
+min_evidence = "bounded_exhaustive"
+linkage = "in_code_harness"
+harness = "src/items.c#proof_no_negative_total"
 enforce = "release"
 ```
 
 - **Relational `then` tables**: constrain numeric intervals (`min`, `max`), lengths (`min_len`, `max_len`, `non_empty`), finite sets (`in`, `not_in`), string affixes (`prefix`, `suffix`, `contains`), raw payload key allow/deny lists (`allowed_keys`, `forbid_keys`), cross-field comparisons (`le_field`, `ge_field`, `eq_field`), and affine sums (`sum_fields`).
 - **`[invariants]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`).
 - **Performance (`[budgets.<id>]`), Security (`[requires].security`) & Formal (`[formal.<id>]`) obligations**: pass `--measurements bench.jsonl` (supporting `request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, and `work_units`), `*.security.json` receipts, and `*.formal.json` / `*.model.json` receipts (`tlc`, `cbmc`, `alloy`, `spin`, Kani) to `drift prove`, `drift gate`, and `verifier/drift_verify.py`.
-- **Domain `[concepts]`, Migration `[cutover]` & UI Surface Sequences**: define context-qualified domain `[concepts]` in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, `@concept` recall), enforce legacy cutover parity (`[cutover]`, `*.parity.json` `drift.parity-receipt/1`, and `*.migration.json` `drift.migration-receipt/1`) or triage production signals (`drift case add --from-signal`), and verify multi-step UI surfaces (`drift.ui-observation/1` via `checkUiSequence` / `check_ui_sequence` and Web, Compose, or Windows UIA adapters).
+- **Domain `[concepts]`, Migration `[cutover]` & UI Surface Sequences**: define context-qualified domain `[concepts]` in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, `@concept` recall), enforce legacy cutover parity (`[cutover]`, `*.parity.json` `drift.parity-receipt/1`, and `*.migration.json` `drift.migration-receipt/1`) or triage production signals (`drift case add --from-signal`), and verify multi-step UI surfaces (`drift.ui-observation/1` via `collectPlaywrightSequence` / `observeUiSequence`, reusable `async-action-feedback@1` and `wizard-form@1` recovery profiles, `evaluateScenarioMatrix`, and Web, Compose, or Windows UIA adapters).
+- **Perimeter Seam Governance, Shadow Mode & Federated Composition**: enforce ambient world-frame traps (`_frame` with `allowed_keys` and `checkFrame`), track `.drift/seam-stub/` producer provenance in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), probe 2-skeleton neighbor extremes (`checkSeamBounds` / `check_seam_bounds`) and incoming-seam faults (`prove.seam_mutants`), run DRIFT in external **Shadow Mode** (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, read-only subject tree with `GIT_OPTIONAL_LOCKS=0`, and the 2-phase JUnit XML adapter `verifier/drift_shadow_junit.py`), and compose multi-repository rollouts via `drift.composition-manifest/1` and bidirectional `drift.boundary-bundle/1` (`offers`/`requires`).
 
 ---
 
@@ -188,7 +212,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.3.3</version>
+    <version>0.4.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -198,7 +222,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.3.3</version>
+      <version>0.4.0</version>
       <executions>
         <execution>
           <goals>
@@ -237,7 +261,7 @@ In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` from 
 // build.sbt
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -368,17 +392,18 @@ DRIFT_RESOLVED=.drift-work/resolved DRIFT_EVENTS=.drift-work/events v -path "bri
 drift gate .drift/contracts --events .drift-work/events
 ```
 
-### Legacy & Monolith Carve-Out Section: Java 6+ / JUnit 4 (`bridges/legacy/junit4/DriftJUnit4.java`)
+### Legacy & Monolith Carve-Out Section: Java 6+ / JUnit 4 (`DriftJUnit4.java`), PHP 8.2+ (`Drift.php`) & COBOL 85 (`drift_cobol.py`)
 
-While the primary bridges target the latest **LTS/stable** runtimes (`drift-junit` on Java 25 LTS / Scala 3.9 LTS / JUnit 5 Platform, `drift.mjs` on Node.js 24 LTS, `drift.py` on Python 3.14, `drift_rust` on Rust Edition 2024, `drift_v` on V 0.5.2), legacy monoliths on Java 6–8 and JUnit 4 use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`integrations/jvm/junit4/DriftJUnit4.java`):
-- Attach `DriftJUnit4.Listener` to JUnit 4 `RunListener` to emit `.meta.json` inventories and `bound` events (`read` omitted) with zero JUnit 5 dependencies.
-- Call `DriftJUnit4.verify(contract, caseId, observations, frames)` and `DriftJUnit4.replayCounterexamples(...)` inside extracted slice tests to verify postconditions, forbidden write frames, and `*.cex.json` production counterexamples, promoting the case to `verified`.
+While the primary bridges target the latest **LTS/stable** runtimes (`drift-junit` on Java 25 LTS / Scala 3.9 LTS / JUnit 5 Platform, `drift.mjs` on Node.js 24 LTS, `drift.py` on Python 3.14, `drift_rust` on Rust Edition 2024, `drift_v` on V 0.5.2), legacy monoliths and brownfield carve-outs use dedicated zero-dependency bridges:
+- **Java 6–8 / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: attach `DriftJUnit4.Listener` to JUnit 4 `RunListener` to emit `.meta.json` inventories and `bound` events (`read` omitted) with zero JUnit 5 dependencies, and call `DriftJUnit4.verify(contract, caseId, observations, frames)` and `DriftJUnit4.replayCounterexamples(...)` inside extracted slice tests.
+- **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: verify RFC 6901 JSON Pointer projections, relational/negative clauses (`forbid_keys`, `not_in`), case write frames (`checkFrame`), and `*.cex.json` counterexample fixtures, writing atomic `.events.jsonl` and `.meta.json` sidecars.
+- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: parse COBOL `PIC` copybook layouts (`--copybook`), marshal `when` JSON into fixed-width records (`PIC X`, `PIC 9`, `PIC S9...V99`), bind `.cbl`/`.cpy` inputs in `.meta.json`, and emit `drift.parity-receipt/1` cutover receipts comparing mainframe batch outputs against candidate microservices.
 
 ---
 
 ## Level 2: Incremental Selection, Blast Radius & Spec/Trace Scaffolding (`Pro`)
 
-As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
+As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, PHP, COBOL, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
 
 ```bash
 # List only the test files affected by modified source paths
@@ -393,9 +418,11 @@ drift recall query "@tree" .drift
 drift recall query "item lookup #getItem /800t" .drift
 drift plan .drift/contracts --pack ready
 
-# Scaffold contracts from OpenAPI 3.x (including 3.2 QUERY), AsyncAPI, or runtime observe() traces
-drift new .drift/contracts/item-query.toml --openapi openapi.json --operation "QUERY /items" --scaffold-profile
-drift new .drift/contracts/item-events.toml --asyncapi asyncapi.json --operation "publish items.created"
+# Scaffold profiles from OpenAPI 3.x (including 3.2 QUERY) or AsyncAPI, and contracts from WSDL, COBOL copybooks, or runtime observe() traces
+drift new .drift/profiles/items-api@1.toml --openapi openapi.json
+drift new .drift/profiles/items-events@1.toml --asyncapi asyncapi.json
+drift new .drift/contracts/item-soap.toml --wsdl items.wsdl --profile http-json@1
+drift new .drift/contracts/item-batch.toml --copybook ORDREC.cpy --profile batch@1
 drift new .drift/contracts/item-legacy.toml --from-upstream .drift-work/observed.jsonl --profile http-json@1
 drift export boundary .drift/contracts --out target/drift/boundary.json
 ```
@@ -411,7 +438,9 @@ For critical services, add a `[policy]` section to `.drift/config.toml` and re-a
 ```toml
 drift = "0.2"
 kind = "config"
-area = "catalog-service"
+
+[area]
+owner = "alice"
 
 [policy]
 pack = "core@1"

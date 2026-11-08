@@ -1,6 +1,7 @@
-// Cross-platform UI surface, interaction sequence, and adapter normalization for DRIFT (D282-D284).
+// Cross-platform UI surface, interaction sequence, and adapter normalization for DRIFT.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { buildComposePayload, buildUiaPayload, deriveObservedCapabilities, evaluateTaskRecovery, isPointCoveredByVisualOverlays, optAdapter } from './drift_ui_recovery.mjs';
 
 const ALLOWED_DRIFT_ENV_KEYS = new Set(['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']);
 
@@ -30,8 +31,11 @@ const PREDICATE_CAPABILITY = {
   unexpected_focus_steals: 'input_focus',
 };
 
+const DEFAULT_CAPS = ['geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state'];
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const finOrNull = (v) => (isFinNum(v) ? Number(v) : null);
+const boolOrNull = (v, fb) => (typeof v === 'boolean' ? v : fb);
 
 export function isElementHidden(el) {
   if (!isObj(el)) return false;
@@ -98,7 +102,9 @@ export function evaluateFocusObscuration(el, ownerDoc) {
   const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : el.rect;
   const w = Number(el.width ?? rect?.width ?? el.clientWidth ?? 0);
   const h = Number(el.height ?? rect?.height ?? el.clientHeight ?? 0);
-  if (rect && w > 0 && h > 0 && ownerDoc && typeof ownerDoc.elementFromPoint === 'function') {
+  const overlays = Array.isArray(el.visualOverlays) ? el.visualOverlays : (Array.isArray(ownerDoc?.visualOverlays) ? ownerDoc.visualOverlays : []);
+  const hasHitFn = Boolean(ownerDoc && typeof ownerDoc.elementFromPoint === 'function');
+  if (rect && w > 0 && h > 0 && (hasHitFn || overlays.length > 0)) {
     const left = Number(rect.left ?? rect.x ?? 0);
     const top = Number(rect.top ?? rect.y ?? 0);
     const insetX = Math.min(2, w / 4);
@@ -112,13 +118,14 @@ export function evaluateFocusObscuration(el, ownerDoc) {
     ];
     let covered = 0;
     for (const [px, py] of pts) {
-      const hitEl = ownerDoc.elementFromPoint(px, py);
-      if (
+      const hitEl = hasHitFn ? ownerDoc.elementFromPoint(px, py) : null;
+      const hitCovered = Boolean(
         hitEl
         && hitEl !== el
         && (typeof el.contains !== 'function' || !el.contains(hitEl))
-        && (typeof hitEl.contains !== 'function' || !hitEl.contains(el))
-      ) {
+        && (typeof hitEl.contains !== 'function' || !hitEl.contains(el)),
+      );
+      if (hitCovered || isPointCoveredByVisualOverlays(px, py, el, overlays)) {
         covered += 1;
       }
     }
@@ -221,18 +228,18 @@ export function deriveNonColorCue(node) {
 
 export function observeUiSequence(spec) {
   const s = isObj(spec) ? spec : {};
-  const surfaceFound = s.surface_found !== false && s.surfaceFound !== false;
-  const adapterName = String(s.adapter?.name ?? s.adapter ?? 'playwright-web');
-  const capabilities = Array.isArray(s.adapter?.capabilities ?? s.capabilities)
-    ? [...(s.adapter?.capabilities ?? s.capabilities)]
-    : ['geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state'];
-
   const rawRoles = isObj(s.roles) ? s.roles : {};
+  const elements = Array.isArray(s.elements) ? s.elements : [];
+  const hasExplicitMissing = s.surface_found === false || s.surfaceFound === false;
+  const surfaceFound = !hasExplicitMissing && (Object.keys(rawRoles).length > 0 || elements.length > 0);
+  const adapterName = String(s.adapter?.name ?? s.adapter ?? 'playwright-web');
+  const explicitCaps = Array.isArray(s.adapter?.capabilities ?? s.capabilities)
+    ? [...(s.adapter?.capabilities ?? s.capabilities)]
+    : null;
+
   const roles = {};
   let unverifiableChecks = Number(s.evidence?.unverifiable_checks ?? s.unverifiableChecks ?? 0);
-  const unverifiableReasons = Array.isArray(s.evidence?.unverifiable_reasons)
-    ? [...s.evidence.unverifiable_reasons]
-    : [];
+  const unverifiableReasons = Array.isArray(s.evidence?.unverifiable_reasons) ? [...s.evidence.unverifiable_reasons] : [];
   let measuredChecks = 0;
   let notApplicableChecks = 0;
 
@@ -257,7 +264,7 @@ export function observeUiSequence(spec) {
       const geom = isObj(r.geometry) ? r.geometry : null;
       const w = Number(geom?.width ?? r.width ?? -1);
       const h = Number(geom?.height ?? r.height ?? -1);
-      if ((geom || 'width' in r || 'height' in r || expectedPresence === 'visible') && (w <= 0 || h <= 0)) {
+      if (!(w > 0 && h > 0)) {
         r.status = 'unverifiable';
         unverifiableChecks += 1;
         unverifiableReasons.push(`unverifiable_geometry:${roleId}`);
@@ -277,50 +284,53 @@ export function observeUiSequence(spec) {
   const transRaw = isObj(s.sequence?.transition ?? s.transition) ? { ...(s.sequence?.transition ?? s.transition) } : {};
   const afterRaw = isObj(s.sequence?.after ?? s.after) ? { ...(s.sequence?.after ?? s.after) } : {};
 
-  const configuredMs = Number(transRaw.configured_duration_ms ?? transRaw.configuredDurationMs ?? 0);
-  const observedMs = Number(transRaw.observed_duration_ms ?? transRaw.observedDurationMs ?? configuredMs);
-  const focusTrace = Array.isArray(transRaw.focus_trace ?? transRaw.focusTrace)
-    ? (transRaw.focus_trace ?? transRaw.focusTrace)
-    : [];
+  const configuredMs = finOrNull(transRaw.configured_duration_ms ?? transRaw.configuredDurationMs);
+  const observedMs = finOrNull(transRaw.observed_duration_ms ?? transRaw.observedDurationMs);
+  const rawFocusTrace = transRaw.focus_trace ?? transRaw.focusTrace;
+  const focusTrace = Array.isArray(rawFocusTrace) ? rawFocusTrace : [];
 
   const noticeRole = roles.notice;
   const detailRole = roles.detail;
   const summaryRole = roles.summary;
   const noticeSem = String(noticeRole?.semantic_role ?? noticeRole?.role ?? '').toLowerCase();
 
-  let unexpectedFocusSteals = Number(transRaw.unexpected_focus_steals ?? transRaw.unexpectedFocusSteals ?? 0);
-  if (noticeRole?.presence === 'visible' && noticeSem === 'alert') {
-    if (focusTrace.includes('notice') || afterRaw.input_focus_role === 'notice') {
-      unexpectedFocusSteals += 1;
-    }
+  const afterFocusRole = String(afterRaw.input_focus_role ?? afterRaw.inputFocusRole ?? '');
+  const beforeFocusRole = String(before.input_focus_role ?? before.inputFocusRole ?? '');
+  const rawSteals = transRaw.unexpected_focus_steals ?? transRaw.unexpectedFocusSteals;
+  const hasFocusObs = isFinNum(rawSteals) || Array.isArray(rawFocusTrace) || Boolean(afterFocusRole || beforeFocusRole);
+  let unexpectedFocusSteals = isFinNum(rawSteals) ? Number(rawSteals) : (hasFocusObs ? 0 : null);
+  if (noticeRole?.presence === 'visible' && noticeSem === 'alert' && (focusTrace.includes('notice') || afterFocusRole === 'notice')) {
+    unexpectedFocusSteals = (unexpectedFocusSteals ?? 0) + 1;
   }
 
   const selectedBefore = before.selected_entity_id ?? before.selectedEntityId;
-  const selectedAfter = afterRaw.selected_entity_id ?? afterRaw.selectedEntityId ?? summaryRole?.selected_entity_id ?? selectedBefore;
-  const selectionPreserved = afterRaw.selection_preserved !== undefined
-    ? Boolean(afterRaw.selection_preserved)
-    : (selectedBefore !== undefined ? selectedBefore === selectedAfter : true);
+  const selectedAfter = afterRaw.selected_entity_id ?? afterRaw.selectedEntityId ?? summaryRole?.selected_entity_id;
+  const selectionPreserved = boolOrNull(
+    afterRaw.selection_preserved,
+    selectedBefore !== undefined && selectedAfter !== undefined ? selectedBefore === selectedAfter : null,
+  );
 
   const dirtyBefore = isObj(before.dirty_inputs ?? before.dirtyInputs) ? (before.dirty_inputs ?? before.dirtyInputs) : null;
-  const dirtyAfter = isObj(afterRaw.dirty_inputs ?? afterRaw.dirtyInputs) ? (afterRaw.dirty_inputs ?? afterRaw.dirtyInputs) : dirtyBefore;
-  const dirtyInputsPreserved = afterRaw.dirty_inputs_preserved !== undefined
-    ? Boolean(afterRaw.dirty_inputs_preserved)
-    : (dirtyBefore ? JSON.stringify(dirtyBefore) === JSON.stringify(dirtyAfter) : true);
+  const dirtyAfter = isObj(afterRaw.dirty_inputs ?? afterRaw.dirtyInputs) ? (afterRaw.dirty_inputs ?? afterRaw.dirtyInputs) : null;
+  const dirtyInputsPreserved = boolOrNull(
+    afterRaw.dirty_inputs_preserved,
+    dirtyBefore && dirtyAfter ? JSON.stringify(dirtyBefore) === JSON.stringify(dirtyAfter) : null,
+  );
 
   const anchorBefore = before.scroll_anchor_id ?? before.scrollAnchorId;
-  const anchorAfter = afterRaw.scroll_anchor_id ?? afterRaw.scrollAnchorId ?? anchorBefore;
+  const anchorAfter = afterRaw.scroll_anchor_id ?? afterRaw.scrollAnchorId;
   const scrollDelta = Number(afterRaw.scroll_offset_delta ?? 0);
-  const scrollContextPreserved = afterRaw.scroll_context_preserved !== undefined
-    ? Boolean(afterRaw.scroll_context_preserved)
-    : (anchorBefore !== undefined ? (anchorBefore === anchorAfter && Math.abs(scrollDelta) <= 2) : true);
+  const scrollContextPreserved = boolOrNull(
+    afterRaw.scroll_context_preserved,
+    anchorBefore !== undefined && anchorAfter !== undefined ? (anchorBefore === anchorAfter && Math.abs(scrollDelta) <= 2) : null,
+  );
 
-  const afterFocusRole = String(afterRaw.input_focus_role ?? afterRaw.inputFocusRole ?? '');
-  const beforeFocusRole = String(before.input_focus_role ?? before.inputFocusRole ?? '');
-  const triggerRestored = afterRaw.trigger_restored !== undefined
-    ? Boolean(afterRaw.trigger_restored)
-    : Boolean(beforeFocusRole && afterFocusRole === beforeFocusRole);
+  const triggerRestored = boolOrNull(
+    afterRaw.trigger_restored,
+    beforeFocusRole && afterFocusRole ? afterFocusRole === beforeFocusRole : null,
+  );
 
-  let noticePrecedesDetail = Boolean(afterRaw.notice_precedes_detail ?? true);
+  let noticePrecedesDetail = boolOrNull(afterRaw.notice_precedes_detail, null);
   if (noticeRole?.presence === 'visible' && detailRole?.presence === 'visible') {
     const nRank = noticeRole.geometry?.reading_order_rank;
     const dRank = detailRole.geometry?.reading_order_rank;
@@ -332,20 +342,22 @@ export function observeUiSequence(spec) {
     }
   }
 
-  const detailMatchesSelection = afterRaw.detail_matches_selection !== undefined
-    ? Boolean(afterRaw.detail_matches_selection)
-    : (detailRole?.presence === 'visible' && detailRole.bound_entity_id !== undefined && selectedAfter !== undefined
+  const detailMatchesSelection = boolOrNull(
+    afterRaw.detail_matches_selection,
+    detailRole?.presence === 'visible' && detailRole.bound_entity_id !== undefined && selectedAfter !== undefined
       ? detailRole.bound_entity_id === selectedAfter
-      : true);
+      : null,
+  );
 
-  const elements = Array.isArray(s.elements) ? s.elements : [];
   const contrastSummary = evaluateWcag22Contrast(elements);
-  let unintentionalClipped = Number(s.presentation?.clipping?.unintentional_clipped_count ?? 0);
-  let scrollableContainers = Number(s.presentation?.clipping?.scrollable_containers_count ?? 0);
-  let fullyObscured = Number(s.presentation?.focus_visibility?.fully_obscured_count ?? 0);
-  let partiallyObscured = Number(s.presentation?.focus_visibility?.partially_obscured_count ?? 0);
+  const rawClip = s.presentation?.clipping;
+  let unintentionalClipped = finOrNull(rawClip?.unintentional_clipped_count);
+  let scrollableContainers = finOrNull(rawClip?.scrollable_containers_count);
+  const rawFocusVis = s.presentation?.focus_visibility;
+  let fullyObscured = finOrNull(rawFocusVis?.fully_obscured_count);
+  let partiallyObscured = finOrNull(rawFocusVis?.partially_obscured_count);
 
-  if (elements.length > 0 && !s.presentation?.clipping) {
+  if (elements.length > 0 && unintentionalClipped === null && scrollableContainers === null) {
     unintentionalClipped = 0;
     scrollableContainers = 0;
     for (const el of elements) {
@@ -354,45 +366,51 @@ export function observeUiSequence(spec) {
       if (cRes.scrollable) scrollableContainers += 1;
     }
   }
-  if (elements.length > 0 && !s.presentation?.focus_visibility) {
-    fullyObscured = 0;
-    partiallyObscured = 0;
+  if (elements.length > 0 && fullyObscured === null && partiallyObscured === null) {
+    let fFull = 0;
+    let fPart = 0;
+    let mFocus = 0;
     for (const el of elements) {
       const fRes = evaluateFocusObscuration(el, null);
-      if (fRes.fullyObscured) fullyObscured += 1;
-      if (fRes.partiallyObscured) partiallyObscured += 1;
+      if (fRes.status === 'measured') {
+        mFocus += 1;
+        if (fRes.fullyObscured) fFull += 1;
+        if (fRes.partiallyObscured) fPart += 1;
+      }
+    }
+    if (mFocus > 0) {
+      fullyObscured = fFull;
+      partiallyObscured = fPart;
     }
   }
 
-  const contrastUnverifiable = Number(
-    s.presentation?.contrast_wcag22?.unverifiable_count ?? contrastSummary.unverifiableCount,
-  );
+  const contrastUnverifiable = Number(s.presentation?.contrast_wcag22?.unverifiable_count ?? contrastSummary.unverifiableCount);
   if (contrastUnverifiable > 0) {
     unverifiableChecks += contrastUnverifiable;
     unverifiableReasons.push(`contrast_unverifiable:${contrastUnverifiable}`);
   }
+  if (surfaceFound && measuredChecks === 0 && contrastSummary.measuredCount === 0) {
+    unverifiableChecks += 1;
+    unverifiableReasons.push('ui.unmeasured_surface');
+  }
 
+  const hasVp = isFinNum(s.documentWidth) && isFinNum(s.viewportWidth) && Number(s.viewportWidth) > 0;
+  const rawContrast = s.presentation?.contrast_wcag22;
   const presentation = {
-    horizontal_overflow_px: Number(
-      s.presentation?.horizontal_overflow_px
-      ?? Math.max(0, Number(s.documentWidth ?? 0) - Number(s.viewportWidth ?? 0)),
-    ),
-    clipping: {
-      unintentional_clipped_count: unintentionalClipped,
-      scrollable_containers_count: scrollableContainers,
-    },
-    focus_visibility: {
-      fully_obscured_count: fullyObscured,
-      partially_obscured_count: partiallyObscured,
-    },
+    horizontal_overflow_px: finOrNull(s.presentation?.horizontal_overflow_px) ?? (hasVp ? Math.max(0, Number(s.documentWidth) - Number(s.viewportWidth)) : null),
+    clipping: { unintentional_clipped_count: unintentionalClipped, scrollable_containers_count: scrollableContainers },
+    focus_visibility: { fully_obscured_count: fullyObscured, partially_obscured_count: partiallyObscured },
     contrast_wcag22: {
-      text_normal_min: s.presentation?.contrast_wcag22?.text_normal_min ?? contrastSummary.textNormalMin ?? 7.0,
-      text_large_min: s.presentation?.contrast_wcag22?.text_large_min ?? contrastSummary.textLargeMin ?? 7.0,
-      ui_component_min: s.presentation?.contrast_wcag22?.ui_component_min ?? contrastSummary.uiComponentMin ?? 4.5,
-      violations_count: Number(s.presentation?.contrast_wcag22?.violations_count ?? contrastSummary.violationsCount),
+      text_normal_min: finOrNull(rawContrast?.text_normal_min) ?? contrastSummary.textNormalMin,
+      text_large_min: finOrNull(rawContrast?.text_large_min) ?? contrastSummary.textLargeMin,
+      ui_component_min: finOrNull(rawContrast?.ui_component_min) ?? contrastSummary.uiComponentMin,
+      violations_count: finOrNull(rawContrast?.violations_count) ?? (contrastSummary.measuredCount > 0 ? contrastSummary.violationsCount : null),
       unverifiable_count: contrastUnverifiable,
     },
   };
+
+  const recovery = evaluateTaskRecovery(s, before, afterRaw);
+  const capabilities = explicitCaps ?? deriveObservedCapabilities(s, rawRoles, elements, before, transRaw, afterRaw, contrastSummary);
 
   return {
     schema: 'drift.ui-observation/1',
@@ -427,6 +445,7 @@ export function observeUiSequence(spec) {
         trigger_restored: triggerRestored,
         notice_precedes_detail: noticePrecedesDetail,
         detail_matches_selection: detailMatchesSelection,
+        ...recovery,
       },
     },
     presentation,
@@ -474,142 +493,25 @@ export function bindUiEnvironment(ctx, manifestPath, rawEnvOverride) {
 }
 
 export function adaptPlaywrightSurface(raw) {
-  return observeUiSequence({
-    ...raw,
-    adapter: {
-      name: raw?.adapter?.name ?? 'playwright-web',
-      capabilities: raw?.adapter?.capabilities ?? [
-        'geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state',
-      ],
-    },
-  });
+  return observeUiSequence({ ...raw, adapter: optAdapter(raw, 'playwright-web') });
 }
 
 export function adaptComposeSemantics(raw) {
-  const nodes = isObj(raw?.nodes) ? raw.nodes : {};
-  const roles = {};
-  for (const [roleId, n] of Object.entries(nodes)) {
-    if (!isObj(n)) continue;
-    const visible = n.visible !== false && n.displayed !== false;
-    const bounds = isObj(n.boundsInRoot ?? n.bounds) ? (n.boundsInRoot ?? n.bounds) : {};
-    const liveMode = String(n.liveRegion ?? '').toLowerCase();
-    const semRole = liveMode === 'assertive' || n.isDialog === true
-      ? (n.isModal === true ? 'alertdialog' : 'alert')
-      : String(n.role ?? 'region').toLowerCase();
-    roles[roleId] = {
-      presence: visible ? (n.presence ?? 'visible') : (n.presence ?? 'hidden'),
-      semantic_role: semRole,
-      ...(n.selectedEntityId !== undefined ? { selected_entity_id: n.selectedEntityId } : {}),
-      ...(n.boundEntityId !== undefined ? { bound_entity_id: n.boundEntityId } : {}),
-      ...(n.containerMode !== undefined ? { container_mode: n.containerMode } : {}),
-      actions: Array.isArray(n.actions) ? n.actions : [],
-      content_cues: {
-        has_visible_text: Boolean(visible && String(n.text ?? '').trim().length > 0),
-        has_graphic_icon: Boolean(visible && (n.hasIcon === true || n.contentDescription)),
-        has_semantic_role: semRole === 'alert' || semRole === 'alertdialog' || semRole === 'status',
-      },
-      geometry: {
-        unit: 'dp',
-        x: Number(bounds.left ?? bounds.x ?? 0),
-        y: Number(bounds.top ?? bounds.y ?? 0),
-        width: Number(bounds.width ?? 0),
-        height: Number(bounds.height ?? 0),
-        reading_order_rank: Number(n.traversalIndex ?? n.readingOrderRank ?? 0),
-      },
-    };
-  }
-  const elements = Object.values(nodes).filter(isObj).map((n) => {
-    const bounds = isObj(n.boundsInRoot ?? n.bounds) ? (n.boundsInRoot ?? n.bounds) : {};
-    const hasScrollRange = Boolean(n.verticalScrollAxisRange || n.horizontalScrollAxisRange || n.scrollable);
-    const hasOverflow = Boolean(n.hasVisualOverflow);
-    return {
-      presence: n.visible === false ? 'hidden' : 'visible',
-      width: Number(bounds.width ?? 48),
-      height: Number(bounds.height ?? 48),
-      scrollWidth: hasOverflow && !hasScrollRange ? Number(bounds.width ?? 48) + 16 : Number(bounds.width ?? 48),
-      clientWidth: Number(bounds.width ?? 48),
-      scrollHeight: hasOverflow ? Number(bounds.height ?? 48) + 16 : Number(bounds.height ?? 48),
-      clientHeight: Number(bounds.height ?? 48),
-      scrollable: hasScrollRange,
-      focusable: Boolean(n.focused !== undefined || n.focusable),
-      obscured: Boolean(n.obscured ?? false),
-      ...(isFinNum(n.contrastRatio) ? { contrastRatio: n.contrastRatio, contrastCategory: n.contrastCategory ?? 'text_normal' } : {}),
-    };
-  });
-  return observeUiSequence({
-    surface_found: raw?.surfaceFound !== false,
-    adapter: {
-      name: raw?.adapter?.name ?? 'compose-semantics',
-      capabilities: raw?.adapter?.capabilities ?? [
-        'geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state',
-      ],
-    },
-    environment_ref: raw?.environment_ref,
-    roles,
-    before: raw?.before,
-    action: raw?.action,
-    transition: raw?.transition,
-    after: raw?.after,
-    elements,
-    documentWidth: Number(raw?.viewportWidthDp ?? 412),
-    viewportWidth: Number(raw?.viewportWidthDp ?? 412),
-  });
+  return observeUiSequence(buildComposePayload(raw));
 }
 
 export function adaptUiaSnapshot(raw) {
-  const controls = isObj(raw?.elements ?? raw?.controls) ? (raw.elements ?? raw.controls) : {};
-  const roles = {};
-  for (const [roleId, c] of Object.entries(controls)) {
-    if (!isObj(c)) continue;
-    const isOffscreen = Boolean(c.IsOffscreen === true || c.presence === 'hidden' || c.presence === 'absent');
-    const rect = isObj(c.BoundingRectangle ?? c.rect) ? (c.BoundingRectangle ?? c.rect) : {};
-    const ctrlType = String(c.ControlType ?? c.semantic_role ?? 'Pane');
-    const semRole = ctrlType === 'Window.AlertDialog' || c.isModal === true
-      ? 'alertdialog'
-      : (ctrlType === 'StatusBar' || ctrlType === 'Alert' ? 'alert' : 'region');
-    roles[roleId] = {
-      presence: isOffscreen ? (c.presence ?? 'hidden') : 'visible',
-      semantic_role: semRole,
-      ...(c.selectedEntityId !== undefined ? { selected_entity_id: c.selectedEntityId } : {}),
-      ...(c.boundEntityId !== undefined ? { bound_entity_id: c.boundEntityId } : {}),
-      ...(c.containerMode !== undefined ? { container_mode: c.containerMode } : {}),
-      actions: Array.isArray(c.patterns) ? c.patterns : [],
-      content_cues: {
-        has_visible_text: Boolean(!isOffscreen && String(c.Name ?? c.text ?? '').trim().length > 0),
-        has_graphic_icon: Boolean(!isOffscreen && c.hasIcon === true),
-        has_semantic_role: semRole === 'alert' || semRole === 'alertdialog',
-      },
-      geometry: {
-        unit: 'dip',
-        x: Number(rect.x ?? rect.left ?? 0),
-        y: Number(rect.y ?? rect.top ?? 0),
-        width: Number(rect.width ?? 0),
-        height: Number(rect.height ?? 0),
-        reading_order_rank: Number(c.readingOrderRank ?? 0),
-      },
-    };
-  }
-  return observeUiSequence({
-    surface_found: raw?.surfaceFound !== false,
-    adapter: {
-      name: raw?.adapter?.name ?? 'windows-uia',
-      capabilities: raw?.adapter?.capabilities ?? [
-        'geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state',
-      ],
-    },
-    environment_ref: raw?.environment_ref,
-    roles,
-    before: raw?.before,
-    action: raw?.action,
-    transition: raw?.transition,
-    after: raw?.after,
-    documentWidth: Number(raw?.windowWidthDip ?? 1280),
-    viewportWidth: Number(raw?.windowWidthDip ?? 1280),
-  });
+  return observeUiSequence(buildUiaPayload(raw));
 }
 
 export function checkRequiredAdapterCapability(contractId, caseId, key, view, proj) {
   const v = isObj(view) ? view : {};
+  if (v.collector?.settle_timed_out === true || (Array.isArray(v.evidence?.unverifiable_reasons) && v.evidence.unverifiable_reasons.includes('ui.settle_timeout'))) {
+    const err = new Error(`${contractId}.${caseId}: ui.settle_timeout`);
+    err.name = 'AssertionError';
+    err.code = 'ERR_ASSERTION';
+    throw err;
+  }
   const caps = v.adapter?.capabilities;
   if (!Array.isArray(caps)) return;
   const ptr = isObj(proj) && typeof proj[key] === 'string' ? proj[key] : '';

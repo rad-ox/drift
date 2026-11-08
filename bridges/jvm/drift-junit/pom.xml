@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.3.3</version>
+  <version>0.4.0</version>
   <name>DRIFT JUnit Platform bridge</name>
   <description>The JUnit Platform bridge of DRIFT: tagged tests read their expected values from the contract and write proof events.</description>
 

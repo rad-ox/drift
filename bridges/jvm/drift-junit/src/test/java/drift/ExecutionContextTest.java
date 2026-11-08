@@ -46,5 +46,15 @@ class ExecutionContextTest {
                 Map.<String, Object>of("version", 1L, "pack_ref", "dr1:x"))) {
             assertThrows(IllegalStateException.class, () -> ExecutionContext.checkHead(SIDECAR, head));
         }
+        Drift.Case typed = new Drift.Case("bridge", "typed",
+                Map.of("safe", Boolean.TRUE, "limit", 10L),
+                Map.of("ok", Boolean.TRUE, "count", 42L, "items", List.of("a"), "meta", Map.of("k", "v")));
+        assertEquals(Boolean.TRUE, typed.whenBoolean("safe"));
+        assertEquals(Boolean.TRUE, typed.thenBoolean("ok"));
+        assertEquals(10, typed.whenInt("limit"));
+        assertEquals(42L, typed.thenLong("count"));
+        assertEquals(List.of("a"), typed.thenList("items"));
+        assertEquals(Map.of("k", "v"), typed.thenMap("meta"));
+        assertEquals("java-25-lts", DriftVerify.bridgeCapabilities().get("runtime_baseline"));
     }
 }

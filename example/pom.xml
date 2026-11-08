@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift.examples</groupId>
   <artifactId>items</artifactId>
-  <version>0.3.3</version>
+  <version>0.4.0</version>
   <name>DRIFT synthetic items service</name>
 
   <properties>
@@ -19,7 +19,7 @@
     <dependency>
       <groupId>drift</groupId>
       <artifactId>drift-junit</artifactId>
-      <version>0.3.3</version>
+      <version>0.4.0</version>
       <scope>test</scope>
     </dependency>
     <dependency>

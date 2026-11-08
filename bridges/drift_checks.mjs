@@ -6,12 +6,18 @@ import {
   bindUiEnvironment,
   observeUiSequence,
 } from './drift_ui.mjs';
+import { collectPlaywrightSequence, collectUiSequence } from './drift_ui_collector.mjs';
+import { evaluateScenarioMatrix, evaluateTaskRecovery } from './drift_ui_recovery.mjs';
 import { captureSurfaceDom, checkSurfaceKey } from './drift_ui_surface.mjs';
 export {
   adaptComposeSemantics,
   adaptPlaywrightSurface,
   adaptUiaSnapshot,
   bindUiEnvironment,
+  collectPlaywrightSequence,
+  collectUiSequence,
+  evaluateScenarioMatrix,
+  evaluateTaskRecovery,
   mergePriorInventory,
   observeUiSequence,
   resolveSelectedFiles,
@@ -297,10 +303,26 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
 
 export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, mutationOverride, withAt, missMsg) {
   const pfx = `${contractId}.${caseId}`;
+  const isUiObs = isObj(payload) && (payload.schema === 'drift.ui-observation/1' || isObj(payload.evidence));
+  const bumpUnverifiable = () => {
+    if (isObj(payload?.evidence) && typeof payload.evidence.unverifiable_checks === 'number') {
+      payload.evidence.unverifiable_checks += 1;
+      if (Array.isArray(payload.evidence.unverifiable_reasons)) {
+        payload.evidence.unverifiable_reasons.push(`unverifiable_then:${key}`);
+      }
+    }
+  };
   if (key in proj) {
     const ptr = proj[key];
     const res = readPointer(payload, ptr);
-    if (!res.found) throwAssertionError(`${pfx}: missing projected path "${ptr}" for then.${key}`);
+    if (!res.found) {
+      bumpUnverifiable();
+      throwAssertionError(`${pfx}: missing projected path "${ptr}" for then.${key}`);
+    }
+    if (isUiObs && exp !== null && (res.value === null || res.value === undefined || (res.value === '' && typeof exp === 'string' && exp !== ''))) {
+      bumpUnverifiable();
+      throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value at "${ptr}"`);
+    }
     if (checkRelationalLeaf(contractId, caseId, key, exp, res.value, payload, proj, mutationOverride)) return;
     if (!valuesEqual(res.value, exp)) {
       throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}${withAt ? ` at "${ptr}"` : ''}, got ${JSON.stringify(res.value)}`);
@@ -308,12 +330,17 @@ export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, 
     return;
   }
   if (isObj(payload) && key in payload) {
+    if (isUiObs && exp !== null && (payload[key] === null || payload[key] === undefined)) {
+      bumpUnverifiable();
+      throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value`);
+    }
     if (checkRelationalLeaf(contractId, caseId, key, exp, payload[key], payload, proj, mutationOverride)) return;
     if (!valuesEqual(payload[key], exp)) {
       throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(payload[key])}`);
     }
     return;
   }
+  bumpUnverifiable();
   throwAssertionError(`${pfx}: ${missMsg} then.${key}`);
 }
 
@@ -347,14 +374,22 @@ export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, e
 export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj) {
   const v = isObj(view) ? view : {};
   const pfx = `${contractId}.${caseId}`;
-  if (v.surfaceFound === false || v.surface_found === false) throwAssertionError(`${pfx}: surface.missing`);
+  if (
+    v.surfaceFound === false
+    || v.surface_found === false
+    || (v.schema === 'drift.ui-observation/1' && v.surface_found !== true && v.surfaceFound !== true)
+  ) {
+    throwAssertionError(`${pfx}: surface.missing`);
+  }
   const isMut = Boolean(mutationOverride);
   const assertEq = (k, exp, act) => { if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`); };
   let proj = null;
   const STATE_FIRST = new Set(['baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence']);
+  const UNVERIF_LAST = new Set(['unverifiable_checks', 'unverified_elements']);
   const ordered = [
     ...Object.entries(thenTable).filter(([k]) => STATE_FIRST.has(k)),
-    ...Object.entries(thenTable).filter(([k]) => !STATE_FIRST.has(k)),
+    ...Object.entries(thenTable).filter(([k]) => !STATE_FIRST.has(k) && !UNVERIF_LAST.has(k)),
+    ...Object.entries(thenTable).filter(([k]) => UNVERIF_LAST.has(k)),
   ];
   for (const [k, exp] of ordered) {
     if (checks && typeof checks[k] === 'function') {

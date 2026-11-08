@@ -157,7 +157,7 @@ drift new .drift/contracts/health-check.toml --profile http-json@1 --intent "Rep
 
 ## Polyglot Test Bridges
 
-DRIFT ships with first-class, zero-lock-in bridges for **Java / Scala / JVM**, **JavaScript / TypeScript**, **Python 3**, **Rust**, and **V**. Expected values live once—in the `.toml` contract—and tests read them at runtime.
+DRIFT ships with first-class, zero-lock-in bridges for **Java / Scala / JVM**, **JavaScript / TypeScript**, **Python 3**, **Rust**, **V**, and **PHP 8.2+** (plus **Java 6+ / JUnit 4** and **COBOL 85 Copybook / Batch** monolith carve-out bridges). Expected values live once—in the `.toml` contract—and tests read them at runtime.
 
 ### Java, Scala, Maven & sbt (`drift-junit` + `drift-maven-plugin`)
 
@@ -186,7 +186,7 @@ In closure-based JVM suites (such as **Scala 3 / MUnit** `FunSuite`), call `Drif
 ```scala
 // build.sbt:
 // resolvers += Resolver.mavenLocal
-// libraryDependencies += "drift" % "drift-junit" % "0.3.3" % Test
+// libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
 // Test / fork := true
 // Test / javaOptions ++= Seq(s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved", s"-Ddrift.events=${baseDirectory.value}/target/drift/events")
 
@@ -288,11 +288,13 @@ fn test_returns_existing_item() {
 }
 ```
 
-### Legacy & Monolith Carve-Out Bridges (`bridges/legacy/junit4/DriftJUnit4.java`)
+### Legacy & Monolith Carve-Out Bridges (`DriftJUnit4.java`, `Drift.php`, `drift_cobol.py`)
 
-Main DRIFT bridges target the latest **LTS/stable** runtimes (Java 25 LTS / Scala 3.9 LTS JUnit 5 Platform, Node.js 24 LTS, Python 3.14, Rust Edition 2024, V 0.5.2). For brownfield monoliths that cannot upgrade their JVM or test runner before carving out slices, DRIFT provides a dedicated **Legacy Bridges** tier:
+Main DRIFT bridges target the latest **LTS/stable** runtimes (Java 25 LTS / Scala 3.9 LTS JUnit 5 Platform, Node.js 24 LTS, Python 3.14, Rust Edition 2024, V 0.5.2). For brownfield monoliths and enterprise carve-outs, DRIFT provides zero-dependency bridges for **JUnit 4**, **PHP 8.2+**, and **COBOL 85**:
 
-- **Java 6+ / JUnit 4 (`drift.junit4.DriftJUnit4`, `integrations/jvm/junit4/DriftJUnit4.java`)**: Zero-dependency single-file JUnit 4 bridge with `DriftJUnit4.Listener` (recording `.meta.json` inventories and `bound` events across `passed`, `failed`, `skipped`, and `disabled` outcomes without JUnit 5 on the classpath), `DriftJUnit4.verify(contract, caseId, observations, frames)` (promoting extracted slice tests to `verified` after checking projections, relational bounds, and forbidden write frames), `DriftJUnit4.replayCounterexamples(...)` (`*.cex.json` regression replay), and `DriftJUnit4.requireCapabilities(...)` (`drift.bridge-capabilities/1`).
+- **Java 6+ / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: Zero-dependency single-file JUnit 4 bridge with `DriftJUnit4.Listener` (recording `.meta.json` inventories and `bound` events across `passed`, `failed`, `skipped`, and `disabled` outcomes without JUnit 5 on the classpath), `DriftJUnit4.verify(contract, caseId, observations, frames)` (promoting extracted slice tests to `verified` after checking projections, relational bounds, and forbidden write frames), `DriftJUnit4.replayCounterexamples(...)` (`*.cex.json` regression replay), and `DriftJUnit4.requireCapabilities(...)` (`drift.bridge-capabilities/1`).
+- **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: Zero-dependency single-file PHP bridge with RFC 6901 JSON Pointer projection checks, relational/negative clause verification (`forbid_keys`, `not_in`), case write frames (`checkFrame`), `*.cex.json` counterexample replay, and atomic `.events.jsonl` / `.meta.json` emission.
+- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: Zero-dependency Python harness that parses COBOL `PIC` copybook layouts (`--copybook`), marshals `when` JSON into fixed-width records (`PIC X`, `PIC 9`, signed `PIC S9...V99`), unmarshals batch outputs, binds `.cbl`/`.cpy` inputs in `.meta.json`, and generates `drift.parity-receipt/1` cutover receipts comparing mainframe batch runs against candidate services.
 
 ---
 
@@ -316,27 +318,27 @@ Exit codes are uniform across every command: **`0`** = OK / Gate Green, **`1`** 
 
 | Command | Tier | Purpose |
 |---|---|---|
-| `drift init <owner> [dir]` | **Free** | Initialize a new `.drift/config.toml` area configuration |
-| `drift new <file> [--profile REF]` | **Free** *(+Pro)* | Scaffold a new contract or profile (`--concept` in **Free**; `--openapi`, `--asyncapi`, `--wsdl`, `--from-upstream`, `--from-recall`, `--from-intent` in **Pro**) |
+| `drift init <owner> [dir]` | **Free** | Initialize a new `.drift/config.toml` area configuration (or external shadow state via `--state-dir` / `DRIFT_STATE_DIR`) |
+| `drift new <file> [--profile REF]` | **Free** *(+Pro)* | Scaffold a new contract or profile (`--concept` in **Free**; `--openapi`, `--asyncapi`, `--wsdl`, `--copybook`, `--from-upstream`, `--from-recall`, `--from-intent` in **Pro**) |
 | `drift case add <file> [<id>] --ask TEXT` | **Free** *(+Pro)* | Append a draft case or question (`--from-intent`, `--from-signal` in **Pro**) |
 | `drift fmt <file\|dir>... [--check]` | **Free** | Format TOML contracts and configs into canonical order (`--sync-vocab`) |
 | `drift check [<file\|dir>...]` | **Free** | Validate syntax, schema, profile vocabulary, `[concepts]`, `[invariants]`, `[cutover]`, `[budgets.<id>]`, `[requires].security`, `[formal.<id>]`, UI surfaces, and approval hashes |
 | `drift diff <a> <b> [--json]` | **Free** | Compute structural and semantic differences between two contracts |
-| `drift review [<file\|dir>...] [--brief]` | **Free** *(+Pro)* | Render an owner review brief (`--detail guided` in **Free**; `--base`, `--delta`, `--measurements`, `--as md` in **Pro**) |
+| `drift review [<file\|dir>...] [--brief]` | **Free** *(+Pro)* | Render an owner review brief (`--detail guided` with `workflow_progress` in **Free**; `--base`, `--delta`, `--measurements`, `--as md` in **Pro**) |
 | `drift approve <file\|dir>... --by OWNER` | **Free** | Seal approved contract or config versions with `dr1:<hash>` (`--reviewed --expect-review`, `--ssh-sign`) |
 | `drift show [<file\|dir>...] [--as json]` | **Free** *(+Pro)* | Export resolved contract views for test bridges (`--boundary` in **Pro**) |
-| `drift export views\|boundary --out PATH` | **Free / Pro** | Export resolved contract views (**Free**) or area boundary bundles (`--openapi`, `--asyncapi`, `--wsdl` in **Pro**) |
-| `drift prove [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Evaluate runtime proof states, UI sequence observations (`drift.ui-observation/1`), `--measurements` budgets, `*.security.json`, `*.parity.json`, `*.migration.json`, and `*.formal.json` / `*.model.json` receipts |
-| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, proof events, UI observations, budgets, security, parity/migration, formal receipts, and `--execution-context` (`--ssh-sign` / `--trust-root`) |
-| `drift status [<file\|dir>...]` | **Free** | Summarize area approval and proof state at a glance (`--detail summary\|guided`) |
+| `drift export views\|boundary --out PATH` | **Free / Pro** | Export resolved contract views (**Free**) or bidirectional `drift.boundary-bundle/1` bundles (`--openapi`, `--asyncapi`, `--wsdl`, `--copybook` in **Pro**) |
+| `drift prove [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Evaluate runtime proof states, UI sequence observations (`drift.ui-observation/1`), `.drift/seam-stub/` provenance, `--measurements` budgets, `*.security.json`, `*.parity.json`, `*.migration.json`, and `*.formal.json` / `*.model.json` receipts |
+| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, proof events, UI observations, seam provenance, budgets, security, parity/migration, formal receipts, federated composition (`drift.composition-manifest/1`), and `--execution-context` (`--ssh-sign` / `--trust-root`) |
+| `drift status [<file\|dir>...]` | **Free** | Summarize area approval and proof state at a glance (`--detail summary\|guided`, shadow mode indicator) |
 | `drift explain <DR-Exxx>` | **Free** | Explain the cause and exact fix for any diagnostic code or reason token |
-| `drift select [<base>] --events DIR` | **Pro** | Select only tests and performance budgets affected by changed files or coupled resources |
+| `drift select [<base>] --events DIR` | **Pro** | Select only tests and performance budgets affected by changed files, `policy.ignore` helpers, or coupled resources |
 | `drift impact [<dir>]` | **Pro** | Blast-radius analysis, lexical search, and transitive dependency graph |
-| `drift plan [<dir>] [--pack GROUP\|ready]` | **Pro** | Wave DAG scheduling, `what_if` cuts, `executor_ranking`, and parallel worker bundles |
-| `drift recall query\|sync [<dir>]` | **Pro** | Symbolic `@recall` context capsules (`@tree`, `branch:<id>`) and dual-ring maintenance |
+| `drift plan [<dir>] [--pack GROUP\|ready]` | **Pro** | Wave DAG scheduling, `schedule.progress`, `what_if` cuts, `executor_ranking`, and parallel worker bundles |
+| `drift recall query\|sync [<dir>]` | **Pro** | Symbolic `@recall` context capsules (`@tree`, `branch:<id>`, `@concept`) and dual-ring maintenance |
 | `drift merge <base> <ours> <theirs>` | **Pro** | Three-way semantic merge for concurrent contract branches |
-| `drift mutants [<dir>] --out FILE` | **Enterprise** | Generate in-process contract mutants (`--when`, `--budget` with `[policy].priority_weights`) |
-| `drift sweep [check\|sync-scope\|simplify\|promote]` | **Pro / Ent** | Area ownership audit (`check`, `sync-scope`, `--root`, `--base`, `--delta` in **Pro**; `--flow`, `--openapi`, `--asyncapi`, `--epoch-manifest`, `simplify`, `promote` in **Ent**) |
+| `drift mutants [<dir>] --out FILE` | **Enterprise** | Generate in-process contract and incoming-seam (`prove.seam_mutants`) mutants (`--when`, `--budget` with `[policy].priority_weights`) |
+| `drift sweep [check\|sync-scope\|simplify\|promote]` | **Pro / Ent** | Area ownership audit (`check`, `sync-scope`, `--root`, `--base`, `--delta` in **Pro**; `--flow` with `code.undeclared_seam` & DB/CICS/ORM seams, `--openapi`, `--asyncapi`, `--wsdl`, `--copybook`, `--epoch-manifest`, `simplify`, `promote` in **Ent**) |
 | `drift stats [<dir>] [--compare ...]` | **Enterprise** | Area footprint, risk radar, and multi-version evaluation ranking |
 
 ---
@@ -376,9 +378,9 @@ See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, siblin
 | **[EDITIONS.md](EDITIONS.md)** | Complete comparison of **Free**, **Pro**, and **Enterprise** commands, flags, skills, and hooks |
 | **[GUARANTEES.md](GUARANTEES.md)** | Epistemic guarantee & threat matrix, normative `dr1:` / `.jsonl` proof protocol, and adversarial CI scenarios |
 | **[CHANGELOG.md](CHANGELOG.md)** | Concise release notes and user-visible capabilities by version |
-| **`verifier/drift_verify.py`** | Independent, open-source (**MIT**) reference proof verifier in pure Python 3.11+ stdlib (`tomllib` + `hashlib`) |
+| **`verifier/drift_verify.py`** | Independent, open-source (**MIT**) reference proof verifier in pure Python 3.11+ stdlib (`tomllib` + `hashlib`), plus `verifier/drift_shadow_junit.py` for 2-phase JUnit XML shadow runs |
 | **`skill/drift/`** | Agent Skill (`SKILL.md` + `references/`) for GitHub Copilot CLI, Claude Code, Codex, Cursor, and Pi |
-| **`bridges/`** | Zero-dependency test bridges for JavaScript/TypeScript (`drift.mjs`), Python 3 (`drift.py`), Rust (`bridges/rust`), V (`bridges/v/drift_v`), and JVM (`bridges/jvm`) |
+| **`bridges/`** | Zero-dependency test bridges for JavaScript/TypeScript (`drift.mjs`), Python 3 (`drift.py`), Rust (`bridges/rust`), V (`bridges/v/drift_v`), PHP 8.2+ (`Drift.php`), COBOL 85 (`drift_cobol.py`), and JVM (`bridges/jvm`, `bridges/legacy/junit4/DriftJUnit4.java`) |
 | **`maven/`** | Offline-ready `drift-junit` (Java & Scala / MUnit) bridge and `drift-maven-plugin` artifacts for JVM projects |
 | **`schemas/`** | JSON Schemas (`drift-contract-0.2`, `drift-profile-0.2`, `drift-config-0.2`, `drift-proof-event-0.2`) for validation |
 | **`hooks/`** | `SessionStart` and `Stop` guardrail hooks (`drift-hook.sh`, `drift-hook.ps1`) |

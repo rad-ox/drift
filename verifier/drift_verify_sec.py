@@ -13,37 +13,11 @@ SEC_OUTCOMES = frozenset(("passed", "violated", "inconclusive"))
 SEC_KEYS = frozenset(("kind", "category", "tool", "tool_ref", "ruleset_ref", "contract", "digest", "code_snapshot", "covered_scope", "cases", "outcome"))
 SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 DIGEST_RE = re.compile(r"^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
-THEN_MUT_OPS = frozenset(("negate", "add-one", "minus-one", "set-one", "multiply-two", "divide-two", "append-tilde", "drop-last", "seed-array", "swap-peer-then", "zero-sum-shear"))
-WHEN_MUT_OPS = frozenset(("swap-case-when", "perturb-case-when"))
+from drift_verify_mig import collect_receipt_files, run_sec_self_test_core, validate_mutation_manifest_core
 
 
 def validate_mutation_manifest_impl(text: str, decode_fn: Callable[[str], Any]) -> dict[str, Any]:
- doc = decode_fn(text)
- if not isinstance(doc, dict) or set(doc) != {"version", "contracts"} or doc.get("version") != 1 or isinstance(doc.get("version"), bool) or not isinstance(cs := doc["contracts"], list) or not cs:
-  raise ValueError("manifest")
- by_id, targets, prev_c = {}, {}, ""
- for c in cs:
-  if not isinstance(c, dict) or set(c) != {"id", "digest", "mutants"}:
-   raise ValueError("contract")
-  cid, cdig, muts = c["id"], c["digest"], c["mutants"]
-  if not isinstance(cid, str) or not ID_RE.match(cid) or not isinstance(cdig, str) or not DIGEST_RE.match(cdig) or not isinstance(muts, list) or (prev_c and cid <= prev_c):
-   raise ValueError("contract")
-  prev_c, prev_m, m_list = cid, "", []
-  for m in muts:
-   if not isinstance(m, dict) or any(k not in ("id", "case", "path", "operator", "before", "after", "witness") for k in m) or any(r not in m for r in ("id", "case", "path", "operator", "before", "after")):
-    raise ValueError("mutant")
-   mid, mc, mp, mop = m["id"], m["case"], m["path"], m["operator"]
-   if not all(isinstance(x, str) for x in (mid, mc, mp, mop)) or not ID_RE.match(mc) or mid != f"{mc}:{mp}" or (prev_m and mid <= prev_m):
-    raise ValueError("mutant")
-   esc = mc.replace("~", "~0").replace("/", "~1")
-   tp, wp = f"/cases/{esc}/then/", f"/cases/{esc}/when/"
-   if not ((mp.startswith(tp) and len(mp) > len(tp) and mop in THEN_MUT_OPS) or (mp.startswith(wp) and len(mp) > len(wp) and mop in WHEN_MUT_OPS)):
-    raise ValueError("mutant")
-   prev_m = mid
-   targets[(cid, mid)] = rec = {"id": mid, "contract": cid, "digest": cdig, "case": mc, "path": mp}
-   m_list.append(rec)
-  by_id[cid] = {"id": cid, "digest": cdig, "mutants": m_list}
- return {"digest": "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(), "contracts": by_id, "targets": targets}
+ return validate_mutation_manifest_core(text, decode_fn)
 
 
 def _sec_str(m: dict[str, Any], k: str) -> str:
@@ -116,12 +90,8 @@ def _receipt_identity_key(r: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def load_security_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str], Any]) -> tuple[list[dict[str, Any]], list[str]]:
- files = [f for p in events_paths for f in (sorted(p.glob("*.security.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".security.json") else []))]
- out, errs, seen = [], [], set()
- for sf in files:
-  if sf in seen:
-   continue
-  seen.add(sf)
+ out, errs = [], []
+ for sf in collect_receipt_files(events_paths, ".security.json"):
   try:
    doc = decode_fn(sf.read_text(encoding="utf-8"))
    if not isinstance(doc, dict) or set(doc) != SEC_KEYS or doc.get("kind") != "security_check":
@@ -210,23 +180,7 @@ def evaluate_contract_security_impl(
 
 
 def run_sec_self_test(ck: dict[str, Any], digest_matches_fn: Callable[[str, str], bool]) -> None:
- sec_ck = {**ck, "profile_security": ["sast"], "scope_code": ["src/api.rs#authorize"]}
- base_rec = {"category": "sast", "tool": "semgrep", "tool_ref": "sha256:" + "1" * 64, "ruleset_ref": "sha256:" + "2" * 64, "contract": "svc", "digest": ck["ref"], "code_snapshot": "a" * 40, "covered_scope": ["src/api.rs#authorize"], "cases": ["ok"], "outcome": "passed"}
- assert evaluate_contract_security_impl(sec_ck, [base_rec], {}, "a" * 40, digest_matches_fn)[0] == []
- for bad in ({"covered_scope": ["src/api.rs#unrelated"]}, {"cases": ["nonexistent"]}):
-  assert "security.inconclusive" in evaluate_contract_security_impl(sec_ck, [{**base_rec, **bad}], {}, "a" * 40, digest_matches_fn)[0]
- assert "security.inconclusive" in evaluate_contract_security_impl(sec_ck, [base_rec], {}, "", digest_matches_fn)[0]
- r_viol = {**base_rec, "ruleset_ref": "sha256:" + "3" * 64, "outcome": "violated"}
- c1 = evaluate_contract_security_impl(sec_ck, [r_viol, base_rec], {}, "a" * 40, digest_matches_fn)
- c2 = evaluate_contract_security_impl(sec_ck, [base_rec, r_viol], {}, "a" * 40, digest_matches_fn)
- assert c1 == c2 and "security.inconclusive" in c1[0] and all(x.get("reason") == "security.conflicting_receipts" for x in c1[1])
- import tempfile, drift_verify as _dv
- with tempfile.TemporaryDirectory() as td:
-  tp = Path(td)
-  (tp / "p@1.toml").write_text('drift = "0.2"\nprofile = "p@1"\n[vocabulary]\nwhen = ["op"]\nthen = ["status", "inv_p"]\n[projections.then]\nstatus = "/status"\ninv_p = "/ip"\n[concepts."orders.c"]\nmeans = "Cancel order."\n', "utf-8")
-  for fn_n, u_c in (("c1.toml", 'concepts = ["orders.c"]\n'), ("c2.toml", "")):
-   (tp / fn_n).write_text(f'drift = "0.2"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
-  assert _dv.verify_contract_toml(tp / "c1.toml", tp)["digest"] == _dv.verify_contract_toml(tp / "c2.toml", tp)["digest"]
+ run_sec_self_test_core(ck, digest_matches_fn, evaluate_contract_security_impl)
 
 
 FORMAL_VERIFIERS = frozenset(("kani", "loom", "tlc", "cbmc", "alloy", "spin", "shuttle", "stateright", "dafny"))
@@ -295,12 +249,8 @@ def _formal_identity_key(r: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def load_formal_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str], Any]) -> tuple[list[dict[str, Any]], list[str]]:
- files = [f for p in events_paths for f in (sorted(p.glob("*.formal.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".formal.json") else []))]
- out, errs, seen = [], [], set()
- for ff in files:
-  if ff in seen:
-   continue
-  seen.add(ff)
+ out, errs = [], []
+ for ff in collect_receipt_files(events_paths, ".formal.json"):
   try:
    doc = decode_fn(ff.read_text(encoding="utf-8"))
    if not isinstance(doc, dict) or any(k not in FORMAL_KEYS for k in doc) or doc.get("schema") != "drift.formal-receipt/1":

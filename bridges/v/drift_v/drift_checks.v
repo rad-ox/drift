@@ -236,7 +236,10 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]jso
 						allowed[item] = true
 					}
 				}
-				for act_k, _ in act_map {
+				for act_k, act_v in act_map {
+					if act_k == '_frame' && act_v is map[string]json2.Any {
+						continue
+					}
 					if act_k !in allowed {
 						return error('${pred}: unexpected key "${act_k}" outside allowed_keys')
 					}
@@ -452,6 +455,138 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]jso
 
 pub fn round_decimal_witness(v f64) f64 {
 	return math.round(v * 1e12) / 1e12
+}
+
+fn allowed_write_sets_of(view map[string]json2.Any, case_id string) (map[string]bool, map[string]bool, bool) {
+	mut scope_writes := []string{}
+	if sc_any := view['scope'] {
+		if sc_any is map[string]json2.Any {
+			if sw_any := sc_any['writes'] {
+				if sw_any is []json2.Any {
+					for item in sw_any {
+						if item is string {
+							scope_writes << item
+						}
+					}
+				}
+			}
+		}
+	}
+	mut has_case_writes := false
+	mut raw_allowed := scope_writes.clone()
+	if cases_any := view['cases'] {
+		if cases_any is map[string]json2.Any {
+			if c_any := cases_any[case_id] {
+				if c_any is map[string]json2.Any {
+					if cw_any := c_any['writes'] {
+						if cw_any is []json2.Any {
+							has_case_writes = true
+							raw_allowed = []string{}
+							for item in cw_any {
+								if item is string {
+									raw_allowed << item
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	mut allowed := map[string]bool{}
+	mut allowed_bases := map[string]bool{}
+	for item in raw_allowed {
+		allowed[item] = true
+		allowed_bases[item.all_before('#')] = true
+	}
+	return allowed, allowed_bases, has_case_writes
+}
+
+fn is_write_resource_allowed(res string, allowed map[string]bool, allowed_bases map[string]bool) bool {
+	base := res.all_before('#')
+	return res in allowed || base in allowed || (!res.contains('#') && res in allowed_bases)
+}
+
+fn forbidden_writes_of(view map[string]json2.Any, case_id string) []string {
+	mut scope_writes := []string{}
+	if sc_any := view['scope'] {
+		if sc_any is map[string]json2.Any {
+			if sw_any := sc_any['writes'] {
+				if sw_any is []json2.Any {
+					for item in sw_any {
+						if item is string {
+							scope_writes << item
+						}
+					}
+				}
+			}
+		}
+	}
+	if scope_writes.len == 0 {
+		return []string{}
+	}
+	allowed, allowed_bases, has_case_writes := allowed_write_sets_of(view, case_id)
+	if !has_case_writes {
+		return []string{}
+	}
+	mut out := []string{}
+	for r in scope_writes {
+		if !is_write_resource_allowed(r, allowed, allowed_bases) {
+			out << r
+		}
+	}
+	return out
+}
+
+fn verify_single_frame_obs(pfx string, res string, obs json2.Any, is_ambient bool) ! {
+	mut checked := false
+	write_lbl := if is_ambient {
+		'undeclared write on perimeter resource "${res}"'
+	} else {
+		'frame violation on resource "${res}"'
+	}
+	snap_lbl := if is_ambient {
+		'undeclared state mutation on perimeter resource "${res}"'
+	} else {
+		'frame state mutation on resource "${res}"'
+	}
+	if n := as_finite_f64(obs) {
+		if n >= 0 {
+			checked = true
+			if n > 0 {
+				return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${n}')
+			}
+		}
+	} else if obs is map[string]json2.Any {
+		for wk in ['writes', 'operations', 'events'] {
+			if wv := obs[wk] {
+				if wn := as_finite_f64(wv) {
+					if wn >= 0 {
+						checked = true
+						if wn > 0 {
+							return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${wn}')
+						}
+					}
+				} else if wv is []json2.Any {
+					checked = true
+					if wv.len > 0 {
+						return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${wv.len}')
+					}
+				}
+			}
+		}
+		if bef := obs['before'] {
+			if aft := obs['after'] {
+				checked = true
+				if !values_equal(bef, aft) {
+					return error('${pfx}: ${snap_lbl}: before and after snapshots differ')
+				}
+			}
+		}
+	}
+	if !checked {
+		return error('${pfx}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots')
+	}
 }
 
 pub fn synthesize_leaf_witness(expected json2.Any, built map[string]json2.Any, proj_then map[string]string) json2.Any {

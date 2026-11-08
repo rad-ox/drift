@@ -39,6 +39,12 @@ fn check_ui_projection_guards(contract string, case_id string, doc json2.Any, pr
 		return
 	}
 	dm := doc.as_map()
+	mut is_ui_obs := false
+	if sch := dm['schema'] {
+		if sch is string && sch == 'drift.ui-observation/1' {
+			is_ui_obs = true
+		}
+	}
 	if sf := dm['surface_found'] {
 		if sf is bool && !sf {
 			return error('${contract}.${case_id}: surface.missing')
@@ -47,6 +53,44 @@ fn check_ui_projection_guards(contract string, case_id string, doc json2.Any, pr
 	if sf2 := dm['surfaceFound'] {
 		if sf2 is bool && !sf2 {
 			return error('${contract}.${case_id}: surface.missing')
+		}
+	}
+	if is_ui_obs {
+		mut sf_true := false
+		if sf := dm['surface_found'] {
+			if sf is bool && sf {
+				sf_true = true
+			}
+		}
+		if sf2 := dm['surfaceFound'] {
+			if sf2 is bool && sf2 {
+				sf_true = true
+			}
+		}
+		if !sf_true {
+			return error('${contract}.${case_id}: surface.missing')
+		}
+	}
+	if coll_any := dm['collector'] {
+		if coll_any is map[string]json2.Any {
+			if sto := coll_any['settle_timed_out'] {
+				if sto is bool && sto {
+					return error('${contract}.${case_id}: ui.settle_timeout')
+				}
+			}
+		}
+	}
+	if ev_any := dm['evidence'] {
+		if ev_any is map[string]json2.Any {
+			if reasons := ev_any['unverifiable_reasons'] {
+				if reasons is []json2.Any {
+					for r_item in reasons {
+						if r_item is string && r_item == 'ui.settle_timeout' {
+							return error('${contract}.${case_id}: ui.settle_timeout')
+						}
+					}
+				}
+			}
 		}
 	}
 	mut has_caps := false
@@ -65,14 +109,20 @@ fn check_ui_projection_guards(contract string, case_id string, doc json2.Any, pr
 			}
 		}
 	}
-	if !has_caps {
-		return
-	}
-	for pred, _ in then_map {
+	for pred, exp in then_map {
 		ptr := proj_then[pred] or { '/' + escape_pointer(pred) }
-		req_cap := required_ui_capability_for(pred, ptr)
-		if req_cap != '' && req_cap !in caps {
-			return error('${contract}.${case_id}: ui.capability_unverifiable:${req_cap} for then.${pred}')
+		if has_caps {
+			req_cap := required_ui_capability_for(pred, ptr)
+			if req_cap != '' && req_cap !in caps {
+				return error('${contract}.${case_id}: ui.capability_unverifiable:${req_cap} for then.${pred}')
+			}
+		}
+		if is_ui_obs && exp !is json2.Null {
+			if act := resolve_pointer(doc, ptr) {
+				if act is json2.Null {
+					return error('${contract}.${case_id}: unverifiable then.${pred}: unmeasured value at "${ptr}"')
+				}
+			}
 		}
 	}
 }
