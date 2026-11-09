@@ -10,43 +10,71 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import drift_upstream as _up
-    from . import drift_security as _sec
-    from . import drift_ui as _ui
-    from . import drift_ui_surface as _uis
+    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis
 except ImportError:
     try:
-        import drift_upstream as _up  # type: ignore[no-redef]
-        import drift_security as _sec  # type: ignore[no-redef]
-        import drift_ui as _ui  # type: ignore[no-redef]
-        import drift_ui_surface as _uis  # type: ignore[no-redef]
+        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis  # type: ignore[no-redef]
     except ImportError:
-        _up_spec = importlib.util.spec_from_file_location('drift_upstream', Path(__file__).with_name('drift_upstream.py'))
-        assert _up_spec is not None and _up_spec.loader is not None
-        _up = importlib.util.module_from_spec(_up_spec)
-        _up_spec.loader.exec_module(_up)
-        _sec_spec = importlib.util.spec_from_file_location('drift_security', Path(__file__).with_name('drift_security.py'))
-        assert _sec_spec is not None and _sec_spec.loader is not None
-        _sec = importlib.util.module_from_spec(_sec_spec)
-        _sec_spec.loader.exec_module(_sec)
-        _ui_spec = importlib.util.spec_from_file_location('drift_ui', Path(__file__).with_name('drift_ui.py'))
-        assert _ui_spec is not None and _ui_spec.loader is not None
-        _ui = importlib.util.module_from_spec(_ui_spec)
-        _ui_spec.loader.exec_module(_ui)
-        _uis_spec = importlib.util.spec_from_file_location('drift_ui_surface', Path(__file__).with_name('drift_ui_surface.py'))
-        assert _uis_spec is not None and _uis_spec.loader is not None
-        _uis = importlib.util.module_from_spec(_uis_spec)
-        _uis_spec.loader.exec_module(_uis)
+        def _ld(n: str) -> Any:
+            s = importlib.util.spec_from_file_location(n, Path(__file__).with_name(f'{n}.py'))
+            assert s is not None and s.loader is not None
+            m = importlib.util.module_from_spec(s)
+            s.loader.exec_module(m)
+            return m
+        _up, _sec, _ui, _uis = _ld('drift_upstream'), _ld('drift_security'), _ld('drift_ui'), _ld('drift_ui_surface')
 
-REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys'))
-NON_VERIFIED_OP_STATES = frozenset((
-    'prepared', 'accepted', 'queued', 'running', 'in_progress',
-    'partial_failure', 'cancellation_requested', 'unknown',
-))
-TERMINAL_UI_CLAIMS = frozenset((
-    'completed', 'complete', 'verified', 'done', 'fulfilled',
-    'available', 'sent', 'paid', 'approved',
-))
+REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion', 'eq', 'len', 'keys', 'peer', 'series', 'tol', 'convert_from'))
+CAPS_03 = ('rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1')
+
+
+def _strip_side_03(s: Any) -> Any:
+    return s.split('.', 1)[1] if isinstance(s, str) and (s.startswith('when.') or s.startswith('then.')) else s
+
+
+def desugar_03_rel(raw: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if k == 'tol' and isinstance(v, Mapping):
+            if 'abs' in v:
+                out['abs_tol'] = v['abs']
+            if 'rel' in v:
+                out['rel_tol'] = v['rel']
+        elif k == 'len' and isinstance(v, Mapping):
+            if 'min' in v:
+                out['min_len'] = v['min']
+            if 'max' in v:
+                out['max_len'] = v['max']
+        elif k == 'keys' and isinstance(v, Mapping):
+            if 'allow' in v:
+                out['allowed_keys'] = v['allow']
+            if 'forbid' in v:
+                out['forbid_keys'] = v['forbid']
+        elif k == 'peer' and isinstance(v, Mapping):
+            if 'le' in v:
+                out['le_field'] = _strip_side_03(v['le'])
+            if 'ge' in v:
+                out['ge_field'] = _strip_side_03(v['ge'])
+            if 'eq' in v:
+                out['eq_field'] = _strip_side_03(v['eq'])
+            if isinstance(v.get('sum'), list):
+                out['sum_fields'] = [_strip_side_03(x) for x in v['sum']]
+            if isinstance(v.get('balance'), Mapping):
+                b = v['balance']
+                out['balance_fields'] = {
+                    **({'add': [_strip_side_03(x) for x in b['add']]} if isinstance(b.get('add'), list) else {}),
+                    **({'sub': [_strip_side_03(x) for x in b['sub']]} if isinstance(b.get('sub'), list) else {}),
+                }
+        elif k == 'series' and isinstance(v, Mapping):
+            out.update(v)
+            if out.get('monotonic') in ('increasing', 'decreasing'):
+                out['monotonic'] = f"strictly_{out['monotonic']}"
+        elif k != 'convert_from':
+            out[k] = v
+    if 'eq' in out and ('abs_tol' in out or 'rel_tol' in out) and 'balance_fields' not in out and 'sum_fields' not in out:
+        out['approx'] = out.pop('eq')
+    return out
+NON_VERIFIED_OP_STATES = frozenset(('prepared', 'accepted', 'queued', 'running', 'in_progress', 'partial_failure', 'cancellation_requested', 'unknown'))
+TERMINAL_UI_CLAIMS = frozenset(('completed', 'complete', 'verified', 'done', 'fulfilled', 'available', 'sent', 'paid', 'approved'))
 COMPARATIVE_BASELINE_RE = re.compile(r'^(?:invariato|unchanged|same|nessuna variazione|[+-]\s*\d)')
 escape_pointer = _up._cli.escape_pointer
 unescape_pointer = _up._cli.unescape_pointer
@@ -187,35 +215,19 @@ def expand_domain(domain: Any, first: bool = False) -> list[Any]:
     return out
 
 
-class ThenView(Mapping[str, Any]):
-    """Read-tracking view over a case's expected `then` predicate map."""
-
-    def __init__(self, values: Mapping[str, Any], seen: set[str]) -> None:
-        self._values = values
-        self._seen = seen
-
-    def __getitem__(self, key: str) -> Any:
-        if key in self._values:
-            self._seen.add(key)
-        return self._values[key]
-
-    def __getattr__(self, key: str) -> Any:
-        if key in self._values:
-            self._seen.add(key)
-            return self._values[key]
-        raise AttributeError(key)
-
-    def __iter__(self):
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
+ThenView = _sec.ThenView
 
 
-def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None) -> bool:
-    if not isinstance(exp, Mapping) or not exp or not all(rk in REL_KEYS for rk in exp):
+def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None) -> bool:
+    if not isinstance(raw_exp, Mapping) or not raw_exp or not all(rk in REL_KEYS for rk in raw_exp):
         return False
+    exp = desugar_03_rel(raw_exp)
     pfx = f'{contract_id}.{case_id}'
+    if 'eq' in exp:
+        if values_mismatch(act, exp['eq']):
+            raise AssertionError(f"{pfx}: exp then.{key}={exp['eq']!r}, got {act!r}")
+        if len(exp) == 1:
+            return True
     is_num = is_finite_num
     act_len = len(act) if isinstance(act, (str, list, tuple, Mapping)) else -1
 
@@ -230,10 +242,12 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             return (True, payload[ref])
         return (False, None)
 
-    if 'min' in exp and (not is_num(act) or not is_num(exp['min']) or float(act) + 1e-9 < float(exp['min'])):
-        raise AssertionError(f"{pfx}: exp then.{key}>={exp['min']}, got {act!r}")
-    if 'max' in exp and (not is_num(act) or not is_num(exp['max']) or float(act) - 1e-9 > float(exp['max'])):
-        raise AssertionError(f"{pfx}: exp then.{key}<={exp['max']}, got {act!r}")
+    is_seq_tuning = 'monotonic' in exp or 'step_max_delta' in exp or 'sum_total' in exp
+    if not is_seq_tuning:
+        if 'min' in exp and (not is_num(act) or not is_num(exp['min']) or float(act) + 1e-9 < float(exp['min'])):
+            raise AssertionError(f"{pfx}: exp then.{key}>={exp['min']}, got {act!r}")
+        if 'max' in exp and (not is_num(act) or not is_num(exp['max']) or float(act) - 1e-9 > float(exp['max'])):
+            raise AssertionError(f"{pfx}: exp then.{key}<={exp['max']}, got {act!r}")
     if 'min_len' in exp and (act_len < 0 or act_len < int(exp['min_len'])):
         raise AssertionError(f"{pfx}: exp len(then.{key})>={exp['min_len']}, got {act_len}")
     if 'max_len' in exp and (act_len < 0 or act_len > int(exp['max_len'])):
@@ -267,9 +281,9 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
             raise AssertionError(f'{pfx}: exp mapping for then.{key}.forbid_keys')
         if isinstance(exp['forbid_keys'], (list, tuple)):
             for fk in exp['forbid_keys']:
-                if str(fk) in act:
+                if _sec.has_key_recursive(act, str(fk), act is payload):
                     raise AssertionError(f'{pfx}: forbidden key "{fk}" present on then.{key}')
-        elif str(exp['forbid_keys']) not in act:
+        elif not _sec.has_key_recursive(act, str(exp['forbid_keys']), act is payload):
             raise AssertionError(f'{pfx}: drop-forbid-key mutant killed on then.{key}.forbid_keys')
     if 'sum_fields' in exp:
         if not isinstance(exp['sum_fields'], (list, tuple)) or len(exp['sum_fields']) < 2:
@@ -289,6 +303,7 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, exp: Any, ac
         raise AssertionError(f"{pfx}: exp then.{key} to start with {exp['prefix']!r}, got {act!r}")
     if 'suffix' in exp and (not isinstance(act, str) or not act.endswith(str(exp['suffix']))):
         raise AssertionError(f"{pfx}: exp then.{key} to end with {exp['suffix']!r}, got {act!r}")
+    _uis.check_tuning_and_numeric_rel(pfx, key, exp, act, peer_of, is_num, REL_KEYS)
     return True
 
 
@@ -468,55 +483,15 @@ def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: 
 
 
 def clear_upstream_cache() -> None:
-    _UP_CACHE.clear()
+    _up.clear_upstream_cache()
 
 
 def find_upstream_contract(id_or_res: str, cwd: Path | None = None) -> tuple[dict[str, Any], Path] | None:
-    cur = (cwd or Path.cwd()).resolve()
-    up_dir: Path | None = None
-    while True:
-        if (cur / '.drift' / 'upstream').is_dir():
-            up_dir = cur / '.drift' / 'upstream'
-            break
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    if up_dir is None:
-        return None
-    dk = str(up_dir)
-    idx = _UP_CACHE.get(dk)
-    if idx is None:
-        idx = {}
-        for fp in sorted(up_dir.glob('*.json')):
-            try:
-                doc = json.loads(fp.read_text(encoding='utf-8').lstrip('\ufeff'))
-                if not isinstance(doc, Mapping):
-                    continue
-                area = doc.get('area') if isinstance(doc.get('area'), str) else ''
-                cts = doc.get('contracts') if doc.get('kind') == 'boundary' and isinstance(doc.get('contracts'), list) else ([doc] if isinstance(doc.get('id'), str) else [])
-                for c in (x for x in cts if isinstance(x, Mapping)):
-                    hit, cid = (dict(c), fp), c.get('id') if isinstance(c.get('id'), str) else ''
-                    if cid:
-                        idx.setdefault(cid, hit)
-                        if area:
-                            idx.setdefault(f'{area}:{cid}', hit)
-                    sc = c.get('scope') if isinstance(c.get('scope'), Mapping) else {}
-                    for r in list(sc.get('out') or ()) + list(sc.get('writes') or ()) + list(sc.get('reads') or ()):
-                        rs, base = str(r), str(r).partition('#')[0]
-                        idx.setdefault(rs, hit)
-                        if base:
-                            idx.setdefault(base, hit)
-            except Exception:
-                pass
-        _UP_CACHE[dk] = idx
-    return idx.get(id_or_res) or idx.get(str(id_or_res).partition('#')[0])
+    return _up.find_upstream_contract(id_or_res, cwd)
 
 
 def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], toml_dirs: dict[str, dict[str, Path]], warmed: set[str], cli_state: list[str], read_json: Callable[[Path], Any], strip_bom: Callable[[str], str], target_json: Path | None = None) -> dict[str, Any] | None:
     return _up._cli.auto_resolve_contract(contract_id, batch, toml_dirs, warmed, cli_state, read_json, strip_bom, find_upstream_contract, target_json)
-
-
-_UP_CACHE: dict[str, dict[str, tuple[dict[str, Any], Path]]] = {}
 
 
 def run_drift_cli(argv: list[str]) -> int:

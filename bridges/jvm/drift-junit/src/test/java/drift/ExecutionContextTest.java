@@ -57,4 +57,42 @@ class ExecutionContextTest {
         assertEquals(Map.of("k", "v"), typed.thenMap("meta"));
         assertEquals("java-25-lts", DriftVerify.bridgeCapabilities().get("runtime_baseline"));
     }
+
+    @Test
+    void recursiveForbidKeysAndObservableProbesAreEnforced() {
+        assertEquals(
+                Boolean.TRUE,
+                DriftProbes.hasKeyRecursive(
+                        Map.of("status", 200L, "details", Map.of("token", "secret")), "token", true));
+        assertEquals(
+                Boolean.FALSE,
+                DriftProbes.hasKeyRecursive(
+                        Map.of("status", 200L, "message", "token=ok"), "token", true));
+        Drift.Case c = new Drift.Case(
+                "bridge",
+                "probe",
+                Map.of("op", "charge"),
+                Map.of("status", 200L));
+        assertEquals(
+                Boolean.TRUE,
+                c.checkSeamProbe(Map.of("retryable", Boolean.TRUE, "attempts", 2L, "maxAttempts", 3L, "queries", 2L, "maxQueries", 2L)));
+        assertThrows(
+                AssertionError.class,
+                () -> c.checkSeamProbe(Map.of("retryable", Boolean.FALSE, "attempts", 2L)));
+        assertEquals(
+                Boolean.FALSE,
+                c.checkSeamProbe(Map.of("retryable", Boolean.TRUE, "attempts", 0L, "strict", Boolean.FALSE)));
+        assertEquals(
+                Boolean.TRUE,
+                c.checkRollback(Map.of("resource", "ORDERS_DB", "before", Map.of("n", 1L), "after", Map.of("n", 1L))));
+        assertThrows(
+                AssertionError.class,
+                () -> c.checkRollback(Map.of("resource", "ORDERS_DB", "before", Map.of("n", 1L), "after", Map.of("n", 2L))));
+        assertThrows(
+                AssertionError.class,
+                () -> DriftProbes.checkBolaVariantPair("bridge.probe", Map.of("actor_owner", "t1", "resource_owner", "t1")));
+        assertEquals(
+                Boolean.TRUE,
+                DriftProbes.checkBolaVariantPair("bridge.probe", Map.of("actor_owner", "t1", "resource_owner", "t2")));
+    }
 }

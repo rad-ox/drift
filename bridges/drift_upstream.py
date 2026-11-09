@@ -145,6 +145,10 @@ def _resolve_rel_bounds(val: Mapping[str, Any], peer_fn: Callable[[Any], tuple[b
         if ok: return (True, eq_v, None, None)
     lo: int | float | None = val['min'] if _is_num(val.get('min')) else None
     hi: int | float | None = val['max'] if _is_num(val.get('max')) else None
+    if _is_num(val.get('approx')):
+        ap_v = float(val['approx'])
+        lo = ap_v if lo is None or ap_v > lo else lo
+        hi = ap_v if hi is None or ap_v < hi else hi
     if peer_fn is not None and 'ge_field' in val:
         ok, ge_v = peer_fn(val['ge_field'])
         if ok and _is_num(ge_v): lo = ge_v if lo is None or ge_v > lo else lo
@@ -194,6 +198,18 @@ def witness_variants(val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any
             llo = max(1 if val.get('non_empty') is True else 0, int(val.get('min_len') or 0) if type(val.get('min_len')) is int else 0, pfx_len + sfx_len)
             lhi = int(val['max_len']) if type(val.get('max_len')) is int else llo
             return [_build_affix_str(val, llo), _build_affix_str(val, lhi)] if lhi > llo else [_build_affix_str(val, llo)]
+        if 'sum_total' in val or 'monotonic' in val or 'step_max_delta' in val:
+            st = val.get('sum_total')
+            tgt = float(st) if _is_num(st) else (float(st['eq']) if isinstance(st, Mapping) and _is_num(st.get('eq')) else ((float(st['min']) + float(st['max'])) / 2.0 if isinstance(st, Mapping) and _is_num(st.get('min')) and _is_num(st.get('max')) else (float(st['min']) if isinstance(st, Mapping) and _is_num(st.get('min')) else (float(st['max']) if isinstance(st, Mapping) and _is_num(st.get('max')) else 1.0))))
+            eps = min(0.2, float(val['step_max_delta']) / 2.0) if _is_num(val.get('step_max_delta')) and float(val['step_max_delta']) > 0.0 else 0.2
+            mode = str(val.get('monotonic') or '')
+            if mode in ('strictly_decreasing', 'non_increasing'):
+                a = round(tgt / 2.0 + eps / 2.0, 12)
+                return [[a, round(tgt - a, 12)]] if 'sum_total' in val else [[round(1.0 + eps, 12), 1.0]]
+            if mode in ('strictly_increasing', 'non_decreasing'):
+                a = round(tgt / 2.0 - eps / 2.0, 12)
+                return [[a, round(tgt - a, 12)]] if 'sum_total' in val else [[1.0, round(1.0 + eps, 12)]]
+            return [[round(tgt / 2.0, 12), round(tgt - round(tgt / 2.0, 12), 12)]]
         return ['']
     return [clone_fn(val)]
 
@@ -406,5 +422,49 @@ def run_case_mutants(mut_cfg: Mapping[str, Any], mut_out: Any, ctx: Any, contrac
         fh.write('\n'.join(lines) + '\n')
 
 
+_UP_CACHE: dict[str, dict[str, tuple[dict[str, Any], Path]]] = {}
 
 
+def clear_upstream_cache() -> None:
+    _UP_CACHE.clear()
+
+
+def find_upstream_contract(id_or_res: str, cwd: Path | None = None) -> tuple[dict[str, Any], Path] | None:
+    cur = (cwd or Path.cwd()).resolve()
+    up_dir: Path | None = None
+    while True:
+        if (cur / '.drift' / 'upstream').is_dir():
+            up_dir = cur / '.drift' / 'upstream'
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    if up_dir is None:
+        return None
+    dk = str(up_dir)
+    idx = _UP_CACHE.get(dk)
+    if idx is None:
+        idx = {}
+        for fp in sorted(up_dir.glob('*.json')):
+            try:
+                doc = json.loads(fp.read_text(encoding='utf-8').lstrip('\ufeff'))
+                if not isinstance(doc, Mapping):
+                    continue
+                area = doc.get('area') if isinstance(doc.get('area'), str) else ''
+                cts = doc.get('contracts') if doc.get('kind') == 'boundary' and isinstance(doc.get('contracts'), list) else ([doc] if isinstance(doc.get('id'), str) else [])
+                for c in (x for x in cts if isinstance(x, Mapping)):
+                    hit, cid = (dict(c), fp), c.get('id') if isinstance(c.get('id'), str) else ''
+                    if cid:
+                        idx.setdefault(cid, hit)
+                        if area:
+                            idx.setdefault(f'{area}:{cid}', hit)
+                    sc = c.get('scope') if isinstance(c.get('scope'), Mapping) else {}
+                    for r in list(sc.get('out') or ()) + list(sc.get('writes') or ()) + list(sc.get('reads') or ()):
+                        rs, base = str(r), str(r).partition('#')[0]
+                        idx.setdefault(rs, hit)
+                        if base:
+                            idx.setdefault(base, hit)
+            except Exception:
+                pass
+        _UP_CACHE[dk] = idx
+    return idx.get(id_or_res) or idx.get(str(id_or_res).partition('#')[0])

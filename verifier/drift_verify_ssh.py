@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenSSH signature verification helper for verifier/drift_verify.py (D265)."""
+"""OpenSSH signature verification helper for verifier/drift_verify.py."""
 
 import hashlib
 import json
@@ -16,7 +16,7 @@ ATTEST_CFG_KEYS = frozenset(("approval", "digest", "file", "ref"))
 ATTEST_CONTRACT_REQ = frozenset(("approval", "bound", "digest", "file", "id", "ok", "reasons", "ref", "reused", "verified"))
 ATTEST_CONTRACT_OPT = frozenset(("claim_scope", "formal_checks", "migration_checks", "parity_checks", "performance", "production_signals", "security_checks"))
 ATTEST_EVIDENCE_REQ = frozenset(("event_shards", "snapshots", "snapshots_complete"))
-ATTEST_EVIDENCE_OPT = frozenset(("incomplete_shards", "mutations_manifest", "performance_environments", "performance_manifest", "performance_run_id", "performance_subject"))
+ATTEST_EVIDENCE_OPT = frozenset(("incomplete_shards", "mutations_manifest", "performance_environments", "performance_manifest", "performance_run_id", "performance_subject", "subject_ref", "artifact_ref", "security_lock"))
 
 
 def load_merged_profile_impl(prof_ref: str, profiles_dir: Path, proof_rank_fn: Callable[[str], int]) -> dict[str, Any]:
@@ -215,6 +215,7 @@ def validate_and_match_attestation(
     m_man: dict[str, Any] | None = None,
     perf_b: dict[str, Any] | None = None,
     decode_fn: Callable[[str], Any] | None = None,
+    expected_subject: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     if payload_path is None or not payload_path.is_file():
         return False, "trust.attestation_invalid"
@@ -276,6 +277,14 @@ def validate_and_match_attestation(
     exp_perf_dig = perf_b.get("manifest_digest", "") if isinstance(perf_b, dict) and perf_b.get("active") and not perf_b.get("invalid") else ""
     if ev.get("performance_manifest", "") != exp_perf_dig:
         return False, "trust.subject_mismatch"
+    exp_sub = expected_subject or {}
+    if ev.get("subject_ref", "") != exp_sub.get("subject_ref", ""):
+        return False, "trust.subject_mismatch"
+    if ev.get("artifact_ref", "") != exp_sub.get("binary_ref", ""):
+        return False, "trust.subject_mismatch"
+    exp_lock_ref = (exp_sub.get("security_lock") or {}).get("lock_ref", "") if (exp_sub.get("security_lock") or {}).get("active") else ""
+    if ev.get("security_lock", "") != exp_lock_ref:
+        return False, "trust.subject_mismatch"
     if set(by_id) != {v["id"] for v in verdicts} or len(cnts) != len(verdicts):
         return False, "trust.subject_mismatch"
     expected_all_ok = bool(verdicts) and all(v["ok"] for v in verdicts)
@@ -295,6 +304,9 @@ def validate_and_match_attestation(
             or ac["bound"] != bnd_cnt
         ):
             return False, "trust.subject_mismatch"
+        for ck_k in ("security_checks", "formal_checks", "parity_checks", "migration_checks"):
+            if ac.get(ck_k) != v.get(ck_k):
+                return False, "trust.subject_mismatch"
     return True, ""
 
 
@@ -310,6 +322,7 @@ def apply_openssh_trust_verdicts(
     m_man: dict[str, Any] | None = None,
     perf_b: dict[str, Any] | None = None,
     decode_fn: Callable[[str], Any] | None = None,
+    expected_subject: dict[str, Any] | None = None,
 ) -> list[dict]:
     tv = verify_openssh_trust(args.attest, args.attest_sig, "drift-attestation@v1", args.trust_root, args.verify_time)
     if tv.get("active"):
@@ -326,6 +339,7 @@ def apply_openssh_trust_verdicts(
                 m_man=m_man,
                 perf_b=perf_b,
                 decode_fn=decode_fn,
+                expected_subject=expected_subject,
             )
             if not subj_ok:
                 tv["reason"] = subj_rsn
@@ -405,90 +419,61 @@ def extract_contract_cutover(raw: dict[str, Any], use_tbl: Any, dr1_digest_fn: C
 
 
 def load_parity_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str], Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    files = [f for p in events_paths for f in (sorted(p.glob("*.parity.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".parity.json") else []))]
-    out, errs, seen = [], [], set()
-    str_keys = ("contract", "digest", "requirement_ref", "legacy_target", "candidate_target", "legacy_subject_ref", "candidate_subject_ref", "normalization_ref", "corpus_ref", "rollback_readback", "outcome")
-    for pf in files:
-        if pf in seen:
-            continue
-        seen.add(pf)
-        try:
-            doc = decode_fn(pf.read_text(encoding="utf-8"))
-            if not isinstance(doc, dict) or set(doc) != PARITY_KEYS or doc.get("schema") != "drift.parity-receipt/1":
-                raise ValueError("parity_keys")
-            if any(not isinstance(doc.get(k), str) or not doc[k].strip() for k in str_keys):
-                raise ValueError("parity_str_types")
-            s = {k: doc[k].strip() for k in str_keys}
-            cid, dig, rref, leg, cand = s["contract"], s["digest"], s["requirement_ref"], s["legacy_target"], s["candidate_target"]
-            lref, cref, nref, cpref, rb, outc = s["legacy_subject_ref"], s["candidate_subject_ref"], s["normalization_ref"], s["corpus_ref"], s["rollback_readback"], s["outcome"]
-            fv = doc.get("frame_verified")
-            if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", cid) or not ARTIFACT_REF_RE.match(dig) or not ARTIFACT_REF_RE.match(rref) or leg == cand or not ARTIFACT_REF_RE.match(lref) or not ARTIFACT_REF_RE.match(cref) or not ARTIFACT_REF_RE.match(nref) or not ARTIFACT_REF_RE.match(cpref) or not isinstance(fv, bool) or rb not in ("verified", "not_applicable", "unverified", "failed") or outc not in ("passed", "failed"):
-                raise ValueError("parity_fields")
-            lists = {}
-            for lk in ("legacy_cases", "candidate_cases", "diverged_observations", "effect_violations"):
-                arr = doc.get(lk)
-                if not isinstance(arr, list) or not all(isinstance(x, str) and x.strip() for x in arr):
-                    raise ValueError(lk)
-                lists[lk] = sorted({x.strip() for x in arr})
-            out.append({"schema": "drift.parity-receipt/1", **s, "frame_verified": fv, **lists})
-        except Exception as exc:
-            errs.append(f"{pf.name}: {exc}")
-    return out, errs
-
-
+ files = [f for p in events_paths for f in (sorted(p.glob("*.parity.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".parity.json") else []))]
+ out, errs, seen = [], [], set()
+ str_keys = ("contract", "digest", "requirement_ref", "legacy_target", "candidate_target", "legacy_subject_ref", "candidate_subject_ref", "normalization_ref", "corpus_ref", "rollback_readback", "outcome")
+ for pf in files:
+  if pf in seen:continue
+  seen.add(pf)
+  try:
+   doc = decode_fn(pf.read_text(encoding="utf-8"))
+   if not isinstance(doc, dict) or set(doc) != PARITY_KEYS or doc.get("schema") != "drift.parity-receipt/1" or any(not isinstance(doc.get(k), str) or not doc[k].strip() for k in str_keys):raise ValueError("parity_keys")
+   s = {k: doc[k].strip() for k in str_keys}
+   cid, dig, rref, leg, cand, lref, cref, nref, cpref, rb, outc = (s[k] for k in str_keys)
+   fv = doc.get("frame_verified")
+   if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", cid) or not ARTIFACT_REF_RE.match(dig) or not ARTIFACT_REF_RE.match(rref) or leg == cand or not ARTIFACT_REF_RE.match(lref) or not ARTIFACT_REF_RE.match(cref) or not ARTIFACT_REF_RE.match(nref) or not ARTIFACT_REF_RE.match(cpref) or not isinstance(fv, bool) or rb not in ("verified", "not_applicable", "unverified", "failed") or outc not in ("passed", "failed"):raise ValueError("parity_fields")
+   lists = {}
+   for lk in ("legacy_cases", "candidate_cases", "diverged_observations", "effect_violations"):
+    arr = doc.get(lk)
+    if not isinstance(arr, list) or not all(isinstance(x, str) and x.strip() for x in arr):raise ValueError(lk)
+    lists[lk] = sorted({x.strip() for x in arr})
+   out.append({"schema": "drift.parity-receipt/1", **s, "frame_verified": fv, **lists})
+  except Exception as exc:errs.append(f"{pf.name}: {exc}")
+ return out, errs
 def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: list[dict[str, Any]], phase: str, digest_matches_fn: Callable[[str, str], bool], expected_subject_ref: str = "", shard_subject_refs: set[str] | None = None, mig_checks: list[dict[str, Any]] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
-    cm = contract.get("cutover") or {}
-    if not cm:
-        return [], []
-    enf = str(cm.get("enforce", "release"))
-    enforced_now = enf == "always" or phase == "release"
-    matching = [r for r in parity_receipts if r["contract"] == contract["id"] and digest_matches_fn(r["digest"], contract["digest"])]
-    if not matching:
-        return (["parity.missing"] if enforced_now else []), []
-    if len(matching) > 1:
-        f = matching[0]
-        if any(r != f for r in matching[1:]):
-            return ["parity.conflicting_receipts"], [{**r, "effective_outcome": "failed", "reason": "parity.conflicting_receipts"} for r in matching]
-    rec = matching[0]
-    raw_cases = contract.get("cases") or {}
-    active = sorted(cid for cid, c in raw_cases.items() if isinstance(c, dict) and "status" not in c)
-    needs_frames = bool((contract.get("scope_writes") or []) or any(isinstance(c, dict) and "writes" in c for c in raw_cases.values()))
-    allowed = set(cm.get("intentional_diffs") or [])
-    comp_ok = rec["legacy_subject_ref"] != rec["candidate_subject_ref"] and all(ac in rec["legacy_cases"] and ac in rec["candidate_cases"] for ac in active)
-    sh_refs = shard_subject_refs or set()
-    sub_ok = (not expected_subject_ref or digest_matches_fn(rec["candidate_subject_ref"], expected_subject_ref)) and (not sh_refs or any(digest_matches_fn(rec["candidate_subject_ref"], s) for s in sh_refs))
-    norm_ok = rec["legacy_target"] == cm.get("legacy_target") and rec["candidate_target"] == cm.get("candidate_target") and digest_matches_fn(rec["normalization_ref"], str(cm.get("normalization_ref", ""))) and digest_matches_fn(rec["corpus_ref"], str(cm.get("corpus_ref", ""))) and (not cm.get("requirement_ref") or digest_matches_fn(rec["requirement_ref"], cm["requirement_ref"]))
-    obs_ok = all(d in allowed for d in rec["diverged_observations"])
-    eff_ok = not rec["effect_violations"] and (not needs_frames or rec["frame_verified"])
-    rb_ok = cm.get("rollback_readback", "not_applicable") != "required" or rec["rollback_readback"] == "verified"
-    req_migs = cm.get("migration_ids") or []
-    m_list = mig_checks or []
-    migs_ok = all(
-        any(mr.get("migration_id") == mid and mr.get("effective_outcome") == "passed" and digest_matches_fn(str(mr.get("subject_ref", "")), rec["candidate_subject_ref"]) for mr in m_list)
-        and not any(mr.get("migration_id") == mid and mr.get("effective_outcome") != "passed" for mr in m_list)
-        for mid in req_migs
-    )
-    reasons = []
-    if not comp_ok:
-        reasons.append("parity.incomplete_target")
-    if not sub_ok:
-        reasons.append("parity.subject_mismatch")
-    if not norm_ok:
-        reasons.append("parity.normalization_mismatch")
-    if not obs_ok:
-        reasons.append("parity.observation_mismatch")
-    if not eff_ok:
-        reasons.append("parity.effect_mismatch")
-    if not rb_ok:
-        reasons.append("parity.rollback_incompatible")
-    if not migs_ok:
-        reasons.append("parity.migration_unverified")
-    if rec["outcome"] != "passed" and not reasons:
-        reasons.append("parity.observation_mismatch")
-    eff_out = "passed" if not reasons and rec["outcome"] == "passed" else "failed"
-    item = {**rec, "effective_outcome": eff_out}
-    if reasons:
-        item["reason"] = reasons[0]
-    return reasons, [item]
+ cm = contract.get("cutover") or {}
+ if not cm:return [], []
+ enforced_now = str(cm.get("enforce", "release")) == "always" or phase == "release"
+ matching = [r for r in parity_receipts if r["contract"] == contract["id"] and digest_matches_fn(r["digest"], contract["digest"])]
+ if not matching:return (["parity.missing"] if enforced_now else []), []
+ if len(matching) > 1 and any(r != matching[0] for r in matching[1:]):return ["parity.conflicting_receipts"], [{**r, "effective_outcome": "failed", "reason": "parity.conflicting_receipts"} for r in matching]
+ rec, raw_cases = matching[0], contract.get("cases") or {}
+ active = sorted(cid for cid, c in raw_cases.items() if isinstance(c, dict) and "status" not in c)
+ needs_frames = bool((contract.get("scope_writes") or []) or any(isinstance(c, dict) and "writes" in c for c in raw_cases.values()))
+ allowed, sh_refs, m_list = set(cm.get("intentional_diffs") or []), shard_subject_refs or set(), mig_checks or []
+ comp_ok = rec["legacy_subject_ref"] != rec["candidate_subject_ref"] and all(ac in rec["legacy_cases"] and ac in rec["candidate_cases"] for ac in active)
+ sub_ok = (not expected_subject_ref or digest_matches_fn(rec["candidate_subject_ref"], expected_subject_ref)) and (not sh_refs or any(digest_matches_fn(rec["candidate_subject_ref"], s) for s in sh_refs))
+ norm_ok = rec["legacy_target"] == cm.get("legacy_target") and rec["candidate_target"] == cm.get("candidate_target") and digest_matches_fn(rec["normalization_ref"], str(cm.get("normalization_ref", ""))) and digest_matches_fn(rec["corpus_ref"], str(cm.get("corpus_ref", ""))) and (not cm.get("requirement_ref") or digest_matches_fn(rec["requirement_ref"], cm["requirement_ref"]))
+ obs_ok, eff_ok, rb_ok = all(d in allowed for d in rec["diverged_observations"]), not rec["effect_violations"] and (not needs_frames or rec["frame_verified"]), cm.get("rollback_readback", "not_applicable") != "required" or rec["rollback_readback"] == "verified"
+ migs_ok = all(any(mr.get("migration_id") == mid and mr.get("effective_outcome") == "passed" and digest_matches_fn(str(mr.get("subject_ref", "")), rec["candidate_subject_ref"]) for mr in m_list) and not any(mr.get("migration_id") == mid and mr.get("effective_outcome") != "passed" for mr in m_list) for mid in (cm.get("migration_ids") or []))
+ reasons = [tag for cond, tag in ((not comp_ok, "parity.incomplete_target"), (not sub_ok, "parity.subject_mismatch"), (not norm_ok, "parity.normalization_mismatch"), (not obs_ok, "parity.observation_mismatch"), (not eff_ok, "parity.effect_mismatch"), (not rb_ok, "parity.rollback_incompatible"), (not migs_ok, "parity.migration_unverified")) if cond]
+ if rec["outcome"] != "passed" and not reasons:reasons.append("parity.observation_mismatch")
+ eff_out = "passed" if not reasons and rec["outcome"] == "passed" else "failed"
+ return reasons, [{**rec, "effective_outcome": eff_out, **({"reason": reasons[0]} if reasons else {})}]
+def parse_subject_manifest_core(text: str, decode_fn: Any, canon_fn: Any, sec_str_fn: Any, valid_rel_scope_fn: Any, sha256_re: Any) -> dict[str, Any]:
+ import hashlib
+ doc = decode_fn(text)
+ if not isinstance(doc,dict) or any(k not in ("schema","subject_ref","artifact_ref","sources","lockfile_ref","toolchain","target","features","flags","harness","verifier_ref") for k in doc) or doc.get("schema") != "drift.subject-manifest/1":raise ValueError("subject_manifest")
+ aref,lref,vref = (sec_str_fn(doc,"artifact_ref") if "artifact_ref" in doc else ""),sec_str_fn(doc,"lockfile_ref"),sec_str_fn(doc,"verifier_ref")
+ tc,tgt,harn = sec_str_fn(doc,"toolchain"),sec_str_fn(doc,"target"),sec_str_fn(doc,"harness")
+ if (aref and not sha256_re.match(aref)) or not sha256_re.match(lref) or not sha256_re.match(vref) or not valid_rel_scope_fn(harn) or "#" not in harn:raise ValueError("subject_manifest_fields")
+ feats = [sec_str_fn({"x":x},"x") for x in doc.get("features",[])] if isinstance(doc.get("features",[]),list) else None
+ flgs = [sec_str_fn({"x":x},"x") for x in doc.get("flags",[])] if isinstance(doc.get("flags",[]),list) else None
+ srcs = doc.get("sources")
+ if feats is None or flgs is None or not isinstance(srcs,dict) or not srcs or any(not valid_rel_scope_fn(sp) or "#" in sp or not isinstance(sh,str) or not sha256_re.match(sh) for sp,sh in srcs.items()):raise ValueError("subject_manifest_sources")
+ c_obj = {"features":feats,"flags":flgs,"harness":harn,"lockfile_ref":lref,"schema":"drift.subject-manifest/1","sources":dict(srcs),"target":tgt,"toolchain":tc,"verifier_ref":vref}
+ comp_ref = "sha256:" + hashlib.sha256(canon_fn(c_obj).encode("utf-8")).hexdigest()
+ if "subject_ref" in doc and sec_str_fn(doc,"subject_ref") != comp_ref:raise ValueError("subject_ref_mismatch")
+ return {**c_obj,"subject_ref":comp_ref,**({"artifact_ref":aref} if aref else {})}
 
 

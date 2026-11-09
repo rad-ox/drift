@@ -2,11 +2,10 @@
 
 DRIFT is distributed under a dual-surface license model:
 
-1. **Open Integration Surface (MIT License)** — All test bridges (`bridges/`,
-   `integrations/`), the independent reference proof verifier (`verifier/`),
-   editor and Git hooks (`hooks/`, `install/hooks/`), JSON schemas (`schemas/`),
-   agent skill definitions (`skill/drift/`, `agent/skills/drift/`), example
-   areas (`example/`, `examples/`), installers (`install.sh`, `install.ps1`,
+1. **Open Integration Surface (MIT License)** — All test bridges (`bridges/`), the independent reference proof verifier (`verifier/`),
+   editor and Git hooks (`hooks/`), JSON schemas (`schemas/`),
+   agent skill definitions (`skill/drift/`), example
+   areas (`example/`), installers (`install.sh`, `install.ps1`,
    `install.cmd`, `uninstall.cmd`), visual assets (`assets/`), and documentation
    (`*.md`) are licensed under the **MIT License** below. You may freely copy,
    vendor, modify, and distribute them inside your own personal, open-source, or

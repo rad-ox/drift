@@ -14,7 +14,7 @@ import java.util.Set;
 
 /**
  * Supports closure-based JVM suites (such as Scala 3 MUnit {@code FunSuite}) and tuple, map,
- * iterable, record or Scala {@code Product} verification without external runtime dependencies (D229).
+ * iterable, record or Scala {@code Product} verification without external runtime dependencies.
  */
 final class DriftVerify {
     private static final ThreadLocal<String> STANDALONE_TEST_ID = new ThreadLocal<>();
@@ -403,7 +403,9 @@ final class DriftVerify {
                             + " requires non-empty variants and an execute callback");
         }
         Map<String, String> whenProj = c.projectionMap("when");
+        String pfx = c.contract() + "." + c.id();
         for (V variant : variants) {
+            DriftProbes.checkBolaVariantPair(pfx, variant);
             if (variant instanceof Map<?, ?>) {
                 for (Map.Entry<String, Object> we : c.when().entrySet()) {
                     String wk = we.getKey();
@@ -463,12 +465,12 @@ final class DriftVerify {
                 Object fkObj = exp.get("forbid_keys");
                 if (fkObj instanceof List<?> forbidList) {
                     for (Object fk : forbidList) {
-                        if (actMap.containsKey(String.valueOf(fk))) {
+                        if (DriftProbes.hasKeyRecursive(actMap, String.valueOf(fk), true)) {
                             throw new AssertionError(pfx + ": forbidden key \"" + fk + "\" present on then." + key);
                         }
                     }
                 } else if (fkObj instanceof String fkStr) {
-                    if (!actMap.containsKey(fkStr)) {
+                    if (!DriftProbes.hasKeyRecursive(actMap, fkStr, true)) {
                         throw new AssertionError(pfx + ": drop-forbid-key mutant on then." + key + ".forbid_keys killed");
                     }
                 } else {
@@ -512,7 +514,7 @@ final class DriftVerify {
         out.put("capabilities", new ArrayList<>(new java.util.TreeSet<>(CAPABILITIES)));
         out.put("runtime_baseline", "java-25-lts");
         out.put("schema", "drift.bridge-capabilities/1");
-        out.put("version", "0.4.0");
+        out.put("version", "0.5.0");
         return out;
     }
 

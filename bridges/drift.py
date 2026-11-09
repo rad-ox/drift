@@ -99,7 +99,7 @@ def _resolve_env() -> dict[str, str] | None:
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key:
         return _env_cache[1]
-    base = {'adapter': 'drift.py@0.4.0', 'config': 'default', 'deps': 'none', 'drift': '0.4.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.5.0', 'config': 'default', 'deps': 'none', 'drift': '0.5.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -370,6 +370,7 @@ class DriftContext:
         self.view = _load_view(contract_id)
         self.mutation_override = eff_mut
         self.reads: dict[str, set[str]] = {}
+        self.unobserved_cases: set[str] = set()
         self._input_files: dict[Path, tuple[str, str]] = {}
         vc = self.view.get('cases') or {}
         for c in self.cases:
@@ -512,17 +513,33 @@ class DriftContext:
     def check_frame(self, case_id: str, frame_obs: Mapping[str, Any]) -> None:
         _checks._sec.verify_case_frame(self, case_id, frame_obs, _checks.values_mismatch, True)
 
+    def check_idempotency(self, case_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
+        return _checks._sec.run_idempotency_probe(self, case_id, obs, _checks.values_mismatch, lambda ctx, cid, p, ch: _checks.run_projection_checks(ctx, cid, p, ch))
+
+    def check_seam_probe(self, case_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
+        return _checks._sec.run_seam_probe(self, case_id, obs)
+
+    def check_rollback(self, case_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
+        return _checks._sec.run_rollback_probe(self, case_id, obs, _checks.values_mismatch)
+
+    def check_log_sink(self, case_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
+        return _checks._sec.run_log_sink_probe(self, case_id, obs)
+
     def check_view(self, case_id: str, view: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         self._require_tagged(case_id)
         _checks.check_view_table(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], view, checks, self.mutation_override, _METRICS, lambda: self._proj_map('then'))
 
     def fully_read_cases(self) -> list[str]:
         out: list[str] = []
+        unobs = getattr(self, 'unobserved_cases', set())
         for c in self.cases:
+            if c in unobs:
+                continue
             t_keys = list((self.view['cases'][c].get('then') or {}).keys())
             f_res = _checks._sec.forbidden_writes_of(self.view, c)
+            r_probes = _checks._sec.required_probes_of(self.view, c)
             seen = self.reads[c]
-            if t_keys and all(k in seen for k in t_keys) and all(f'@frame:{r}' in seen for r in f_res):
+            if t_keys and all(k in seen for k in t_keys) and all(f'@frame:{r}' in seen for r in f_res) and all(f'@probe:{p}' in seen for p in r_probes):
                 out.append(c)
         return out
 
@@ -587,6 +604,13 @@ def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...],
     }
     if version:
         ev['digest'] = version
+    if ctx.view.get('drift') == '0.3':
+        req_caps = list(ctx.view.get('required_capabilities') or [])
+        for rc in req_caps:
+            if rc not in _checks.CAPS_03:
+                raise AssertionError(f'bridge.capability_unsupported:{rc}')
+        ev['schema'] = '0.3'
+        ev['capabilities'] = list(_checks.CAPS_03)
     _write_event(ev)
     elapsed = max(0.001, time.perf_counter() - start)
     if mut_cfg is not None:

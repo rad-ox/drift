@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `drift:drift-junit:0.4.0` and
-`drift:drift-maven-plugin:0.4.0` (from `maven/` in the release package) into
+The release installer puts `drift:drift-junit:0.5.0` and
+`drift:drift-maven-plugin:0.5.0` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -26,7 +26,7 @@ id, and reruns then collapse them.
 <dependency>
   <groupId>drift</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -37,7 +37,7 @@ id, and reruns then collapse them.
 <plugin>
   <groupId>drift</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
   <executions>
     <execution>
       <goals>
@@ -186,7 +186,7 @@ pass `drift.resolved` and `drift.events` to the forked test JVM:
 ```scala
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
+libraryDependencies += "drift" % "drift-junit" % "0.5.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",

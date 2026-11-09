@@ -102,7 +102,7 @@ final class Cli {
 
     /**
      * Fails unless the command reports the plugin version; warns when both name a build and the
-     * builds differ, since builds of one version share the event format (D40).
+     * builds differ, since builds of one version share the event format.
      */
     void requireVersion(String expected, String build, Log log) throws MojoExecutionException {
         try {
@@ -133,7 +133,7 @@ final class Cli {
         }
     }
 
-    /** The build identity the plugin was built with, empty when none (D40). */
+    /** The build identity the plugin was built with, empty when none. */
     static String pluginBuild() {
         try (InputStream in = Cli.class.getResourceAsStream("build.properties")) {
             if (in == null) {

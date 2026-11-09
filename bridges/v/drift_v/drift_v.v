@@ -1,12 +1,12 @@
-// Zero-dependency native V test bridge for DRIFT (SPEC §§9, 25, D245).
+// Zero-dependency native V test bridge for DRIFT.
 module drift_v
 
 import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.4.0'
-pub const bridge_version = '0.4.0'
+pub const adapter_id = 'drift_v.v@0.5.0'
+pub const bridge_version = '0.5.0'
 
 const env_keys = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']!
 
@@ -359,8 +359,10 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 			when_map = w_any.clone()
 		}
 	}
+	pfx := '${ctx.contract_id}.${case_id}'
 	for v_json in variants_json {
 		v_doc := json2.decode[json2.Any](v_json) or { return error('variant is not valid JSON') }
+		_ = check_bola_variant_pair(pfx, v_doc)!
 		if v_doc is map[string]json2.Any {
 			for wk, wexp in when_map {
 				ptr := proj_when[wk] or { '/' + escape_pointer(wk) }
@@ -376,7 +378,30 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 	}
 }
 
+fn is_unobserved_frame_entry(obs json2.Any) bool {
+	if obs is map[string]json2.Any {
+		if ob := obs['observed'] {
+			if ob is bool && !(ob as bool) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+fn has_frame_metrics_entry(obs json2.Any) bool {
+	if obs is map[string]json2.Any {
+		return 'writes' in obs || 'operations' in obs || 'events' in obs
+			|| ('before' in obs && 'after' in obs)
+	}
+	return false
+}
+
 pub fn (mut ctx DriftContext) check_frame(case_id string, frame_json string) ! {
+	ctx.check_frame_with_mode(case_id, frame_json, true)!
+}
+
+fn (mut ctx DriftContext) check_frame_with_mode(case_id string, frame_json string, strict bool) ! {
 	_ := ctx.case_map(case_id)!
 	forbidden := forbidden_writes_of(ctx.view, case_id)
 	doc := json2.decode[json2.Any](frame_json) or { return error('frame_json is not valid JSON') }
@@ -392,10 +417,24 @@ pub fn (mut ctx DriftContext) check_frame(case_id string, frame_json string) ! {
 		checked_keys[base_res] = true
 		obs := fmap[res] or {
 			fmap[base_res] or {
-				return error('${pfx}: missing frame observation for forbidden write resource "${res}"')
+				if strict {
+					return error('${pfx}: missing frame observation for forbidden write resource "${res}"')
+				}
+				continue
 			}
 		}
-		verify_single_frame_obs(pfx, res, obs, false)!
+		if has_frame_metrics_entry(obs) {
+			verify_single_frame_obs(pfx, res, obs, false)!
+		}
+		if is_unobserved_frame_entry(obs) {
+			if strict {
+				return error('${pfx}: frame.observer_missing for forbidden write resource "${res}"')
+			}
+			continue
+		}
+		if !has_frame_metrics_entry(obs) {
+			verify_single_frame_obs(pfx, res, obs, false)!
+		}
 		ctx.mark_read(case_id, '@frame:${res}')
 	}
 	allowed, allowed_bases, _ := allowed_write_sets_of(ctx.view, case_id)
@@ -406,7 +445,18 @@ pub fn (mut ctx DriftContext) check_frame(case_id string, frame_json string) ! {
 			continue
 		}
 		if obs_k := fmap[k] {
-			verify_single_frame_obs(pfx, k, obs_k, true)!
+			if has_frame_metrics_entry(obs_k) {
+				verify_single_frame_obs(pfx, k, obs_k, true)!
+			}
+			if is_unobserved_frame_entry(obs_k) {
+				if strict {
+					return error('${pfx}: frame.observer_missing for perimeter resource "${k}"')
+				}
+				continue
+			}
+			if !has_frame_metrics_entry(obs_k) {
+				verify_single_frame_obs(pfx, k, obs_k, true)!
+			}
 		}
 	}
 }
@@ -448,7 +498,14 @@ pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json stri
 	if doc is map[string]json2.Any {
 		if fr_any := doc['_frame'] {
 			if fr_any is map[string]json2.Any {
-				ctx.check_frame(case_id, json2.Any(fr_any).json_str())!
+				mut has_unobs := false
+				for _, fv in fr_any {
+					if is_unobserved_frame_entry(fv) {
+						has_unobs = true
+						break
+					}
+				}
+				ctx.check_frame_with_mode(case_id, json2.Any(fr_any).json_str(), !has_unobs)!
 			}
 		}
 	}
@@ -817,7 +874,11 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	}
 	cls, _, canon_test := canonical_test_id(opts.test)!
 	view := load_contract_view(opts.contract, opts.resolved_dir)!
-	digest := (view['digest'] or { json2.Any('') }).str()
+	digest := if r_any := view['ref'] {
+		r_any.str()
+	} else {
+		(view['digest'] or { json2.Any('') }).str()
+	}
 	ev_dir := if opts.events_dir != '' {
 		opts.events_dir
 	} else {
@@ -853,6 +914,22 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 			if read_list.len > 0 {
 				ev['read'] = json2.Any(read_list.map(json2.Any(it)))
 			}
+		}
+		if (view['drift'] or { json2.Any('') }).str() == '0.3' {
+			supported_03 := ['rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1',
+				'rel-series/1', 'rel-tol/1', 'unit-conversion/1']
+			if rc := view['required_capabilities'] {
+				if rc is []json2.Any {
+					for item in rc {
+						s := item.str()
+						if s !in supported_03 {
+							return error('bridge.capability_unsupported:${s}')
+						}
+					}
+				}
+			}
+			ev['schema'] = json2.Any('0.3')
+			ev['capabilities'] = json2.Any(supported_03.map(json2.Any(it)))
 		}
 		ev['test'] = json2.Any(opts.test)
 		update_shard_and_meta(ev_dir, json2.Any(ev).json_str(), cls, canon_test, ctx.inputs,

@@ -187,11 +187,11 @@ harness = "src/items.c#proof_no_negative_total"
 enforce = "release"
 ```
 
-- **Relational `then` tables**: constrain numeric intervals (`min`, `max`), lengths (`min_len`, `max_len`, `non_empty`), finite sets (`in`, `not_in`), string affixes (`prefix`, `suffix`, `contains`), raw payload key allow/deny lists (`allowed_keys`, `forbid_keys`), cross-field comparisons (`le_field`, `ge_field`, `eq_field`), and affine sums (`sum_fields`).
-- **`[invariants]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`).
-- **Performance (`[budgets.<id>]`), Security (`[requires].security`) & Formal (`[formal.<id>]`) obligations**: pass `--measurements bench.jsonl` (supporting `request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, and `work_units`), `*.security.json` receipts, and `*.formal.json` / `*.model.json` receipts (`tlc`, `cbmc`, `alloy`, `spin`, Kani) to `drift prove`, `drift gate`, and `verifier/drift_verify.py`.
+- **Relational `then` tables**: constrain numeric intervals (`min`, `max`), floating-point tolerances (`approx`, `abs_tol`, `rel_tol`), tuning-tolerant trajectory invariants (`monotonic`, `sum_total`, `step_max_delta`), lengths (`min_len`, `max_len`, `non_empty`), finite sets (`in`, `not_in`), string affixes (`prefix`, `suffix`, `contains`), recursive payload key allow/deny lists (`allowed_keys`, `forbid_keys`), cross-field comparisons (`le_field`, `ge_field`, `eq_field`), affine sums (`sum_fields`), and double-entry linear conservation (`balance_fields`).
+- **`[invariants]`, `[assurance.guards]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`, `checkLogSink`, and unobserved collector frames `{ "observed": false }`); schema `0.3` contracts (`drift fmt --upgrade 0.3`) add domain-separated 256-bit `dr2` identities (`dr2b`, `dr2a`, `dr2r`, `dr2x`) and typed `[assurance.guards]`.
+- **Performance (`[budgets.<id>]`), Security (`[requires].security`), Regulated (`[risks]`/`[controls]`), Simulation (`drift.sim-receipt/1`) & Formal (`[formal.<id>]`) obligations**: pass `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`), `*.security.json` receipts (with selective `--security-lock` reuse), `*.study.json` and `*.evaluation.json` validity/corpus receipts with detached `.sig.json` multi-party signatures, `drift.sim-receipt/1` deterministic tick replay/rollback receipts, and `*.formal.json` / `*.model.json` receipts (`tlc`, `cbmc`, `alloy`, `spin`, Kani, `gappa` `arithmetic_model`, `stochastic_experiment`, QCEC `equivalence`, `observed_convergence`, `trajectory_stability`) to `drift prove`, `drift gate`, and `verifier/drift_verify.py`.
 - **Domain `[concepts]`, Migration `[cutover]` & UI Surface Sequences**: define context-qualified domain `[concepts]` in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, `@concept` recall), enforce legacy cutover parity (`[cutover]`, `*.parity.json` `drift.parity-receipt/1`, and `*.migration.json` `drift.migration-receipt/1`) or triage production signals (`drift case add --from-signal`), and verify multi-step UI surfaces (`drift.ui-observation/1` via `collectPlaywrightSequence` / `observeUiSequence`, reusable `async-action-feedback@1` and `wizard-form@1` recovery profiles, `evaluateScenarioMatrix`, and Web, Compose, or Windows UIA adapters).
-- **Perimeter Seam Governance, Shadow Mode & Federated Composition**: enforce ambient world-frame traps (`_frame` with `allowed_keys` and `checkFrame`), track `.drift/seam-stub/` producer provenance in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), probe 2-skeleton neighbor extremes (`checkSeamBounds` / `check_seam_bounds`) and incoming-seam faults (`prove.seam_mutants`), run DRIFT in external **Shadow Mode** (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, read-only subject tree with `GIT_OPTIONAL_LOCKS=0`, and the 2-phase JUnit XML adapter `verifier/drift_shadow_junit.py`), and compose multi-repository rollouts via `drift.composition-manifest/1` and bidirectional `drift.boundary-bundle/1` (`offers`/`requires`).
+- **Canonical Observation Protocol (`drift.observation/1`), Supervisor Sessions (`drift.bridge-session/1`), Perimeter Seams, Shadow Mode & Federated Composition**: evaluate lossless `ObsValue` records (`int64`, `decimal`, `bytes`, and kernel-side COBOL copybook decoding) and supervisor sessions (`drift.bridge-session/1`) directly in the kernel, enforce `L0–L3` causal execution coupling (`sweep --flow`) and ambient world-frame traps (`_frame` with `allowed_keys` and `checkFrame`), track `.drift/seam-stub/` producer provenance in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), probe 2-skeleton neighbor extremes (`checkSeamBounds` / `check_seam_bounds`), behavioral probes (idempotency, seam retry/query, rollback, BOLA), and incoming-seam faults (`prove.seam_mutants`), run DRIFT in external **Shadow Mode** (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, read-only subject tree with `GIT_OPTIONAL_LOCKS=0`, and the 2-phase JUnit XML adapter `verifier/drift_shadow_junit.py`), and compose multi-repository rollouts via `drift.composition-manifest/1` and bidirectional `drift.boundary-bundle/1` (`offers`/`requires`).
 
 ---
 
@@ -212,7 +212,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -222,7 +222,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.4.0</version>
+      <version>0.5.0</version>
       <executions>
         <execution>
           <goals>
@@ -261,7 +261,7 @@ In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` from 
 // build.sbt
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
+libraryDependencies += "drift" % "drift-junit" % "0.5.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -397,18 +397,19 @@ drift gate .drift/contracts --events .drift-work/events
 While the primary bridges target the latest **LTS/stable** runtimes (`drift-junit` on Java 25 LTS / Scala 3.9 LTS / JUnit 5 Platform, `drift.mjs` on Node.js 24 LTS, `drift.py` on Python 3.14, `drift_rust` on Rust Edition 2024, `drift_v` on V 0.5.2), legacy monoliths and brownfield carve-outs use dedicated zero-dependency bridges:
 - **Java 6–8 / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: attach `DriftJUnit4.Listener` to JUnit 4 `RunListener` to emit `.meta.json` inventories and `bound` events (`read` omitted) with zero JUnit 5 dependencies, and call `DriftJUnit4.verify(contract, caseId, observations, frames)` and `DriftJUnit4.replayCounterexamples(...)` inside extracted slice tests.
 - **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: verify RFC 6901 JSON Pointer projections, relational/negative clauses (`forbid_keys`, `not_in`), case write frames (`checkFrame`), and `*.cex.json` counterexample fixtures, writing atomic `.events.jsonl` and `.meta.json` sidecars.
-- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: parse COBOL `PIC` copybook layouts (`--copybook`), marshal `when` JSON into fixed-width records (`PIC X`, `PIC 9`, `PIC S9...V99`), bind `.cbl`/`.cpy` inputs in `.meta.json`, and emit `drift.parity-receipt/1` cutover receipts comparing mainframe batch outputs against candidate microservices.
+- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: parse COBOL `PIC` copybook layouts (`--copybook`), marshal `when` JSON into fixed-width records (`PIC X`, `PIC 9`, `PIC S9...V99`), bind `.cbl`/`.cpy` inputs in `.meta.json` (or emit raw `drift.observation/1` records decoded by the kernel), and emit `drift.parity-receipt/1` cutover receipts comparing mainframe batch outputs against candidate microservices.
+- **C++20 (`bridges/drift_cpp.hpp`), C# / .NET / Unity (`bridges/Drift.cs`) & Godot 4 GDScript (`bridges/drift.gd`)**: zero-dependency single-file bridges for game, simulation, and native codebases supporting tuning-tolerant trajectory invariants (`monotonic`, `sum_total`, `step_max_delta`), numerical tolerances (`approx`, `abs_tol`, `rel_tol`, `balance_fields`), deterministic tick replay (`drift.sim-receipt/1`), recursive `forbid_keys`, unobserved frame collectors, and `checkLogSink`.
 
 ---
 
 ## Level 2: Incremental Selection, Blast Radius & Spec/Trace Scaffolding (`Pro`)
 
-As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, PHP, COBOL, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
+As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `scope.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, C++, C#, GDScript, PHP, COBOL, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
 
 ```bash
-# List only the test files affected by modified source paths
+# List only the test files (or emit a structured drift.test-plan/1 plan) affected by modified source paths
 drift select .drift/contracts --events .drift/events --changed src/items.js --files
-
+drift select .drift/contracts --events .drift/events --changed src/items.js --plan --cmd node --test
 # Reuse prior passing proofs for untouched contracts on a green gate
 drift gate .drift/contracts --events .drift/events --base HEAD --changed src/items.js
 

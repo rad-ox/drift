@@ -134,6 +134,34 @@
             "adapter": { "type": "string", "minLength": 1 },
             "policy": { "type": "string", "minLength": 1 }
           }
+        },
+        "shadow_run": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "run_id", "source_snapshot", "bindings_ref", "shadow_snapshot", "shadow_inputs"],
+          "properties": {
+            "schema": { "type": "string", "const": "drift.shadow-run/1" },
+            "run_id": { "type": "string", "minLength": 1 },
+            "source_snapshot": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+            "bindings_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "shadow_snapshot": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "sequence": { "type": "integer", "minimum": 1 },
+            "supersedes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "selected_tests": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "shadow_inputs": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+            }
+          }
         }
       },
       "oneOf": [
@@ -192,7 +220,7 @@
         "digest": { "type": "string", "pattern": "^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$" },
         "formal_id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
         "requirement_ref": { "type": "string", "pattern": "^dr1:sha256:[0-9a-f]{64}$" },
-        "verifier": { "type": "string", "enum": ["kani", "loom", "tlc", "cbmc", "alloy", "spin", "shuttle", "stateright", "dafny"] },
+        "verifier": { "type": "string", "enum": ["kani", "loom", "tlc", "cbmc", "alloy", "spin", "shuttle", "stateright", "dafny", "qcec", "gappa"] },
         "verifier_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "subject_ref": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "subject_identity": { "type": "string", "enum": ["pinned", "opaque_external"] },
@@ -223,7 +251,7 @@
         "domain_bounds": {
           "type": "object",
           "minProperties": 1,
-          "propertyNames": { "enum": ["loop_unwind", "max_preemptions", "max_steps", "max_threads", "input_bytes"] },
+          "propertyNames": { "enum": ["loop_unwind", "max_preemptions", "max_steps", "max_threads", "input_bytes", "qubits", "ansatz_layers", "circuit_depth"] },
           "additionalProperties": { "type": "integer", "minimum": 1 }
         },
         "cover_checks": {

@@ -1,10 +1,11 @@
-// Zero-dependency compile-once Rust test bridge for DRIFT (SPEC §§9, 25, D253).
+// Zero-dependency compile-once Rust test bridge for DRIFT.
 
 pub mod checks;
 mod context;
 pub mod formal;
 pub mod json;
 mod mutants;
+pub mod probes;
 
 use checks::{
     check_relational_leaf, escape_pointer, is_relational_table, normalize_pointer, resolve_pointer,
@@ -24,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.4.0";
-pub const BRIDGE_VERSION: &str = "0.4.0";
+pub const ADAPTER_ID: &str = "drift_rust@0.5.0";
+pub const BRIDGE_VERSION: &str = "0.5.0";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",
@@ -270,7 +271,7 @@ fn load_contract_view(
             .trim()
             .to_string()
     };
-    // Fail-closed when DRIFT_RESOLVED / resolved_dir is explicitly configured (D253).
+    // Fail-closed when DRIFT_RESOLVED / resolved_dir is explicitly configured.
     if !rdir.is_empty() {
         let p = Path::new(&rdir).join(format!("{}.json", contract_id));
         let txt = fs::read_to_string(&p).map_err(|e| {
@@ -512,8 +513,9 @@ impl DriftContext {
             }
         }
         if let Some(fr_obj) = doc.as_object().and_then(|m| m.get("_frame")) {
-            if fr_obj.as_object().is_some() {
-                self.check_frame(case_id, &fr_obj.to_json_string())?;
+            if let Some(fmap) = fr_obj.as_object() {
+                let strict = !fmap.values().any(probes::is_unobserved_frame_entry);
+                self.check_frame_with_mode(case_id, &fr_obj.to_json_string(), strict)?;
             }
         }
         Ok(())
@@ -670,6 +672,30 @@ where
                     JsonValue::Array(read_list.into_iter().map(JsonValue::Str).collect()),
                 );
             }
+        }
+        if base_view.get("drift").and_then(|v| v.as_str()) == Some("0.3") {
+            let supported_03 = [
+                "rel-keys-guard/1",
+                "rel-linear-balance/1",
+                "rel-peer-sum/1",
+                "rel-series/1",
+                "rel-tol/1",
+                "unit-conversion/1",
+            ];
+            if let Some(req_arr) = base_view.get("required_capabilities").and_then(|v| v.as_array()) {
+                for item in req_arr {
+                    if let Some(s) = item.as_str() {
+                        if !supported_03.contains(&s) {
+                            return Err(TestError::harness(format!("bridge.capability_unsupported:{}", s)));
+                        }
+                    }
+                }
+            }
+            ev.insert("schema".to_string(), JsonValue::Str("0.3".to_string()));
+            ev.insert(
+                "capabilities".to_string(),
+                JsonValue::Array(supported_03.iter().map(|s| JsonValue::Str((*s).to_string())).collect()),
+            );
         }
         ev.insert("test".to_string(), JsonValue::Str(opts.test.clone()));
         update_shard_and_meta(

@@ -89,6 +89,10 @@ final class DriftStubs {
                 for (Object x : inList) out.add(Json.cloneJsonValue(x));
                 return out;
             }
+            if (m.get("approx") instanceof Number apN) {
+                lo = maxNum(lo, apN);
+                hi = minNum(hi, apN);
+            }
             if (lo != null && hi != null) {
                 return Json.valuesEqual(lo, hi) ? List.of(lo) : List.of(lo, hi);
             }
@@ -112,6 +116,26 @@ final class DriftStubs {
                 String wLo = pfx + "x".repeat(Math.max(0, llo - pfx.length() - sfx.length())) + sfx;
                 String wHi = pfx + "x".repeat(Math.max(0, lhi - pfx.length() - sfx.length())) + sfx;
                 return lhi > llo ? List.of(wLo, wHi) : List.of(wLo);
+            }
+            if (m.containsKey("sum_total") || m.containsKey("monotonic") || m.containsKey("step_max_delta")) {
+                Object st = m.get("sum_total");
+                double tgt = st instanceof Number sn ? sn.doubleValue()
+                        : (st instanceof Map<?, ?> sm && sm.get("eq") instanceof Number eqn ? eqn.doubleValue()
+                        : (st instanceof Map<?, ?> sm2 && sm2.get("min") instanceof Number mn && sm2.get("max") instanceof Number mx ? (mn.doubleValue() + mx.doubleValue()) / 2.0
+                        : (st instanceof Map<?, ?> sm3 && sm3.get("min") instanceof Number mn2 ? mn2.doubleValue()
+                        : (st instanceof Map<?, ?> sm4 && sm4.get("max") instanceof Number mx2 ? mx2.doubleValue() : 1.0))));
+                double eps = m.get("step_max_delta") instanceof Number dn && dn.doubleValue() > 0.0
+                        ? Math.min(0.2, dn.doubleValue() / 2.0) : 0.2;
+                String mode = m.get("monotonic") instanceof String ms ? ms : "";
+                if ("strictly_decreasing".equals(mode) || "non_increasing".equals(mode)) {
+                    double a = Math.round((tgt / 2.0 + eps / 2.0) * 1e12) / 1e12;
+                    return List.of(m.containsKey("sum_total") ? List.of(a, Math.round((tgt - a) * 1e12) / 1e12) : List.of(Math.round((1.0 + eps) * 1e12) / 1e12, 1.0));
+                }
+                if ("strictly_increasing".equals(mode) || "non_decreasing".equals(mode)) {
+                    double a = Math.round((tgt / 2.0 - eps / 2.0) * 1e12) / 1e12;
+                    return List.of(m.containsKey("sum_total") ? List.of(a, Math.round((tgt - a) * 1e12) / 1e12) : List.of(1.0, Math.round((1.0 + eps) * 1e12) / 1e12));
+                }
+                return List.of(List.of(tgt / 2.0, tgt - tgt / 2.0));
             }
             return List.of("");
         }

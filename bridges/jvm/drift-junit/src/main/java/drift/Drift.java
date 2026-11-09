@@ -57,7 +57,7 @@ public final class Drift {
         return expect(contract, caseId, null);
     }
 
-    /** Returns one case of the contract at an explicit level; auto-binds unannotated/closure tests (D229). */
+    /** Returns one case of the contract at an explicit level; auto-binds unannotated/closure tests. */
     public static Case expect(String contract, String caseId, String level) {
         DriftVerify.preCheckExpect(Boolean.TRUE.equals(IN_TEST.get()), TAG.get(), contract, caseId, level);
         Map<String, Object> cases = DriftInternal.map(view(contract).get("cases"), contract + ".cases");
@@ -124,6 +124,33 @@ public final class Drift {
         }
     }
 
+    static boolean isSchema03(String contract) {
+        try {
+            return "0.3".equals(view(contract).get("drift"));
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    static List<String> requiredCapabilities(String contract) {
+        List<String> supported03 = List.of(
+                "rel-keys-guard/1", "rel-linear-balance/1", "rel-peer-sum/1",
+                "rel-series/1", "rel-tol/1", "unit-conversion/1");
+        try {
+            Object raw = view(contract).get("required_capabilities");
+            if (raw instanceof List<?> list) {
+                for (Object item : list) {
+                    if (item instanceof String s && !supported03.contains(s)) {
+                        throw new IllegalStateException("bridge.capability_unsupported:" + s);
+                    }
+                }
+            }
+            return supported03;
+        } catch (RuntimeException e) {
+            return supported03;
+        }
+    }
+
     /** True when the running test read every {@code then} value and required frame of the case. */
     static boolean read(String contract, String caseId) {
         String key = contract + "\u0000" + caseId;
@@ -142,7 +169,11 @@ public final class Drift {
         THEN_READS.get().computeIfAbsent(contract + "\u0000" + caseId, k -> new HashSet<>()).add(predicate);
     }
 
-    /** Records a file read by the running test for §9 proof-key and selection tracking (D59). */
+    static void unmarkCase(String contract, String caseId) {
+        THEN_READS.get().remove(contract + "\u0000" + caseId);
+    }
+
+    /** Records a file read by the running test for proof-key and selection tracking. */
     public static String recordInput(Path file) {
         Path cwd = Path.of("").toAbsolutePath().normalize();
         Path abs = file.isAbsolute() ? file.normalize() : cwd.resolve(file).normalize();
@@ -207,7 +238,7 @@ public final class Drift {
         return IN_TEST.get();
     }
 
-    /** Flushes any standalone programmatic proof events and inventory sidecars to disk (D229, D281). */
+    /** Flushes any standalone programmatic proof events and inventory sidecars to disk. */
     public static void flushEvents() {
         DriftListener.flushStandaloneEvents();
     }
@@ -223,12 +254,12 @@ public final class Drift {
         MUTATION.get().push(DriftInternal.MutationOverride.of(contract, caseId, path, value));
     }
 
-    /** Returns the current per-thread mutation override stack depth (D89). */
+    /** Returns the current per-thread mutation override stack depth. */
     public static int mutationDepth() {
         return MUTATION.get().size();
     }
 
-    /** Runs {@code action} under a scoped mutation override on this thread's arbiter stack (D89). */
+    /** Runs {@code action} under a scoped mutation override on this thread's arbiter stack. */
     public static void withMutation(String contract, String caseId, String path, Object value, Runnable action) {
         Deque<DriftInternal.MutationOverride> stack = MUTATION.get();
         int before = stack.size();
@@ -455,17 +486,10 @@ public final class Drift {
             return (Map<String, Object>) then(key);
         }
 
-        /** Verifies every {@code then} predicate against tuple, map, iterable, or product entries (D229). */
         public void verify(Object... entries) {
             DriftVerify.verify(this, entries);
         }
 
-        /**
-         * Runs one check per {@code then} predicate of the case, passing the expected value. A
-         * predicate without a check fails the test, so a predicate added to the contract cannot
-         * pass unchecked; checks for predicates the case does not have are ignored, so one map can
-         * serve every case of a profile.
-         */
         public void check(Map<String, ? extends Consumer<Object>> checks) {
             for (Map.Entry<String, Object> e : thenRaw().entrySet()) {
                 Consumer<Object> check = checks.get(e.getKey());
@@ -477,11 +501,6 @@ public final class Drift {
             }
         }
 
-        /**
-         * Verifies every {@code then} predicate across a deterministic sample lattice (D66),
-         * annotating any assertion failure with {@code [counterexample: <sample>]} and evaluating
-         * only the first sample during mutation runs.
-         */
         public <S> void checkBounds(List<S> domain, Map<String, ? extends BiConsumer<Object, S>> checks) {
             if (domain == null || domain.isEmpty()) {
                 throw new IllegalArgumentException("domain must not be empty");
@@ -515,12 +534,10 @@ public final class Drift {
             }
         }
 
-        /** Verifies every {@code then} predicate across the bounded profile parameter lattice (D69). */
         public void checkProfileBounds(String param, Map<String, ? extends BiConsumer<Object, Object>> checks) {
             checkBounds(Drift.profileDomain(contract, param), checks);
         }
 
-        /** Verifies every {@code then} predicate across the Cartesian product of profile parameters (D69). */
         public void checkProfileBounds(
                 Collection<String> params,
                 Map<String, ? extends BiConsumer<Object, Map<String, Object>>> checks) {
@@ -531,37 +548,30 @@ public final class Drift {
             return DriftVerify.projectionMap(contract, side);
         }
 
-        /** Synthesizes an input map via {@code projections.when} RFC 6901 JSON Pointers (D86). */
         public Map<String, Object> buildInput() {
             return buildInput(Map.of());
         }
 
-        /** Synthesizes an input map over {@code base} via {@code projections.when} RFC 6901 JSON Pointers (D86). */
         public Map<String, Object> buildInput(Map<String, Object> base) {
             return ExecutionContext.buildInput(when, projectionMap("when"), base);
         }
 
-        /** Synthesizes an output map via {@code projections.then} RFC 6901 JSON Pointers (D104). */
         public Map<String, Object> buildOutput() {
             return buildOutput(Map.of());
         }
 
-        /** Synthesizes an output map over {@code base} via {@code projections.then} RFC 6901 JSON Pointers (D104). */
         public Map<String, Object> buildOutput(Map<String, Object> base) {
             return DriftVerify.buildOutput(this, base);
         }
 
-        /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} (D86). */
         public void checkProjection(Object payload) {
             checkProjection(payload, Map.of());
         }
 
-        /** Verifies every {@code then} predicate across harness-supplied authenticated adverse variants (D249). */
         public <V> void checkAdverse(List<V> variants, java.util.function.Function<V, Object> execute) {
             DriftVerify.checkAdverse(this, variants, execute, Map.of());
         }
 
-        /** Verifies every {@code then} predicate across harness-supplied authenticated adverse variants with custom checks (D249). */
         public <V> void checkAdverse(
                 List<V> variants,
                 java.util.function.Function<V, Object> execute,
@@ -569,12 +579,27 @@ public final class Drift {
             DriftVerify.checkAdverse(this, variants, execute, checks);
         }
 
-        /** Verifies forbidden write resources ({@code scope.writes \ cases.<id>.writes}) via snapshot equality and zero operation counts (D272). */
         public void checkFrame(Map<String, Object> frameObs) {
             DriftVerify.checkFrame(this, frameObs);
         }
 
-        /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} and custom checks (D86). */
+        public boolean checkIdempotency(Map<String, Object> obs) {
+            return DriftProbes.checkIdempotency(this, obs);
+        }
+
+        public boolean checkSeamProbe(Map<String, Object> obs) {
+            return DriftProbes.checkSeamProbe(this, obs);
+        }
+
+        public boolean checkRollback(Map<String, Object> obs) {
+            return DriftProbes.checkRollback(this, obs);
+        }
+
+        public boolean checkLogSink(Map<String, Object> obs) {
+            return DriftProbes.checkLogSink(this, obs);
+        }
+
+        /** Verifies every {@code then} predicate against {@code payload} via {@code projections.then} and custom checks. */
         @SuppressWarnings("unchecked")
         public void checkProjection(Object payload, Map<String, ? extends Consumer<Object>> checks) {
             Map<String, String> thenProj = projectionMap("then");
@@ -591,16 +616,18 @@ public final class Drift {
                         this, key, expected, payload, thenProj, true, "no check or projection for");
             }
             if (payload instanceof Map<?, ?> pm && pm.get("_frame") instanceof Map<?, ?> fm) {
-                DriftVerify.checkFrame(this, (Map<String, Object>) fm);
+                boolean strict = fm.values().stream()
+                        .noneMatch(v -> v instanceof Map<?, ?> vm && Boolean.FALSE.equals(vm.get("observed")));
+                DriftUiChecks.checkFrame(this, (Map<String, Object>) fm, strict);
             }
         }
 
-        /** Verifies UI, accessibility and Outcome Evidence Contract invariants on a view map (D54, D79). */
+        /** Verifies UI, accessibility and Outcome Evidence Contract invariants on a view map. */
         public void checkView(Map<String, Object> view) {
             checkView(view, Map.of());
         }
 
-        /** Verifies UI, accessibility and Outcome Evidence Contract invariants with custom overrides (D54, D79). */
+        /** Verifies UI, accessibility and Outcome Evidence Contract invariants with custom overrides. */
         public void checkView(
                 Map<String, Object> view,
                 Map<String, ? extends BiConsumer<Object, Map<String, Object>>> checks) {

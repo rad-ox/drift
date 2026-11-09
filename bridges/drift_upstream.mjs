@@ -89,6 +89,10 @@ function resolveRelPeerBounds(val, peerFn) {
   }
   let lo = typeof val.min === 'number' ? val.min : undefined;
   let hi = typeof val.max === 'number' ? val.max : undefined;
+  if (typeof val.approx === 'number') {
+    lo = lo === undefined ? val.approx : Math.max(lo, val.approx);
+    hi = hi === undefined ? val.approx : Math.min(hi, val.approx);
+  }
   if ('ge_field' in val) {
     const pr = peerFn(val.ge_field);
     if (pr.found && typeof pr.value === 'number') lo = lo === undefined ? pr.value : Math.max(lo, pr.value);
@@ -146,6 +150,21 @@ export function witnessValue(val, peerFn = null) {
       const minL = Math.max(val.non_empty === true ? 1 : 0, Number(val.min_len || 0));
       return buildAffixString(val, minL);
     }
+    if ('sum_total' in val || 'monotonic' in val || 'step_max_delta' in val) {
+      const st = val.sum_total;
+      const tgt = typeof st === 'number' ? st : (isObj(st) && typeof st.eq === 'number' ? st.eq : (isObj(st) && typeof st.min === 'number' && typeof st.max === 'number' ? (st.min + st.max) / 2 : (isObj(st) && typeof st.min === 'number' ? st.min : (isObj(st) && typeof st.max === 'number' ? st.max : 1.0))));
+      const eps = typeof val.step_max_delta === 'number' && val.step_max_delta > 0 ? Math.min(0.2, val.step_max_delta / 2) : 0.2;
+      const mode = String(val.monotonic || '');
+      if (mode === 'strictly_decreasing' || mode === 'non_increasing') {
+        const a = Math.round((tgt / 2 + eps / 2) * 1e12) / 1e12;
+        return 'sum_total' in val ? [a, Math.round((tgt - a) * 1e12) / 1e12] : [Math.round((1 + eps) * 1e12) / 1e12, 1];
+      }
+      if (mode === 'strictly_increasing' || mode === 'non_decreasing') {
+        const a = Math.round((tgt / 2 - eps / 2) * 1e12) / 1e12;
+        return 'sum_total' in val ? [a, Math.round((tgt - a) * 1e12) / 1e12] : [1, Math.round((1 + eps) * 1e12) / 1e12];
+      }
+      return [tgt / 2, tgt - tgt / 2];
+    }
     return '';
   }
   return cloneJson(val);
@@ -174,6 +193,9 @@ export function witnessVariants(val, peerFn = null) {
       const lo = Math.max(val.non_empty === true ? 1 : 0, Number(val.min_len ?? 0), pfxLen + sfxLen);
       const hi = typeof val.max_len === 'number' ? Number(val.max_len) : lo;
       return hi > lo ? [buildAffixString(val, lo), buildAffixString(val, hi)] : [buildAffixString(val, lo)];
+    }
+    if ('sum_total' in val || 'monotonic' in val || 'step_max_delta' in val) {
+      return [witnessValue(val, peerFn)];
     }
     return [''];
   }

@@ -314,6 +314,7 @@ export function captureSurfaceDom(rootOrSelector, options) {
 const REL_KEYS = new Set([
   'min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in',
   'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys',
+  'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion',
 ]);
 const isRelationalMap = (v) => isObj(v) && Object.keys(v).length > 0 && Object.keys(v).every((k) => REL_KEYS.has(k));
 const cloneJson = (val) => (Array.isArray(val) ? val.map(cloneJson) : (isObj(val) ? Object.fromEntries(Object.entries(val).map(([k, v]) => [k, cloneJson(v)])) : val));

@@ -258,6 +258,41 @@ public final class DriftSelect implements PostDiscoveryFilter {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    public static List<String> precheckTestLiterals(String javaSource, Map<String, Map<String, Object>> resolvedViews) {
+        if (javaSource == null || resolvedViews == null) return List.of();
+        List<String> findings = new ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "@DriftCase\\s*\\(([^)]*)\\)").matcher(javaSource);
+        while (m.find()) {
+            String args = m.group(1);
+            java.util.regex.Matcher cm = java.util.regex.Pattern.compile(
+                    "contract\\s*=\\s*\"([^\"]+)\"").matcher(args);
+            if (!cm.find()) continue;
+            String cid = cm.group(1);
+            Map<String, Object> view = resolvedViews.get(cid);
+            if (view == null) {
+                findings.add("test.unknown_contract: " + cid);
+                continue;
+            }
+            Object rawCases = view.get("cases");
+            Map<String, Object> casesTbl = rawCases instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+            java.util.regex.Matcher csm = java.util.regex.Pattern.compile(
+                    "cases\\s*=\\s*(?:\\{([^}]*)\\}|\"([^\"]+)\")").matcher(args);
+            if (csm.find()) {
+                String listBody = csm.group(1) != null ? csm.group(1) : "\"" + csm.group(2) + "\"";
+                java.util.regex.Matcher lm = java.util.regex.Pattern.compile("\"([^\"]+)\"").matcher(listBody);
+                while (lm.find()) {
+                    String caseId = lm.group(1);
+                    if (!casesTbl.containsKey(caseId)) {
+                        findings.add("test.unknown_case: " + cid + "." + caseId);
+                    }
+                }
+            }
+        }
+        return List.copyOf(findings);
+    }
+
     static List<Map<String, Object>> cartesianDomain(Map<String, ? extends List<?>> domains) {
         if (domains == null || domains.isEmpty()) {
             throw new IllegalArgumentException("Cartesian domain map must not be empty");

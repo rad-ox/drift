@@ -1,4 +1,4 @@
-// Zero-dependency RFC 8259 JSON parser/serializer and FIPS 180-4 SHA-256 for drift_rust (SPEC §§9, 25, D253).
+// Zero-dependency RFC 8259 JSON parser/serializer and FIPS 180-4 SHA-256 for drift_rust.
 
 use std::collections::BTreeMap;
 

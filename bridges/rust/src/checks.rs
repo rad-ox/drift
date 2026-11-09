@@ -1,4 +1,4 @@
-// RFC 6901 JSON Pointer, cross-bridge equality, relational bounds, and stub synthesis (SPEC §§9, 25, D224, D253).
+// RFC 6901 JSON Pointer, cross-bridge equality, relational bounds, and stub synthesis.
 
 use crate::json::JsonValue;
 use std::collections::BTreeMap;
@@ -20,7 +20,127 @@ const REL_KEYS: &[&str] = &[
     "sum_fields",
     "allowed_keys",
     "forbid_keys",
+    "monotonic",
+    "sum_total",
+    "step_max_delta",
+    "approx",
+    "abs_tol",
+    "rel_tol",
+    "balance_fields",
+    "unit",
+    "unit_conversion",
+    "eq",
+    "len",
+    "keys",
+    "peer",
+    "series",
+    "tol",
+    "convert_from",
 ];
+
+fn strip_side_03(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("when.").or_else(|| s.strip_prefix("then.")) {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonValue> {
+    let mut out = BTreeMap::new();
+    for (k, v) in raw {
+        match k.as_str() {
+            "tol" => {
+                if let Some(m) = v.as_object() {
+                    if let Some(a) = m.get("abs") {
+                        out.insert("abs_tol".to_string(), a.clone());
+                    }
+                    if let Some(r) = m.get("rel") {
+                        out.insert("rel_tol".to_string(), r.clone());
+                    }
+                }
+            }
+            "len" => {
+                if let Some(m) = v.as_object() {
+                    if let Some(l) = m.get("min") {
+                        out.insert("min_len".to_string(), l.clone());
+                    }
+                    if let Some(u) = m.get("max") {
+                        out.insert("max_len".to_string(), u.clone());
+                    }
+                }
+            }
+            "keys" => {
+                if let Some(m) = v.as_object() {
+                    if let Some(al) = m.get("allow") {
+                        out.insert("allowed_keys".to_string(), al.clone());
+                    }
+                    if let Some(fb) = m.get("forbid") {
+                        out.insert("forbid_keys".to_string(), fb.clone());
+                    }
+                }
+            }
+            "peer" => {
+                if let Some(m) = v.as_object() {
+                    for pk in ["le", "ge", "eq"] {
+                        if let Some(ps) = m.get(pk).and_then(|x| x.as_str()) {
+                            out.insert(format!("{}_field", pk), JsonValue::Str(strip_side_03(ps)));
+                        }
+                    }
+                    if let Some(arr) = m.get("sum").and_then(|x| x.as_array()) {
+                        let sfs: Vec<JsonValue> = arr
+                            .iter()
+                            .filter_map(|x| x.as_str().map(|s| JsonValue::Str(strip_side_03(s))))
+                            .collect();
+                        out.insert("sum_fields".to_string(), JsonValue::Array(sfs));
+                    }
+                    if let Some(bm) = m.get("balance").and_then(|x| x.as_object()) {
+                        let mut nb = BTreeMap::new();
+                        for side in ["add", "sub"] {
+                            if let Some(arr) = bm.get(side).and_then(|x| x.as_array()) {
+                                let items: Vec<JsonValue> = arr
+                                    .iter()
+                                    .filter_map(|x| x.as_str().map(|s| JsonValue::Str(strip_side_03(s))))
+                                    .collect();
+                                nb.insert(side.to_string(), JsonValue::Array(items));
+                            }
+                        }
+                        out.insert("balance_fields".to_string(), JsonValue::Object(nb));
+                    }
+                }
+            }
+            "series" => {
+                if let Some(m) = v.as_object() {
+                    for (sk, sv) in m {
+                        if sk == "monotonic" {
+                            if let Some(ms) = sv.as_str() {
+                                if ms == "increasing" || ms == "decreasing" {
+                                    out.insert(sk.clone(), JsonValue::Str(format!("strictly_{}", ms)));
+                                    continue;
+                                }
+                            }
+                        }
+                        out.insert(sk.clone(), sv.clone());
+                    }
+                }
+            }
+            "convert_from" => {}
+            _ => {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    if out.contains_key("eq")
+        && (out.contains_key("abs_tol") || out.contains_key("rel_tol"))
+        && !out.contains_key("balance_fields")
+        && !out.contains_key("sum_fields")
+    {
+        if let Some(eq_v) = out.remove("eq") {
+            out.insert("approx".to_string(), eq_v);
+        }
+    }
+    out
+}
 
 pub fn escape_pointer(seg: &str) -> String {
     seg.replace('~', "~0").replace('/', "~1")
@@ -137,7 +257,7 @@ pub fn is_relational_table(v: &JsonValue) -> bool {
     !map.is_empty() && map.keys().all(|k| REL_KEYS.contains(&k.as_str()))
 }
 
-fn resolve_peer_target<'a>(
+pub(crate) fn resolve_peer_target<'a>(
     doc: &'a JsonValue,
     proj_then: &BTreeMap<String, String>,
     reference: &str,
@@ -155,10 +275,24 @@ fn resolve_peer_target<'a>(
 pub fn check_relational_leaf(
     doc: &JsonValue,
     actual: &JsonValue,
-    rel: &BTreeMap<String, JsonValue>,
+    raw_rel: &BTreeMap<String, JsonValue>,
     proj_then: &BTreeMap<String, String>,
     pred: &str,
 ) -> Result<(), String> {
+    let rel = desugar_03_rel(raw_rel);
+    if let Some(eq_v) = rel.get("eq") {
+        if !values_equal(actual, eq_v) {
+            return Err(format!(
+                "{}: mismatch on eq: got {}, expected {}",
+                pred,
+                actual.to_json_string(),
+                eq_v.to_json_string()
+            ));
+        }
+        if rel.len() == 1 {
+            return Ok(());
+        }
+    }
     if rel.contains_key("allowed_keys") || rel.contains_key("forbid_keys") {
         let act_obj = actual
             .as_object()
@@ -182,14 +316,15 @@ pub fn check_relational_leaf(
             }
         }
         if let Some(fk_v) = rel.get("forbid_keys") {
+            let is_root_t = std::ptr::eq(actual, doc);
             if let Some(arr) = fk_v.as_array() {
                 for fk in arr.iter().filter_map(|v| v.as_str()) {
-                    if act_obj.contains_key(fk) {
+                    if crate::probes::has_key_recursive(actual, fk, is_root_t) {
                         return Err(format!("{}: forbidden key \"{}\" present on {}", pred, fk, pred));
                     }
                 }
             } else if let Some(fk_s) = fk_v.as_str() {
-                if !act_obj.contains_key(fk_s) {
+                if !crate::probes::has_key_recursive(actual, fk_s, is_root_t) {
                     return Err(format!("{}: drop-forbid-key mutant on forbid_keys killed", pred));
                 }
             } else {
@@ -214,28 +349,34 @@ pub fn check_relational_leaf(
             return Err(format!("{}: pick-forbidden-value mutant on not_in killed", pred));
         }
     }
-    if let Some(min_v) = rel.get("min") {
-        let af = actual
-            .as_f64()
-            .ok_or_else(|| format!("{}: expected finite number for min", pred))?;
-        let mf = min_v
-            .as_f64()
-            .ok_or_else(|| format!("{}: invalid min bound", pred))?;
-        if af < mf - 1e-9 {
-            return Err(format!("{}: {} < min {}", pred, af, mf));
+    let is_seq_tuning = rel.contains_key("monotonic")
+        || rel.contains_key("step_max_delta")
+        || rel.contains_key("sum_total");
+    if !is_seq_tuning {
+        if let Some(min_v) = rel.get("min") {
+            let af = actual
+                .as_f64()
+                .ok_or_else(|| format!("{}: expected finite number for min", pred))?;
+            let mf = min_v
+                .as_f64()
+                .ok_or_else(|| format!("{}: invalid min bound", pred))?;
+            if af < mf - 1e-9 {
+                return Err(format!("{}: {} < min {}", pred, af, mf));
+            }
+        }
+        if let Some(max_v) = rel.get("max") {
+            let af = actual
+                .as_f64()
+                .ok_or_else(|| format!("{}: expected finite number for max", pred))?;
+            let mf = max_v
+                .as_f64()
+                .ok_or_else(|| format!("{}: invalid max bound", pred))?;
+            if af > mf + 1e-9 {
+                return Err(format!("{}: {} > max {}", pred, af, mf));
+            }
         }
     }
-    if let Some(max_v) = rel.get("max") {
-        let af = actual
-            .as_f64()
-            .ok_or_else(|| format!("{}: expected finite number for max", pred))?;
-        let mf = max_v
-            .as_f64()
-            .ok_or_else(|| format!("{}: invalid max bound", pred))?;
-        if af > mf + 1e-9 {
-            return Err(format!("{}: {} > max {}", pred, af, mf));
-        }
-    }
+    crate::formal::check_tuning_and_numeric_rel(doc, actual, &rel, proj_then, pred, is_seq_tuning)?;
     if let Some(ml_v) = rel.get("min_len") {
         let ml = ml_v
             .as_f64()
@@ -478,6 +619,9 @@ pub fn synthesize_leaf_witness(
             }
         }
     }
+    if let Some(ap_v) = rel.get("approx").and_then(|v| v.as_f64()) {
+        return JsonValue::Number(ap_v);
+    }
     if let Some(min_v) = rel.get("min").and_then(|v| v.as_f64()) {
         if let Some(max_v) = rel.get("max").and_then(|v| v.as_f64()) {
             let mid = ((min_v + max_v) / 2.0 * 1e12).round() / 1e12;
@@ -494,6 +638,57 @@ pub fn synthesize_leaf_witness(
     }
     if rel.get("non_empty").and_then(|v| v.as_bool()) == Some(true) {
         return JsonValue::Str("a".to_string());
+    }
+    if rel.contains_key("sum_total")
+        || rel.contains_key("monotonic")
+        || rel.contains_key("step_max_delta")
+    {
+        let tgt = rel
+            .get("sum_total")
+            .and_then(|v| {
+                v.as_f64().or_else(|| {
+                    v.as_object().and_then(|m| {
+                        m.get("eq")
+                            .and_then(|x| x.as_f64())
+                            .or_else(|| {
+                                match (
+                                    m.get("min").and_then(|x| x.as_f64()),
+                                    m.get("max").and_then(|x| x.as_f64()),
+                                ) {
+                                    (Some(lo), Some(hi)) => Some((lo + hi) / 2.0),
+                                    (Some(lo), None) => Some(lo),
+                                    (None, Some(hi)) => Some(hi),
+                                    (None, None) => None,
+                                }
+                            })
+                    })
+                })
+            })
+            .unwrap_or(1.0);
+        let eps = rel
+            .get("step_max_delta")
+            .and_then(|v| v.as_f64())
+            .filter(|&d| d > 0.0)
+            .map_or(0.2, |d| (d / 2.0).min(0.2));
+        let mode = rel.get("monotonic").and_then(|v| v.as_str()).unwrap_or("");
+        let (a, b) = if mode == "strictly_decreasing" || mode == "non_increasing" {
+            if rel.contains_key("sum_total") {
+                let first = ((tgt / 2.0 + eps / 2.0) * 1e12).round() / 1e12;
+                (first, ((tgt - first) * 1e12).round() / 1e12)
+            } else {
+                (((1.0 + eps) * 1e12).round() / 1e12, 1.0)
+            }
+        } else if mode == "strictly_increasing" || mode == "non_decreasing" {
+            if rel.contains_key("sum_total") {
+                let first = ((tgt / 2.0 - eps / 2.0) * 1e12).round() / 1e12;
+                (first, ((tgt - first) * 1e12).round() / 1e12)
+            } else {
+                (1.0, ((1.0 + eps) * 1e12).round() / 1e12)
+            }
+        } else {
+            (tgt / 2.0, tgt - tgt / 2.0)
+        };
+        return JsonValue::Array(vec![JsonValue::Number(a), JsonValue::Number(b)]);
     }
     JsonValue::Null
 }

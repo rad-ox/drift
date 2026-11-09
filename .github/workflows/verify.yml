@@ -27,7 +27,7 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python3 verifier/drift_verify.py --self-test
-          for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && break || sleep 3; done
+          ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && ok=1 && break || sleep 3; done; [ "$ok" = 1 ]
           export PATH="$HOME/.local/bin:$PATH"
           drift version && drift check example/.drift && drift status example/.drift/contracts && drift review example/.drift/contracts --brief
 
@@ -87,7 +87,6 @@ jobs:
           assert drift.run_drift_case('item-get', 'ci.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': handle_get_item(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
           PY
 
-          # Assert real bridge sidecars exist and verify field-by-field JSON equivalence
           test -f /tmp/drift-ci/events/js.meta.json && test -f /tmp/drift-ci/events/py.meta.json
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/gate.json
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/ver.json
@@ -104,7 +103,6 @@ jobs:
           assert g_states == v_states and all(st == 'verified' for _, _, st in g_states), g_states
           PY
 
-          # JVM Bridge (Java 25 LTS -> Maven build + JUnit 5 suite + live ItemServer HTTP test -> gate & verifier parity)
           mkdir -p /tmp/drift-ci/jvm-events
           mvn -q -B -f bridges/jvm/drift-junit/pom.xml test install
           mvn -q -B -f example/pom.xml test -Ddrift.resolved=/tmp/drift-ci/resolved -Ddrift.events=/tmp/drift-ci/jvm-events/jvm.jsonl
@@ -112,7 +110,6 @@ jobs:
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/jvm-events >/dev/null
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/jvm-events >/dev/null
 
-          # Concurrency Stress Test (24 parallel async JS tasks + 24 parallel multithreaded Python tasks)
           mkdir -p /tmp/drift-ci/conc
           DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/conc/js.jsonl node --input-type=module - <<'EOF'
           import { runDriftCase } from './bridges/drift.mjs';
@@ -134,7 +131,6 @@ jobs:
           assert len(json.load(open('/tmp/drift-ci/conc/py.meta.json'))['tests']) == 24
           PY
 
-          # Conformance check: decisions/open owner & note exclusion + minimum proof = "verified" policy floor
           mkdir -p /tmp/drift-ci/pol/.drift/profiles /tmp/drift-ci/pol/.drift/contracts
           cp example/.drift/profiles/http-json@1.toml /tmp/drift-ci/pol/.drift/profiles/
           cp example/.drift/config.toml /tmp/drift-ci/pol/.drift/config.toml
@@ -168,7 +164,6 @@ jobs:
           chk = json.load(open('/tmp/drift-ci/pol_chk.json'))['files'][0]
           assert chk['ok'] is True, chk
           PY
-          # Verify that under proof = "verified", a bound-only event ("read": []) is rejected by both CLI and verifier
           mkdir -p /tmp/drift-ci/bound-ev
           DIG=$(python3 -c "import json; print(json.load(open('/tmp/drift-ci/pol_chk.json'))['files'][0]['digest'])")
           printf '{"test":"t#1","contract":"item-get","cases":["found","not-found","bad-id"],"level":"http","outcome":"passed","read":[],"digest":"%s"}\n' "$DIG" > /tmp/drift-ci/bound-ev/s.jsonl
@@ -177,7 +172,6 @@ jobs:
           ! drift gate /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null 2>&1
           ! python3 verifier/drift_verify.py /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null
 
-          # Adversarial Scenario D: Unapproved contract modification (DR-E601) -> stale
           mkdir -p /tmp/drift-ci/tampered && cp -R example/.drift /tmp/drift-ci/tampered/.drift
           sed -i 's/status = 200/status = 201/' /tmp/drift-ci/tampered/.drift/contracts/item-get.toml
           drift gate /tmp/drift-ci/tampered/.drift/contracts --config /tmp/drift-ci/tampered/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_tamp.json || true
@@ -190,7 +184,6 @@ jobs:
           assert g['ignored'] == v['ignored'] == 3 and g['reasons'] == v['reasons'] == ['contract.findings', 'contract.approval.stale', 'proof.not_green']
           PY
 
-          # Adversarial Scenario E: Deleted test in real js.meta.json -> gone == 1
           mkdir -p /tmp/drift-ci/gone-events && cp /tmp/drift-ci/events/* /tmp/drift-ci/gone-events/
           printf '{"version":1,"classes":[],"tests":[]}\n' > /tmp/drift-ci/gone-events/js.meta.json
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/gone-events --json > /tmp/drift-ci/g_gone.json || true
@@ -202,12 +195,11 @@ jobs:
           assert not g['ok'] and not v['ok'] and g['gone'] == v['gone'] == 1 and g['reasons'] == v['reasons'] == ['proof.not_green']
           PY
 
-          # Adversarial Scenario F: Malformed event line (DR-E701) + Rust bridge & v2 sidecar schema check
           mkdir -p /tmp/drift-ci/bad-events && cp /tmp/drift-ci/events/* /tmp/drift-ci/bad-events/
           printf '{"test":"ci.mjs#bad","contract":"item-get","cases":["found"],"level":"http","outcome":"passed","unknown":1}\n' >> /tmp/drift-ci/bad-events/js.jsonl
           drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/g_bad.json 2>/dev/null || true
           python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/bad-events --json > /tmp/drift-ci/v_bad.json || true
-          if command -v rustc >/dev/null 2>&1; then rustc --edition=2024 --crate-name drift_rust --crate-type rlib bridges/lib.rs -O -o /tmp/drift-ci/libdrift_rust.rlib; fi
+          if command -v rustc >/dev/null 2>&1; then rustc --edition=2024 --crate-name drift_rust --crate-type rlib bridges/rust/src/lib.rs -O -o /tmp/drift-ci/libdrift_rust.rlib; fi
           python3 - <<'PY'
           import json
           for p in ('/tmp/drift-ci/g_bad.json', '/tmp/drift-ci/v_bad.json'):
@@ -228,7 +220,7 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python3 verifier/drift_verify.py --self-test
-          for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && break || sleep 3; done
+          ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && ok=1 && break || sleep 3; done; [ "$ok" = 1 ]
           export PATH="$HOME/.local/bin:$PATH"
           drift version
           drift check example/.drift

@@ -9,7 +9,7 @@ import java.util.Set;
 
 /**
  * Fail-closed UI surface, WCAG 2.2 category contrast, multi-point focus obscuration,
- * and cross-platform adapter capability checks for the DRIFT JUnit bridge (D282-D284).
+ * and cross-platform adapter capability checks for the DRIFT JUnit bridge.
  */
 final class DriftUiChecks {
     private static final Map<String, String> PREDICATE_CAPABILITY = Map.ofEntries(
@@ -409,6 +409,14 @@ final class DriftUiChecks {
         return out;
     }
 
+    private static boolean isNonNegInteger(Object v) {
+        if (!Json.isFiniteNumber(v)) {
+            return false;
+        }
+        double d = ((Number) v).doubleValue();
+        return d >= 0.0 && d == Math.rint(d) && d <= 9007199254740991.0;
+    }
+
     private static void verifySingleFrameObs(String pfx, String res, Object obs, boolean isAmbient) {
         boolean checked = false;
         String writeLbl = isAmbient
@@ -417,18 +425,18 @@ final class DriftUiChecks {
         String snapLbl = isAmbient
                 ? "undeclared state mutation on perimeter resource \"" + res + "\""
                 : "frame state mutation on resource \"" + res + "\"";
-        if (Json.isFiniteNumber(obs) && ((Number) obs).doubleValue() >= 0.0) {
+        if (isNonNegInteger(obs)) {
             checked = true;
-            if (((Number) obs).doubleValue() > 0.0) {
+            if (((Number) obs).longValue() > 0L) {
                 throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + obs);
             }
         } else if (obs instanceof Map<?, ?> om) {
             for (String wk : new String[] {"writes", "operations", "events"}) {
                 if (om.containsKey(wk)) {
                     Object wv = om.get(wk);
-                    if (Json.isFiniteNumber(wv) && ((Number) wv).doubleValue() >= 0.0) {
+                    if (isNonNegInteger(wv)) {
                         checked = true;
-                        if (((Number) wv).doubleValue() > 0.0) {
+                        if (((Number) wv).longValue() > 0L) {
                             throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + wv);
                         }
                     } else if (wv instanceof java.util.Collection<?> col) {
@@ -436,6 +444,8 @@ final class DriftUiChecks {
                         if (!col.isEmpty()) {
                             throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + col.size());
                         }
+                    } else {
+                        throw new AssertionError(pfx + ": invalid frame " + wk + " for \"" + res + "\": expected non-negative integer, got " + wv);
                     }
                 }
             }
@@ -451,7 +461,25 @@ final class DriftUiChecks {
         }
     }
 
+    private static boolean isUnobservedFrameEntry(Object obs) {
+        return obs instanceof Map<?, ?> m && Boolean.FALSE.equals(m.get("observed"));
+    }
+
+    private static boolean hasFrameMetricsEntry(Object obs) {
+        if (!(obs instanceof Map<?, ?> m)) {
+            return false;
+        }
+        return m.containsKey("writes")
+                || m.containsKey("operations")
+                || m.containsKey("events")
+                || (m.containsKey("before") && m.containsKey("after"));
+    }
+
     static void checkFrame(Drift.Case c, Map<String, Object> frameObs) {
+        checkFrame(c, frameObs, true);
+    }
+
+    static void checkFrame(Drift.Case c, Map<String, Object> frameObs, boolean strict) {
         Map<String, Object> view = Drift.view(c.contract());
         List<String> forbidden = forbiddenWritesOf(view, c.id());
         String pfx = c.contract() + "." + c.id();
@@ -462,10 +490,21 @@ final class DriftUiChecks {
             checkedKeys.add(res);
             checkedKeys.add(baseRes);
             Object obs = frameObs == null ? null : (frameObs.containsKey(res) ? frameObs.get(res) : frameObs.get(baseRes));
-            if (obs == null) {
-                throw new AssertionError(pfx + ": missing frame observation for forbidden write resource \"" + res + "\"");
+            if (hasFrameMetricsEntry(obs)) {
+                verifySingleFrameObs(pfx, res, obs, false);
             }
-            verifySingleFrameObs(pfx, res, obs, false);
+            if (obs == null || isUnobservedFrameEntry(obs)) {
+                if (strict) {
+                    String msg = obs == null
+                            ? "missing frame observation for forbidden write resource \"" + res + "\""
+                            : "frame.observer_missing for forbidden write resource \"" + res + "\"";
+                    throw new AssertionError(pfx + ": " + msg);
+                }
+                continue;
+            }
+            if (!hasFrameMetricsEntry(obs)) {
+                verifySingleFrameObs(pfx, res, obs, false);
+            }
             Drift.mark(c.contract(), c.id(), "@frame:" + res);
         }
         if (frameObs != null) {
@@ -481,7 +520,19 @@ final class DriftUiChecks {
                 if (checkedKeys.contains(k) || isWriteResourceAllowed(k, allowed, allowedBases)) {
                     continue;
                 }
-                verifySingleFrameObs(pfx, k, frameObs.get(k), true);
+                Object obsK = frameObs.get(k);
+                if (hasFrameMetricsEntry(obsK)) {
+                    verifySingleFrameObs(pfx, k, obsK, true);
+                }
+                if (isUnobservedFrameEntry(obsK)) {
+                    if (strict) {
+                        throw new AssertionError(pfx + ": frame.observer_missing for perimeter resource \"" + k + "\"");
+                    }
+                    continue;
+                }
+                if (!hasFrameMetricsEntry(obsK)) {
+                    verifySingleFrameObs(pfx, k, obsK, true);
+                }
             }
         }
     }

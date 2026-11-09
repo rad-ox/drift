@@ -7,17 +7,19 @@ import {
   observeUiSequence,
 } from './drift_ui.mjs';
 import { collectPlaywrightSequence, collectUiSequence } from './drift_ui_collector.mjs';
-import { evaluateScenarioMatrix, evaluateTaskRecovery } from './drift_ui_recovery.mjs';
+import { CAPS_03, desugar03Rel, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain } from './drift_ui_recovery.mjs';
 import { captureSurfaceDom, checkSurfaceKey } from './drift_ui_surface.mjs';
 export {
   adaptComposeSemantics,
   adaptPlaywrightSurface,
   adaptUiaSnapshot,
   bindUiEnvironment,
+  CAPS_03,
   collectPlaywrightSequence,
   collectUiSequence,
   evaluateScenarioMatrix,
   evaluateTaskRecovery,
+  expandDomain,
   mergePriorInventory,
   observeUiSequence,
   resolveSelectedFiles,
@@ -25,7 +27,7 @@ export {
 };
 
 // Projection, relational domain, and UI view checks for the DRIFT JS bridge.
-export const REL_KEYS = new Set(['min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys']);
+export const REL_KEYS = new Set(['min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion', 'eq', 'len', 'keys', 'peer', 'series', 'tol', 'convert_from']);
 export const NON_VERIFIED_OP_STATES = new Set(['prepared', 'accepted', 'queued', 'running', 'in_progress', 'partial_failure', 'cancellation_requested', 'unknown']);
 export const TERMINAL_UI_CLAIMS = new Set(['completed', 'complete', 'verified', 'done', 'fulfilled', 'available', 'sent', 'paid', 'approved']);
 
@@ -155,70 +157,18 @@ export function applyMutation(tbl, contractId, caseId, ptr, after, sec = 'then',
   return replace(tbl, 0);
 }
 
-function expandSingleDomain(spec, first = false) {
-  if (Array.isArray(spec)) {
-    if (!spec.length) throwError('domain sample array must not be empty');
-    return first ? [spec[0]] : [...spec];
-  }
-  if (!isObj(spec)) throwError('domain specification must be an array or an object');
-  if (spec.type === 'int') {
-    const min = Number(spec.min);
-    const max = Number(spec.max);
-    if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max) {
-      throwError(`invalid int domain [${spec.min}, ${spec.max}]`);
-    }
-    if (first) return [min < 0 && max > 0 ? 0 : min];
-    return [...new Set([...(min < 0 && max > 0 ? [0] : []), min, min < max ? min + 1 : min, Math.trunc((min + max) / 2), max > min ? max - 1 : max, max])];
-  }
-  if (spec.type === 'string' && Array.isArray(spec.enum) && spec.enum.length) {
-    return first ? [String(spec.enum[0])] : [...new Set(spec.enum.map(String))];
-  }
-  return spec.type === 'bool' ? (first ? [false] : [false, true]) : null;
-}
-
-export function expandDomain(domain, first = false) {
-  const single = expandSingleDomain(domain, first);
-  if (single !== null) return single;
-  const keys = Object.keys(domain).sort();
-  const d = keys.length;
-  if (!d) throwError('Cartesian domain map must not be empty');
-  const valsByKey = keys.map((k) => {
-    const vals = expandSingleDomain(domain[k], first);
-    if (vals === null) throwError(`invalid domain specification for key "${k}"`);
-    return vals;
-  });
-  const cur = {};
-  let prod = 1;
-  for (let i = 0; i < d; i++) {
-    cur[keys[i]] = valsByKey[i][0];
-    if (prod <= 16) prod *= valsByKey[i].length;
-  }
-  if (first) return [cur];
-  const maxExcursions = prod <= 16 ? d : (d >= 3 ? 2 : d);
-  const out = [];
-  const dfs = (pos, exc) => {
-    if (pos === d || exc >= maxExcursions) {
-      out.push({ ...cur });
-      return;
-    }
-    dfs(pos + 1, exc);
-    const vals = valsByKey[pos];
-    const k = keys[pos];
-    for (let i = 1; i < vals.length; i++) {
-      cur[k] = vals[i];
-      dfs(pos + 1, exc + 1);
-    }
-    cur[k] = vals[0];
-  };
-  dfs(0, 0);
-  return out;
-}
-
-export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, proj, mutationOverride) {
-  if (!isObj(exp)) return false;
-  const ks = Object.keys(exp);
+export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payload, proj, mutationOverride) {
+  if (!isObj(rawExp)) return false;
+  const ks = Object.keys(rawExp);
   if (!ks.length || !ks.every((rk) => REL_KEYS.has(rk))) return false;
+  const exp = desugar03Rel(rawExp);
   const pfx = `${contractId}.${caseId}`;
+  if ('eq' in exp) {
+    if (!valuesEqual(act, exp.eq)) {
+      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp.eq)}, got ${JSON.stringify(act)}`);
+    }
+    if (Object.keys(exp).length === 1) return true;
+  }
   const peerOf = (ref) => {
     if (!isStr(ref) || !ref.trim()) return { found: false };
     if (ref.startsWith('/')) return readPointer(payload, ref);
@@ -226,11 +176,41 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
     return isObj(payload) && ref in payload ? { found: true, value: payload[ref] } : { found: false };
   };
   const actLen = (isStr(act) || Array.isArray(act)) ? act.length : (isObj(act) ? Object.keys(act).length : -1);
-  if ('min' in exp && (!isFinNum(act) || !isFinNum(Number(exp.min)) || act + 1e-9 < Number(exp.min))) {
-    throwAssertionError(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
+  const isSeqTuning = 'monotonic' in exp || 'step_max_delta' in exp || 'sum_total' in exp;
+  const tol = ('abs_tol' in exp && isFinNum(Number(exp.abs_tol)) && Number(exp.abs_tol) >= 0) ? Number(exp.abs_tol) : 1e-9;
+  if (!isSeqTuning) {
+    if ('min' in exp && (!isFinNum(act) || !isFinNum(Number(exp.min)) || act + 1e-9 < Number(exp.min))) {
+      throwAssertionError(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
+    }
+    if ('max' in exp && (!isFinNum(act) || !isFinNum(Number(exp.max)) || act - 1e-9 > Number(exp.max))) {
+      throwAssertionError(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
+    }
   }
-  if ('max' in exp && (!isFinNum(act) || !isFinNum(Number(exp.max)) || act - 1e-9 > Number(exp.max))) {
-    throwAssertionError(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
+  if ('approx' in exp) {
+    const ap = Number(exp.approx);
+    const at = 'abs_tol' in exp ? Number(exp.abs_tol) : 0;
+    const rt = 'rel_tol' in exp ? Number(exp.rel_tol) : 0;
+    if (!isFinNum(act) || !isFinNum(ap) || (!('abs_tol' in exp) && !('rel_tol' in exp)) || !isFinNum(at) || at < 0 || !isFinNum(rt) || rt < 0) {
+      throwAssertionError(`${pfx}: invalid approx on then.${key}`);
+    }
+    const rad = at + rt * Math.abs(ap);
+    if (!isFinNum(rad) || Math.abs(act - ap) > rad) {
+      throwAssertionError(`${pfx}: expected then.${key} approx ${ap} (+/- ${rad}), got ${JSON.stringify(act)}`);
+    }
+  }
+  if ('balance_fields' in exp) {
+    if (!isObj(exp.balance_fields)) throwAssertionError(`${pfx}: invalid balance_fields on then.${key}`);
+    let bal = 0;
+    for (const [sgn, side] of [[1, 'add'], [-1, 'sub']]) {
+      for (const ref of (exp.balance_fields[side] || [])) {
+        const pr = peerOf(ref);
+        if (!pr.found || !isFinNum(pr.value)) throwAssertionError(`${pfx}: missing numeric peer "${ref}" for then.${key}.balance_fields`);
+        bal += sgn * pr.value;
+      }
+    }
+    if (!isFinNum(act) || !isFinNum(bal) || Math.abs(act - bal) > tol) {
+      throwAssertionError(`${pfx}: expected then.${key} == balance (${bal}), got ${JSON.stringify(act)}`);
+    }
   }
   if ('min_len' in exp && (actLen < 0 || actLen < Number(exp.min_len))) {
     throwAssertionError(`${pfx}: expected len(then.${key})>=${exp.min_len}, got ${actLen}`);
@@ -263,11 +243,14 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
   }
   if ('forbid_keys' in exp) {
     if (!isObj(act)) throwAssertionError(`${pfx}: expected object for then.${key}.forbid_keys`);
+    const hasKeyRec = (v, fk, root = true) => Array.isArray(v)
+      ? v.some((x) => hasKeyRec(x, fk, false))
+      : (isObj(v) && (Object.hasOwn(v, fk) || Object.entries(v).some(([ck, cv]) => !(root && ck === '_frame' && fk !== '_frame' && isObj(cv)) && hasKeyRec(cv, fk, false))));
     if (Array.isArray(exp.forbid_keys)) {
       for (const fk of exp.forbid_keys.map(String)) {
-        if (Object.hasOwn(act, fk)) throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
+        if (hasKeyRec(act, fk, act === payload)) throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
       }
-    } else if (!Object.hasOwn(act, String(exp.forbid_keys))) {
+    } else if (!hasKeyRec(act, String(exp.forbid_keys), act === payload)) {
       throwAssertionError(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
     }
   }
@@ -297,6 +280,42 @@ export function checkRelationalLeaf(contractId, caseId, key, exp, act, payload, 
   }
   if ('suffix' in exp && (!isStr(act) || !act.endsWith(String(exp.suffix)))) {
     throwAssertionError(`${pfx}: expected then.${key} to end with ${JSON.stringify(exp.suffix)}, got ${JSON.stringify(act)}`);
+  }
+  if (isSeqTuning && Array.isArray(act) && ('min' in exp || 'max' in exp)) {
+    for (const v of act) {
+      if (!isFinNum(v) || ('min' in exp && v + tol < Number(exp.min)) || ('max' in exp && v - tol > Number(exp.max))) {
+        throwAssertionError(`${pfx}: sequence element ${v} outside [min, max] on then.${key}`);
+      }
+    }
+  }
+  if ('monotonic' in exp) {
+    const mode = String(exp.monotonic);
+    if (!Array.isArray(act) || !act.length || !act.every(isFinNum)) throwAssertionError(`${pfx}: expected non-empty numeric array for then.${key}.monotonic`);
+    for (let i = 1; i < act.length; i++) {
+      const p = act[i - 1], c = act[i];
+      const ok = mode === 'non_decreasing' ? p - tol <= c : mode === 'strictly_increasing' ? p + tol < c : mode === 'non_increasing' ? p + tol >= c : mode === 'strictly_decreasing' ? p - tol > c : false;
+      if (!ok) throwAssertionError(`${pfx}: expected then.${key}.monotonic=${mode}, violated at index ${i} (${p} -> ${c})`);
+    }
+  }
+  if ('step_max_delta' in exp) {
+    const d = Number(exp.step_max_delta);
+    if (!isFinNum(d) || d <= 0 || !Array.isArray(act) || !act.length || !act.every(isFinNum)) throwAssertionError(`${pfx}: invalid or non-numeric sequence for then.${key}.step_max_delta=${exp.step_max_delta}`);
+    for (let i = 1; i < act.length; i++) {
+      if (Math.abs(act[i] - act[i - 1]) > d + tol) throwAssertionError(`${pfx}: expected then.${key}.step_max_delta<=${d}, observed step ${Math.abs(act[i] - act[i - 1])} at index ${i}`);
+    }
+  }
+  if ('sum_total' in exp) {
+    if (isObj(act) && Object.keys(act).length > 0 && Object.keys(act).every((rk) => REL_KEYS.has(rk))) throwAssertionError(`${pfx}: literal relational table cannot satisfy then.${key}.sum_total`);
+    const vals = Array.isArray(act) ? act : (isObj(act) ? Object.values(act) : []);
+    if (!vals.length || !vals.every(isFinNum)) throwAssertionError(`${pfx}: expected non-empty numeric array or map for then.${key}.sum_total`);
+    const total = vals.reduce((acc, v) => acc + v, 0), st = exp.sum_total;
+    if (isFinNum(st)) {
+      if (Math.abs(total - st) > tol) throwAssertionError(`${pfx}: expected then.${key}.sum_total==${st}, got ${total}`);
+    } else if (isObj(st)) {
+      if (('eq' in st && (!isFinNum(st.eq) || Math.abs(total - st.eq) > tol)) || ('min' in st && (!isFinNum(st.min) || total + tol < st.min)) || ('max' in st && (!isFinNum(st.max) || total - tol > st.max))) {
+        throwAssertionError(`${pfx}: sum_total ${total} outside ${JSON.stringify(st)} on then.${key}`);
+      }
+    } else throwAssertionError(`${pfx}: invalid sum_total on then.${key}`);
   }
   return true;
 }

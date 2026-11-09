@@ -23,7 +23,69 @@ final class DriftViewChecks {
     private static final Set<String> RELATIONAL_KEYS = Set.of(
             "min", "max", "min_len", "max_len", "non_empty",
             "le_field", "ge_field", "eq_field", "in", "not_in",
-            "sum_fields", "contains", "prefix", "suffix", "allowed_keys", "forbid_keys");
+            "sum_fields", "contains", "prefix", "suffix", "allowed_keys", "forbid_keys",
+            "monotonic", "sum_total", "step_max_delta", "approx", "abs_tol", "rel_tol",
+            "balance_fields", "unit", "unit_conversion",
+            "eq", "len", "keys", "peer", "series", "tol", "convert_from");
+
+    private static String stripSide03(Object raw) {
+        if (raw instanceof String s && (s.startsWith("when.") || s.startsWith("then."))) {
+            return s.substring(s.indexOf('.') + 1);
+        }
+        return raw instanceof String s ? s : "";
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> desugar03Rel(Map<?, ?> raw) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : raw.entrySet()) {
+            String k = String.valueOf(e.getKey());
+            Object v = e.getValue();
+            if ("tol".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("abs")) out.put("abs_tol", m.get("abs"));
+                if (m.containsKey("rel")) out.put("rel_tol", m.get("rel"));
+            } else if ("len".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("min")) out.put("min_len", m.get("min"));
+                if (m.containsKey("max")) out.put("max_len", m.get("max"));
+            } else if ("keys".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("allow")) out.put("allowed_keys", m.get("allow"));
+                if (m.containsKey("forbid")) out.put("forbid_keys", m.get("forbid"));
+            } else if ("peer".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("le")) out.put("le_field", stripSide03(m.get("le")));
+                if (m.containsKey("ge")) out.put("ge_field", stripSide03(m.get("ge")));
+                if (m.containsKey("eq")) out.put("eq_field", stripSide03(m.get("eq")));
+                if (m.get("sum") instanceof List<?> sumList) {
+                    out.put("sum_fields", sumList.stream().map(DriftViewChecks::stripSide03).toList());
+                }
+                if (m.get("balance") instanceof Map<?, ?> bm) {
+                    Map<String, Object> nb = new java.util.LinkedHashMap<>();
+                    if (bm.get("add") instanceof List<?> addList) {
+                        nb.put("add", addList.stream().map(DriftViewChecks::stripSide03).toList());
+                    }
+                    if (bm.get("sub") instanceof List<?> subList) {
+                        nb.put("sub", subList.stream().map(DriftViewChecks::stripSide03).toList());
+                    }
+                    out.put("balance_fields", nb);
+                }
+            } else if ("series".equals(k) && v instanceof Map<?, ?> m) {
+                for (Map.Entry<?, ?> se : m.entrySet()) {
+                    String sk = String.valueOf(se.getKey());
+                    Object sv = se.getValue();
+                    if ("monotonic".equals(sk) && ("increasing".equals(sv) || "decreasing".equals(sv))) {
+                        sv = "strictly_" + sv;
+                    }
+                    out.put(sk, sv);
+                }
+            } else if (!"convert_from".equals(k)) {
+                out.put(k, v);
+            }
+        }
+        if (out.containsKey("eq") && (out.containsKey("abs_tol") || out.containsKey("rel_tol"))
+                && !out.containsKey("balance_fields") && !out.containsKey("sum_fields")) {
+            out.put("approx", out.remove("eq"));
+        }
+        return out;
+    }
 
     private DriftViewChecks() {}
 
@@ -40,7 +102,7 @@ final class DriftViewChecks {
         return -1;
     }
 
-    private static Json.PointerLookup resolvePeer(Object payload, Map<String, String> proj, Object rawRef) {
+    static Json.PointerLookup resolvePeer(Object payload, Map<String, String> proj, Object rawRef) {
         if (!(rawRef instanceof String ref) || ref.isBlank()) {
             return new Json.PointerLookup(false, null);
         }
@@ -63,28 +125,40 @@ final class DriftViewChecks {
             Object actual,
             Object payload,
             Map<String, String> proj) {
-        if (!(expected instanceof Map<?, ?> exp) || exp.isEmpty()) {
+        if (!(expected instanceof Map<?, ?> rawExp) || rawExp.isEmpty()) {
             return false;
         }
-        for (Object rk : exp.keySet()) {
+        for (Object rk : rawExp.keySet()) {
             if (!(rk instanceof String s) || !RELATIONAL_KEYS.contains(s)) {
                 return false;
             }
         }
+        Map<String, Object> exp = desugar03Rel(rawExp);
         String pfx = c.contract() + "." + c.id();
+        if (exp.containsKey("eq")) {
+            if (!Json.valuesEqual(actual, exp.get("eq"))) {
+                throw new AssertionError(pfx + ": expected then." + key + "=" + exp.get("eq") + ", got " + actual);
+            }
+            if (exp.size() == 1) {
+                return true;
+            }
+        }
         if (DriftVerify.checkObjectKeysAndNotIn(pfx, key, exp, actual)) {
             return true;
         }
-        if (exp.containsKey("min")) {
-            if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("min"))
-                    || ((Number) actual).doubleValue() + 1e-9 < ((Number) exp.get("min")).doubleValue()) {
-                throw new AssertionError(pfx + ": expected then." + key + ">=" + exp.get("min") + ", got " + actual);
+        boolean isSeqTuning = exp.containsKey("monotonic") || exp.containsKey("step_max_delta") || exp.containsKey("sum_total");
+        if (!isSeqTuning) {
+            if (exp.containsKey("min")) {
+                if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("min"))
+                        || ((Number) actual).doubleValue() + 1e-9 < ((Number) exp.get("min")).doubleValue()) {
+                    throw new AssertionError(pfx + ": expected then." + key + ">=" + exp.get("min") + ", got " + actual);
+                }
             }
-        }
-        if (exp.containsKey("max")) {
-            if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("max"))
-                    || ((Number) actual).doubleValue() - 1e-9 > ((Number) exp.get("max")).doubleValue()) {
-                throw new AssertionError(pfx + ": expected then." + key + "<=" + exp.get("max") + ", got " + actual);
+            if (exp.containsKey("max")) {
+                if (!Json.isFiniteNumber(actual) || !Json.isFiniteNumber(exp.get("max"))
+                        || ((Number) actual).doubleValue() - 1e-9 > ((Number) exp.get("max")).doubleValue()) {
+                    throw new AssertionError(pfx + ": expected then." + key + "<=" + exp.get("max") + ", got " + actual);
+                }
             }
         }
         if (exp.containsKey("min_len")) {
@@ -174,6 +248,7 @@ final class DriftViewChecks {
                 throw new AssertionError(pfx + ": expected then." + key + " to end with \"" + wantSfx + "\", got " + actual);
             }
         }
+        Json.checkNumericAndTuningClauses(pfx, key, exp, actual, payload, proj, RELATIONAL_KEYS);
         return true;
     }
 

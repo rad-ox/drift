@@ -191,11 +191,11 @@ harness = "src/items.c#proof_no_negative_total"
 enforce = "release"
 ```
 
-- **Tabelle relazionali `then`**: vincolano intervalli numerici (`min`, `max`), lunghezze (`min_len`, `max_len`, `non_empty`), insiemi finiti (`in`, `not_in`), affissi stringa (`prefix`, `suffix`, `contains`), chiavi consentite/vietate nel payload grezzo prima della proiezione (`allowed_keys`, `forbid_keys`), confronti tra campi (`le_field`, `ge_field`, `eq_field`) e somme affini (`sum_fields`).
-- **`[invariants]` e frame condition `cases.<id>.writes`**: `[invariants]` vale su tutti i casi; `cases.<id>.writes` restringe quali risorse di `scope.writes` uno specifico caso può mutare (verificato a runtime con `checkFrame` / `checks.frame`).
-- **Evidenze di Performance (`[budgets.<id>]`), Sicurezza (`[requires].security`) e Prove Formali (`[formal.<id>]`)**: passa `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`), le ricevute `*.security.json` e le ricevute formali `*.formal.json` / `*.model.json` (`tlc`, `cbmc`, `alloy`, `spin`, Kani) a `drift prove`, `drift gate` e `verifier/drift_verify.py`.
+- **Tabelle relazionali `then`**: vincolano intervalli numerici (`min`, `max`), tolleranze in virgola mobile (`approx`, `abs_tol`, `rel_tol`), invarianti di traiettoria tolleranti al tuning (`monotonic`, `sum_total`, `step_max_delta`), lunghezze (`min_len`, `max_len`, `non_empty`), insiemi finiti (`in`, `not_in`), affissi stringa (`prefix`, `suffix`, `contains`), chiavi consentite/vietate ricorsive nel payload grezzo prima della proiezione (`allowed_keys`, `forbid_keys`), confronti tra campi (`le_field`, `ge_field`, `eq_field`), somme affini (`sum_fields`) e bilanci lineari a partita doppia (`balance_fields`).
+- **`[invariants]`, `[assurance.guards]` e frame condition `cases.<id>.writes`**: `[invariants]` vale su tutti i casi; `cases.<id>.writes` restringe quali risorse di `scope.writes` uno specifico caso può mutare (verificato a runtime con `checkFrame` / `checks.frame`, `checkLogSink` e collector frame non osservati `{ "observed": false }`); i contratti schema `0.3` (`drift fmt --upgrade 0.3`) introducono identità `dr2` a 256 bit separate per dominio (`dr2b`, `dr2a`, `dr2r`, `dr2x`) e `[assurance.guards]` tipizzati.
+- **Evidenze di Performance (`[budgets.<id>]`), Sicurezza (`[requires].security`), Regolamentate (`[risks]`/`[controls]`), Simulazione (`drift.sim-receipt/1`) e Prove Formali (`[formal.<id>]`)**: passa `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`), le ricevute `*.security.json` (con riuso selettivo `--security-lock`), le ricevute `*.study.json` e `*.evaluation.json` con firme multi-party detached `.sig.json`, le ricevute di replay/rollback deterministico `drift.sim-receipt/1` e le ricevute formali `*.formal.json` / `*.model.json` (`tlc`, `cbmc`, `alloy`, `spin`, Kani, `gappa` `arithmetic_model`, `stochastic_experiment`, `equivalence` QCEC, `observed_convergence`, `trajectory_stability`) a `drift prove`, `drift gate` e `verifier/drift_verify.py`.
 - **Concetti di Dominio (`[concepts]`), Cutover Legacy (`[cutover]`) e Sequenze UI**: definisci i `[concepts]` di dominio qualificati per contesto in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, recall `@concept`), vincola il cutover con ricevute di parità e migrazione DB (`[cutover]`, `*.parity.json` `drift.parity-receipt/1` e `*.migration.json` `drift.migration-receipt/1`) o segnali di produzione (`drift case add --from-signal`), e verifica superfici e sequenze UI multi-step (`drift.ui-observation/1` tramite `collectPlaywrightSequence` / `observeUiSequence`, profili riusabili `async-action-feedback@1` e `wizard-form@1`, `evaluateScenarioMatrix` e adapter Web, Compose o Windows UIA).
-- **Governance dei Seam Perimetrali, Shadow Mode e Composizione Federata**: applica i controlli world-frame (`_frame` con `allowed_keys` e `checkFrame`), traccia la provenienza degli stub `.drift/seam-stub/` in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), sonda gli estremi 2-skeleton dei seam (`checkSeamBounds` / `check_seam_bounds`) e l'iniezione di guasti sui seam in ingresso (`prove.seam_mutants`), esegui DRIFT in **Shadow Mode** esterno (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, albero soggetto in sola lettura con `GIT_OPTIONAL_LOCKS=0` e adapter JUnit XML a 2 fasi `verifier/drift_shadow_junit.py`), e governa il rollout multi-repository con `drift.composition-manifest/1` e bundle bidirezionali `drift.boundary-bundle/1` (`offers`/`requires`).
+- **Protocollo di Osservazione Canonico (`drift.observation/1`), Sessioni Supervisor (`drift.bridge-session/1`), Seam Perimetrali, Shadow Mode e Composizione Federata**: valuta osservazioni lossless `ObsValue` (`int64`, `decimal`, `bytes` e decodifica copybook COBOL nativa nel kernel) e sessioni supervisor (`drift.bridge-session/1`) direttamente nel kernel, applica il coupling causale `L0–L3` (`sweep --flow`) e i controlli world-frame (`_frame` con `allowed_keys` e `checkFrame`), traccia la provenienza degli stub `.drift/seam-stub/` in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), sonda gli estremi 2-skeleton dei seam (`checkSeamBounds` / `check_seam_bounds`), le sonde comportamentali (idempotenza, retry/query sui seam, rollback, BOLA) e l'iniezione di guasti sui seam in ingresso (`prove.seam_mutants`), esegui DRIFT in **Shadow Mode** esterno (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, albero soggetto in sola lettura con `GIT_OPTIONAL_LOCKS=0` e adapter JUnit XML a 2 fasi `verifier/drift_shadow_junit.py`), e governa il rollout multi-repository con `drift.composition-manifest/1` e bundle bidirezionali `drift.boundary-bundle/1` (`offers`/`requires`).
 
 ---
 
@@ -216,7 +216,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>drift</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -226,7 +226,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>drift</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.4.0</version>
+      <version>0.5.0</version>
       <executions>
         <execution>
           <goals>
@@ -265,7 +265,7 @@ In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` da
 // build.sbt
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.4.0" % Test
+libraryDependencies += "drift" % "drift-junit" % "0.5.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -399,17 +399,19 @@ drift gate .drift/contracts --events .drift-work/events
 Mentre i bridge principali puntano alle ultime versioni **LTS/stable** (`drift-junit` su Java 25 LTS / Scala 3.9 LTS / JUnit 5 Platform, `drift.mjs` su Node.js 24 LTS, `drift.py` su Python 3.14, `drift_rust` su Rust Edition 2024, `drift_v` su V 0.5.2), per i monoliti legacy e i carve-out enterprise sono disponibili bridge dedicati senza dipendenze:
 - **Java 6–8 / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: collega `DriftJUnit4.Listener` al `RunListener` JUnit 4 per generare gli inventari `.meta.json` e gli eventi `bound` senza dipendenze da JUnit 5, e invoca `DriftJUnit4.verify(contract, caseId, observations, frames)` e `DriftJUnit4.replayCounterexamples(...)` nei test delle slice estratte.
 - **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: verifica proiezioni RFC 6901 JSON Pointer, clausole relazionali/negative (`forbid_keys`, `not_in`), write frame per caso (`checkFrame`) e fixture `*.cex.json`, scrivendo sidecar atomici `.events.jsonl` e `.meta.json`.
-- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: analizza layout copybook `PIC` (`--copybook`), serializza i `when` JSON in record a larghezza fissa (`PIC X`, `PIC 9`, `PIC S9...V99`), vincola gli input `.cbl`/`.cpy` in `.meta.json` ed emette ricevute di cutover `drift.parity-receipt/1` tra batch mainframe e nuovi microservizi.
+- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: analizza layout copybook `PIC` (`--copybook`), serializza i `when` JSON in record a larghezza fissa (`PIC X`, `PIC 9`, `PIC S9...V99`), vincola gli input `.cbl`/`.cpy` in `.meta.json` (o invia record grezzi `drift.observation/1` decodificati dal kernel) ed emette ricevute di cutover `drift.parity-receipt/1` tra batch mainframe e nuovi microservizi.
+- **C++20 (`bridges/drift_cpp.hpp`), C# / .NET / Unity (`bridges/Drift.cs`) e Godot 4 GDScript (`bridges/drift.gd`)**: bridge single-file senza dipendenze per motori real-time, simulazioni e codice nativo, con supporto per invarianti di traiettoria tolleranti al tuning (`monotonic`, `sum_total`, `step_max_delta`), tolleranze numeriche (`approx`, `abs_tol`, `rel_tol`, `balance_fields`), replay deterministico dei tick (`drift.sim-receipt/1`), `forbid_keys` ricorsivo, collector frame non osservati e `checkLogSink`.
 
 ---
 
 ## Livello 2: Selezione Incrementale, Blast Radius e Scaffolding da Specifiche/Tracce (`Pro`)
 
-Quando il numero di slice cresce, **DRIFT Pro** usa il grafo di `scope.code`, `scope.reads` e `scope.writes` (su Java, Scala, JS/TS, Python, Rust, V, PHP, COBOL e Pug/Sass/CSS) per selezionare solo i test e i budget di performance toccati da una modifica—allargando automaticamente a tutti i test in caso di dubbio:
+Quando il numero di slice cresce, **DRIFT Pro** usa il grafo di `scope.code`, `scope.reads` e `scope.writes` (su Java, Scala, JS/TS, Python, Rust, V, C++, C#, GDScript, PHP, COBOL e Pug/Sass/CSS) per selezionare solo i test e i budget di performance toccati da una modifica—allargando automaticamente a tutti i test in caso di dubbio:
 
 ```bash
-# Elenca solo i file di test impattati dai file sorgente modificati
+# Elenca solo i file di test (o genera un piano drift.test-plan/1) impattati dai file sorgente modificati
 drift select .drift/contracts --events .drift/events --changed src/items.js --files
+drift select .drift/contracts --events .drift/events --changed src/items.js --plan --cmd node --test
 
 # Riusa le prove precedenti per i contratti non toccati mantenendo il gate attivo
 drift gate .drift/contracts --events .drift/events --base HEAD --changed src/items.js

@@ -135,3 +135,226 @@ def check_surface_key(
         assert_eq(key, exp, int(raw_u or 0))
         return True
     return False
+
+
+def check_tuning_and_numeric_rel(pfx: str, key: str, exp: Mapping[str, Any], act: Any, peer_of: Any, is_num: Any, rk: frozenset[str]) -> None:
+    tol = float(exp['abs_tol']) if is_num(exp.get('abs_tol')) and float(exp['abs_tol']) >= 0.0 else 1e-9
+    if 'approx' in exp:
+        ap = exp['approx']
+        at = float(exp['abs_tol']) if 'abs_tol' in exp and is_num(exp['abs_tol']) else 0.0
+        rt = float(exp['rel_tol']) if 'rel_tol' in exp and is_num(exp['rel_tol']) else 0.0
+        if not is_num(act) or not is_num(ap) or ('abs_tol' not in exp and 'rel_tol' not in exp) or at < 0.0 or rt < 0.0:
+            raise AssertionError(f'{pfx}: invalid approx on then.{key}')
+        if abs(float(act) - float(ap)) > at + rt * abs(float(ap)):
+            raise AssertionError(f'{pfx}: exp then.{key} approx {ap} (+/- {at + rt * abs(float(ap))}), got {act!r}')
+    if 'balance_fields' in exp:
+        bf = exp['balance_fields']
+        if not isinstance(bf, Mapping): raise AssertionError(f'{pfx}: invalid balance_fields on then.{key}')
+        tot = 0.0
+        for sgn, k_side in ((1.0, 'add'), (-1.0, 'sub')):
+            for ref in (bf.get(k_side) or ()):
+                found, pv = peer_of(ref)
+                if not found or not is_num(pv): raise AssertionError(f'{pfx}: missing numeric peer "{ref}" for then.{key}.balance_fields')
+                tot += sgn * float(pv)
+        if not is_num(act) or abs(float(act) - tot) > tol:
+            raise AssertionError(f'{pfx}: exp then.{key} == balance ({tot}), got {act!r}')
+    if 'monotonic' in exp or 'step_max_delta' in exp or 'sum_total' in exp:
+        if isinstance(act, (list, tuple)) and ('min' in exp or 'max' in exp):
+            for v in act:
+                if not is_num(v) or ('min' in exp and float(v) + tol < float(exp['min'])) or ('max' in exp and float(v) - tol > float(exp['max'])):
+                    raise AssertionError(f'{pfx}: sequence element {v!r} outside [min, max] on then.{key}')
+    if 'monotonic' in exp:
+        mode = str(exp['monotonic'])
+        if not isinstance(act, (list, tuple)) or not act or not all(is_num(x) for x in act):
+            raise AssertionError(f'{pfx}: exp numeric sequence for then.{key}.monotonic')
+        for idx in range(1, len(act)):
+            p, c = float(act[idx - 1]), float(act[idx])
+            if not (p - tol <= c if mode == 'non_decreasing' else p + tol < c if mode == 'strictly_increasing' else p + tol >= c if mode == 'non_increasing' else p - tol > c if mode == 'strictly_decreasing' else False):
+                raise AssertionError(f'{pfx}: monotonic={mode} violated at {idx}')
+    if 'step_max_delta' in exp:
+        d_raw = exp['step_max_delta']
+        if not is_num(d_raw) or float(d_raw) <= 0.0 or not isinstance(act, (list, tuple)) or not act or not all(is_num(x) for x in act):
+            raise AssertionError(f'{pfx}: invalid step_max_delta on then.{key}')
+        if any(abs(float(act[i]) - float(act[i - 1])) > float(d_raw) + tol for i in range(1, len(act))):
+            raise AssertionError(f'{pfx}: step_max_delta exceeded on then.{key}')
+    if 'sum_total' in exp:
+        if isinstance(act, Mapping) and act and all(k in rk for k in act):
+            raise AssertionError(f'{pfx}: literal relational table cannot satisfy then.{key}.sum_total')
+        vals = list(act) if isinstance(act, (list, tuple)) else (list(act.values()) if isinstance(act, Mapping) else [])
+        if not vals or not all(is_num(x) for x in vals):
+            raise AssertionError(f'{pfx}: invalid sequence for then.{key}.sum_total')
+        tot, st = sum(float(x) for x in vals), exp['sum_total']
+        if is_num(st):
+            if abs(tot - float(st)) > tol: raise AssertionError(f'{pfx}: sum_total {tot}!={st}')
+        elif isinstance(st, Mapping):
+            if ('eq' in st and (not is_num(st['eq']) or abs(tot - float(st['eq'])) > tol)) or ('min' in st and (not is_num(st['min']) or tot + tol < float(st['min']))) or ('max' in st and (not is_num(st['max']) or tot - tol > float(st['max']))):
+                raise AssertionError(f'{pfx}: sum_total {tot} outside {st!r}')
+        else:
+            raise AssertionError(f'{pfx}: invalid sum_total on then.{key}')
+
+
+def _collect_case_key_policy(then_tbl: Mapping[str, Any], proj_tbl: Mapping[str, Any]) -> tuple[bool, set[str], set[str], set[str]]:
+    allowed: set[str] = set()
+    forbidden: set[str] = set()
+    peers: set[str] = set()
+    has_closed = False
+    for exp in then_tbl.values():
+        if not isinstance(exp, Mapping):
+            continue
+        if isinstance(exp.get('allowed_keys'), (list, tuple)):
+            has_closed = True
+            allowed.update(str(x) for x in exp['allowed_keys'])
+        if isinstance(exp.get('forbid_keys'), (list, tuple)):
+            forbidden.update(str(x) for x in exp['forbid_keys'])
+        elif isinstance(exp.get('forbid_keys'), str):
+            forbidden.add(exp['forbid_keys'])
+        for pk in ('le_field', 'ge_field', 'eq_field'):
+            if isinstance(exp.get(pk), str):
+                peers.add(exp[pk].lstrip('/'))
+        if isinstance(exp.get('sum_fields'), (list, tuple)):
+            for sf in exp['sum_fields']:
+                if isinstance(sf, str):
+                    peers.add(sf.lstrip('/'))
+        bf = exp.get('balance_fields')
+        if isinstance(bf, Mapping):
+            for side in ('add', 'sub'):
+                if isinstance(bf.get(side), (list, tuple)):
+                    for item in bf[side]:
+                        if isinstance(item, str):
+                            peers.add(item.lstrip('/'))
+    if has_closed:
+        allowed.update(str(k) for k in then_tbl.keys())
+        allowed.update(str(k) for k in proj_tbl.keys())
+        allowed.update(peers)
+    return has_closed, allowed, forbidden, peers
+
+
+def run_precheck_test_literals(test_files: list[str], res_dir: Any, area: Any) -> dict[str, Any]:
+    import ast
+    import json
+    from pathlib import Path
+    res_dir, area = Path(res_dir), Path(area)
+    views: dict[str, Mapping[str, Any]] = {}
+    known: set[str] = set()
+    for d in (res_dir, area / '.drift' / 'upstream'):
+        if d.is_dir():
+            for jf in d.glob('*.json'):
+                try:
+                    v = json.loads(jf.read_text(encoding='utf-8'))
+                    cid = str(v.get('id') or jf.stem)
+                    views.setdefault(cid, v)
+                    known.add(cid)
+                except Exception:
+                    pass
+    c_dir = area / '.drift' / 'contracts'
+    if c_dir.is_dir():
+        for tf in c_dir.glob('*.toml'):
+            known.add(tf.stem)
+    findings: list[dict[str, str]] = []
+    advisory: list[dict[str, str]] = []
+    unverified = 0
+    other_methods = {'expect', 'then', 'find_then', 'check_projection', 'check_view', 'check_bounds', 'check_profile_bounds', 'check_adverse', 'check_seam_bounds'}
+    for rel in test_files:
+        fp = Path(rel) if Path(rel).is_absolute() else (area / rel)
+        if not fp.is_file():
+            continue
+        try:
+            tree = ast.parse(fp.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        fn_defs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn_name = node.func.id if isinstance(node.func, ast.Name) else (node.func.attr if isinstance(node.func, ast.Attribute) else '')
+            if fn_name != 'run_drift_case':
+                continue
+            kw_map = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+            c_node = node.args[0] if len(node.args) >= 1 else kw_map.get('contract')
+            if not (isinstance(c_node, ast.Constant) and isinstance(c_node.value, str)):
+                unverified += 1
+                continue
+            cid = c_node.value
+            if cid not in known:
+                findings.append({'code': 'test.unknown_contract', 'file': rel, 'contract': cid, 'message': f'unknown contract "{cid}"'})
+                continue
+            view = views.get(cid)
+            cases_tbl = view.get('cases') if isinstance(view, Mapping) else None
+            if not isinstance(cases_tbl, Mapping):
+                unverified += 1
+                continue
+            cs_node = node.args[2] if len(node.args) >= 3 else kw_map.get('cases')
+            if isinstance(cs_node, (ast.List, ast.Tuple)):
+                for elt in cs_node.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        if elt.value not in cases_tbl:
+                            findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': elt.value, 'message': f'contract "{cid}" has no case "{elt.value}"'})
+                    else:
+                        unverified += 1
+            elif cs_node is not None:
+                unverified += 1
+            cb_node = node.args[3] if len(node.args) >= 4 else kw_map.get('fn')
+            target_ast = fn_defs.get(cb_node.id) if isinstance(cb_node, ast.Name) else cb_node
+            if target_ast is None:
+                continue
+            ctx_param = ''
+            if isinstance(target_ast, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)) and target_ast.args.args:
+                ctx_param = target_ast.args.args[0].arg
+            if not ctx_param:
+                unverified += 1
+                continue
+            has_other = False
+            checked_by_case: dict[str, set[str]] = {}
+            dyn_cases: set[str] = set()
+            for sub in ast.walk(target_ast):
+                if not isinstance(sub, ast.Call) or not isinstance(sub.func, ast.Attribute):
+                    continue
+                if not (isinstance(sub.func.value, ast.Name) and sub.func.value.id == ctx_param):
+                    continue
+                m_name = sub.func.attr
+                if m_name in other_methods:
+                    has_other = True
+                    continue
+                if m_name != 'check':
+                    continue
+                if len(sub.args) < 2 or sub.keywords:
+                    unverified += 1
+                    continue
+                ca_node, map_node = sub.args[0], sub.args[1]
+                if not (isinstance(ca_node, ast.Constant) and isinstance(ca_node.value, str)):
+                    unverified += 1
+                    continue
+                case_id = ca_node.value
+                if case_id not in cases_tbl:
+                    findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': case_id, 'message': f'contract "{cid}" has no case "{case_id}"'})
+                    continue
+                if not isinstance(map_node, ast.Dict) or any(k is None or not (isinstance(k, ast.Constant) and isinstance(k.value, str)) for k in map_node.keys) or len(sub.args) > 2:
+                    unverified += 1
+                    dyn_cases.add(case_id)
+                    continue
+                then_tbl = (cases_tbl.get(case_id) or {}).get('then') or {}
+                proj_tbl = ((view.get('projections') or {}).get('then') or {}) if isinstance(view.get('projections'), Mapping) else {}
+                has_closed, allowed_k, forbid_k, peer_k = _collect_case_key_policy(then_tbl, proj_tbl)
+                seen_k = checked_by_case.setdefault(case_id, set())
+                for k_node in map_node.keys:
+                    assert isinstance(k_node, ast.Constant) and isinstance(k_node.value, str)
+                    k_str = k_node.value
+                    if k_str == '_frame':
+                        continue
+                    seen_k.add(k_str)
+                    if k_str not in then_tbl and k_str not in proj_tbl and k_str not in peer_k:
+                        if k_str in forbid_k or (has_closed and k_str not in allowed_k):
+                            findings.append({'code': 'test.then_key_mismatch', 'file': rel, 'contract': cid, 'case': case_id, 'key': k_str, 'message': f'{cid}.{case_id}: unknown then.{k_str}'})
+                        else:
+                            advisory.append({'code': 'test.extra_check_key', 'file': rel, 'contract': cid, 'case': case_id, 'key': k_str, 'message': f'{cid}.{case_id}: extra key "{k_str}" in check literal'})
+            if not has_other:
+                for case_id, seen_k in checked_by_case.items():
+                    if case_id in dyn_cases:
+                        continue
+                    then_tbl = (cases_tbl.get(case_id) or {}).get('then') or {}
+                    for req_k in then_tbl:
+                        if req_k not in seen_k:
+                            findings.append({'code': 'test.then_key_mismatch', 'file': rel, 'contract': cid, 'case': case_id, 'key': req_k, 'message': f'{cid}.{case_id}: missing required then.{req_k}'})
+    return {'ok': len(findings) == 0, 'findings': findings, 'advisory_findings': advisory, 'unverified_static': unverified}
+
+

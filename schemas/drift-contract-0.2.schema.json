@@ -207,6 +207,74 @@
       ],
       "type": "object"
     },
+    "control": {
+      "additionalProperties": false,
+      "properties": {
+        "cases": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "context_ref": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "criteria_ref": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "effectiveness_evidence": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "enforce": {
+          "enum": [
+            "execution",
+            "release"
+          ]
+        },
+        "implementation_evidence": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "kind": {
+          "enum": [
+            "software",
+            "interface",
+            "procedure",
+            "hardware"
+          ]
+        },
+        "mitigates": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "mitigates"
+      ],
+      "type": "object"
+    },
     "cutover": {
       "additionalProperties": false,
       "properties": {
@@ -430,7 +498,10 @@
               "max_preemptions",
               "max_steps",
               "max_threads",
-              "input_bytes"
+              "input_bytes",
+              "qubits",
+              "ansatz_layers",
+              "circuit_depth"
             ]
           },
           "type": "object"
@@ -476,7 +547,8 @@
         "property_kind": {
           "enum": [
             "safety",
-            "liveness"
+            "liveness",
+            "unitary_equivalence"
           ]
         },
         "verifier": {
@@ -489,7 +561,9 @@
             "spin",
             "shuttle",
             "stateright",
-            "dafny"
+            "dafny",
+            "qcec",
+            "gappa"
           ]
         }
       },
@@ -597,6 +671,32 @@
         "effort_h",
         "risk",
         "undo"
+      ],
+      "type": "object"
+    },
+    "risk": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "note": {
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "controls"
       ],
       "type": "object"
     },
@@ -822,6 +922,15 @@
       },
       "type": "object"
     },
+    "controls": {
+      "additionalProperties": {
+        "$ref": "#/$defs/control"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
+    },
     "cutover": {
       "$ref": "#/$defs/cutover"
     },
@@ -870,6 +979,15 @@
     "open": {
       "additionalProperties": {
         "$ref": "#/$defs/open"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
+    },
+    "risks": {
+      "additionalProperties": {
+        "$ref": "#/$defs/risk"
       },
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"

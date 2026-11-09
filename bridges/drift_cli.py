@@ -41,27 +41,21 @@ def extract_projection_map(view: Mapping[str, Any], side: str) -> dict[str, str]
 
 def resolve_param_spec(contract_id: str, view: Mapping[str, Any], p: str | list[str] | tuple[str, ...]) -> Any:
     specs = view.get('param_specs')
-    if not isinstance(specs, Mapping) or not specs:
-        raise KeyError(f'contract "{contract_id}" has no param_specs')
+    if not isinstance(specs, Mapping) or not specs: raise KeyError(f'contract "{contract_id}" has no param_specs')
     if isinstance(p, (list, tuple)):
-        if not p:
-            raise ValueError('profile parameter sequence must not be empty')
+        if not p: raise ValueError('profile parameter sequence must not be empty')
         for k in p:
-            if not isinstance(k, str) or k not in specs:
-                raise KeyError(f'contract "{contract_id}" has no bounded param_specs.{k}')
+            if not isinstance(k, str) or k not in specs: raise KeyError(f'contract "{contract_id}" has no bounded param_specs.{k}')
         return {k: specs[k] for k in p}
-    if not isinstance(p, str) or p not in specs:
-        raise KeyError(f'contract "{contract_id}" has no bounded param_specs.{p}')
+    if not isinstance(p, str) or p not in specs: raise KeyError(f'contract "{contract_id}" has no bounded param_specs.{p}')
     return specs[p]
 
 
 def parse_mutation_segments(contract_id: str, case_id: str, ptr: str, sec: str) -> list[str]:
     pfx = f'/cases/{escape_pointer(case_id)}/{sec}/'
-    if not ptr.startswith(pfx):
-        raise ValueError(f'mutation path {ptr} is outside {contract_id}.{case_id}.{sec}')
+    if not ptr.startswith(pfx): raise ValueError(f'mutation path {ptr} is outside {contract_id}.{case_id}.{sec}')
     raw = ptr[len(pfx):].split('/')
-    if not raw or not raw[0]:
-        raise ValueError(f'mutation path {ptr} has no {sec} leaf')
+    if not raw or not raw[0]: raise ValueError(f'mutation path {ptr} has no {sec} leaf')
     return [unescape_pointer(s) for s in raw]
 
 
@@ -69,14 +63,11 @@ def apply_mutation(tbl: dict[str, Any], contract_id: str, case_id: str, ptr: str
     segs = pre if pre is not None else parse_mutation_segments(contract_id, case_id, ptr, sec)
     def replace(t: dict[str, Any], idx: int) -> dict[str, Any]:
         k = segs[idx]
-        if not isinstance(t, dict) or k not in t:
-            raise ValueError(f'mutation path has no predicate {k}')
-        if idx == len(segs) - 1:
-            return {**t, k: after}
+        if not isinstance(t, dict) or k not in t: raise ValueError(f'mutation path has no predicate {k}')
+        if idx == len(segs) - 1: return {**t, k: after}
         if idx == 0 and len(segs) == 2 and isinstance(after, dict) and segs[1] in t and k in after and segs[1] in after:
             return {**t, k: after[k], segs[1]: after[segs[1]]}
-        if not isinstance(t[k], dict):
-            raise ValueError(f'mutation path crosses a non-table value at {k}')
+        if not isinstance(t[k], dict): raise ValueError(f'mutation path crosses a non-table value at {k}')
         return {**t, k: replace(t[k], idx + 1)}
     return replace(tbl, 0)
 
@@ -249,7 +240,18 @@ def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], to
     return up[0] if up is not None else None
 
 
+from drift_probes import ensure_export_generation as _ensure_export_generation, parse_test_command_str as _parse_test_command_str
 from drift_security import capture_worktree_snapshot as _capture_worktree_snapshot
+from drift_ui_surface import run_precheck_test_literals as _run_precheck_test_literals
+
+
+def parse_test_command(raw: str) -> list[str]:
+    return _parse_test_command_str(raw)
+
+
+def precheck_test_literals(test_files: list[str], res_dir: Path, area: Path) -> dict[str, Any]:
+    return _run_precheck_test_literals(test_files, res_dir, area)
+
 
 
 def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any, Any], list[str]]) -> int:
@@ -362,7 +364,7 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
                     tomls.append(str(m_direct))
         if not ids:
             raise FileNotFoundError(f'contract "{rel_srcs[0][0]}" not found at {rel_srcs[0][1]}')
-    subprocess.run([cli, 'show', *tomls, '--out', str(res_dir)], cwd=str(area), capture_output=True, check=False)
+    gen_dir = _ensure_export_generation(area, cli, ids, tomls, res_dir)
     sel_file, narrowed_files, select_widened, select_reasons = '', None, False, []
     if base_ref:
         sel_cmd = [cli, 'select', tomls[0] if len(tomls) == 1 else str(c_dir), '--base', base_ref, '--events', str(ev_dir), '--files', '--json', *([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else (['--changed'] if want_changed else []))]
@@ -441,7 +443,7 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
             + ['--out', str(mut_f)]
         )
         subprocess.run(m_cmd, cwd=str(area), capture_output=True, check=False)
-    env = {**os.environ, 'DRIFT_RESOLVED': str(res_dir), 'DRIFT_EVENTS': str(ev_dir), 'DRIFT_CONTRACTS': ','.join(ids)}
+    env = {**os.environ, 'DRIFT_RESOLVED': str(gen_dir), 'DRIFT_EVENTS': str(ev_dir), 'DRIFT_CONTRACTS': ','.join(ids)}
     if not env.get('DRIFT_SNAPSHOT', '').strip() and test_files:
         snap = _capture_worktree_snapshot(area)
         if snap:
@@ -460,9 +462,13 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
     if need_mut and mut_f.is_file():
         env['DRIFT_MUTANTS'], env['DRIFT_MUTATION_EVENTS'] = str(mut_f), str(mut_ev)
     test_rc, run_list = 0, sorted(test_files)
+    if run_list:
+        pre = precheck_test_literals(run_list, gen_dir, area)
+        if not pre['ok']:
+            raise RuntimeError('\n'.join(f"{f['file']}: {f['code']}: {f['message']}" for f in pre['findings']))
     custom_cmd = os.environ.get('DRIFT_TEST_CMD', '').strip()
     if custom_cmd and run_list:
-        cmd_parts = custom_cmd.split()
+        cmd_parts = parse_test_command(custom_cmd)
         rc = subprocess.run([*cmd_parts, *(str(area / tf) for tf in run_list)], cwd=str(area), env=env, capture_output=json_out, check=False).returncode
         if rc != 0:
             test_rc = rc
@@ -472,8 +478,9 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
             if rc != 0:
                 test_rc = rc
     if mode == 'test':
+        act = 'widened' if select_widened else ('narrowed' if run_list else 'skip')
         if json_out:
-            test_rep: dict[str, Any] = {'ok': test_rc == 0, 'ran': len(run_list), 'selected_files': run_list}
+            test_rep: dict[str, Any] = {'ok': test_rc == 0, 'action': act, 'ran': len(run_list), 'selected_files': run_list}
             if base_ref:
                 test_rep['widened'] = select_widened
                 test_rep['reasons'] = select_reasons

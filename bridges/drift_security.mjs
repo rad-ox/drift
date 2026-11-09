@@ -12,6 +12,18 @@ import {
   throwError,
   valuesEqual,
 } from './drift_checks.mjs';
+import {
+  checkBolaVariantPair,
+  hasKeyRecursive,
+  isFrameMetadataEnvelope,
+  requiredProbesOf,
+  runIdempotencyProbe,
+  runLogSinkProbe,
+  runRollbackProbe,
+  runSeamProbe,
+} from './drift_probes.mjs';
+
+export { hasKeyRecursive, isFrameMetadataEnvelope, requiredProbesOf, runIdempotencyProbe, runLogSinkProbe, runRollbackProbe, runSeamProbe };
 
 export function checkNegativeLeaf(pfx, key, exp, act, mutationOverride) {
   if ('not_in' in exp) {
@@ -34,7 +46,7 @@ export function checkNegativeLeaf(pfx, key, exp, act, mutationOverride) {
       throwAssertionError(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
     }
     for (const fk of exp.forbid_keys.map(String)) {
-      if (fk in act) {
+      if (hasKeyRecursive(act, fk, true)) {
         throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
       }
     }
@@ -63,21 +75,35 @@ export function forbiddenWritesOf(view, caseId) {
   return scopeWrites.filter((r) => !isWriteResourceAllowed(r, allowed, allowedBases));
 }
 
+function isNonNegSafeInt(v) {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
+
 function verifySingleFrameObs(pfx, res, obs, isAmbient) {
   let checkedAny = false;
   const writeLabel = isAmbient ? `undeclared write on perimeter resource "${res}"` : `frame violation on resource "${res}"`;
   const snapLabel = isAmbient ? `undeclared state mutation on perimeter resource "${res}"` : `frame state mutation on resource "${res}"`;
-  if (typeof obs === 'number' && Number.isFinite(obs) && obs >= 0) {
+  if (isNonNegSafeInt(obs)) {
     checkedAny = true;
     if (obs > 0) {
       throwAssertionError(`${pfx}: ${writeLabel}: expected 0 writes, observed ${obs}`);
     }
   } else if (isObj(obs)) {
-    const wCount = typeof obs.writes === 'number'
-      ? obs.writes
-      : (typeof obs.operations === 'number'
-        ? obs.operations
-        : (Array.isArray(obs.writes) ? obs.writes.length : (Array.isArray(obs.events) ? obs.events.length : null)));
+    let wCount = null;
+    for (const wk of ['writes', 'operations', 'events']) {
+      if (wk in obs) {
+        const wv = obs[wk];
+        if (isNonNegSafeInt(wv)) {
+          wCount = wv;
+          break;
+        }
+        if (Array.isArray(wv)) {
+          wCount = wv.length;
+          break;
+        }
+        throwAssertionError(`${pfx}: invalid frame ${wk} for "${res}": expected non-negative integer, got ${wv}`);
+      }
+    }
     if (wCount !== null) {
       checkedAny = true;
       if (wCount > 0) {
@@ -107,20 +133,44 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
     checkedKeys.add(res);
     checkedKeys.add(baseRes);
     const obs = isObj(frameObs) ? (res in frameObs ? frameObs[res] : (baseRes in frameObs ? frameObs[baseRes] : undefined)) : undefined;
-    if (obs === undefined) {
+    const hasMetrics = isObj(obs) && ('writes' in obs || 'operations' in obs || 'events' in obs || ('before' in obs && 'after' in obs));
+    if (hasMetrics) {
+      verifySingleFrameObs(pfx, res, obs, false);
+    }
+    if (obs === undefined || (isObj(obs) && obs.observed === false)) {
+      if (ctx && !(ctx.unobservedCases instanceof Set)) ctx.unobservedCases = new Set();
+      ctx?.unobservedCases?.add(caseId);
       if (strict) {
-        throwAssertionError(`${pfx}: missing frame observation for forbidden write resource "${res}"`);
+        const msg = obs === undefined
+          ? `missing frame observation for forbidden write resource "${res}"`
+          : `frame.observer_missing for forbidden write resource "${res}"`;
+        throwAssertionError(`${pfx}: ${msg}`);
       }
       continue;
     }
-    verifySingleFrameObs(pfx, res, obs, false);
+    if (!hasMetrics) {
+      verifySingleFrameObs(pfx, res, obs, false);
+    }
     seen.add(`@frame:${res}`);
   }
   if (isObj(frameObs)) {
     const [allowed, allowedBases] = allowedWriteSetsOf(ctx.view, caseId);
     for (const k of Object.keys(frameObs).sort()) {
       if (checkedKeys.has(k) || isWriteResourceAllowed(k, allowed, allowedBases)) continue;
-      verifySingleFrameObs(pfx, k, frameObs[k], true);
+      const obsK = frameObs[k];
+      const hasKMetrics = isObj(obsK) && ('writes' in obsK || 'operations' in obsK || 'events' in obsK || ('before' in obsK && 'after' in obsK));
+      if (hasKMetrics) {
+        verifySingleFrameObs(pfx, k, obsK, true);
+      }
+      if (isObj(obsK) && obsK.observed === false) {
+        if (strict) {
+          throwAssertionError(`${pfx}: frame.observer_missing for perimeter resource "${k}"`);
+        }
+        continue;
+      }
+      if (!hasKMetrics) {
+        verifySingleFrameObs(pfx, k, obsK, true);
+      }
     }
   }
 }
@@ -147,20 +197,21 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}) {
       if (Array.isArray(exp.allowed_keys)) {
         const allowedSet = new Set(exp.allowed_keys.map(String));
         for (const actKey of Object.keys(targetObj)) {
-          if (targetObj === payload && actKey === '_frame' && isObj(targetObj._frame)) continue;
+          if (targetObj === payload && actKey === '_frame' && isFrameMetadataEnvelope(targetObj._frame)) continue;
           if (!allowedSet.has(actKey)) {
             throwAssertionError(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(exp.allowed_keys)}`);
           }
         }
       }
       if ('forbid_keys' in exp) {
+        const isRootTarget = targetObj === payload;
         if (Array.isArray(exp.forbid_keys)) {
           for (const fk of exp.forbid_keys.map(String)) {
-            if (Object.hasOwn(targetObj, fk)) {
+            if (hasKeyRecursive(targetObj, fk, isRootTarget)) {
               throwAssertionError(`${ctx.contractId}.${caseId}: forbidden key "${fk}" present on then.${k}`);
             }
           }
-        } else if (!Object.hasOwn(targetObj, String(exp.forbid_keys))) {
+        } else if (!hasKeyRecursive(targetObj, String(exp.forbid_keys), isRootTarget)) {
           throwAssertionError(`${ctx.contractId}.${caseId}: drop-forbid-key mutant killed on then.${k}.forbid_keys`);
         }
       }
@@ -169,9 +220,10 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}) {
     }
     seen.add(k);
   }
-  const frameObs = isObj(checks?.frame) ? checks.frame : (isObj(payload?._frame) ? payload._frame : null);
+  const frameObs = isObj(checks?.frame) ? checks.frame : (isFrameMetadataEnvelope(payload?._frame) ? payload._frame : null);
   if (frameObs) {
-    verifyCaseFrame(ctx, caseId, frameObs, true);
+    const strictFrame = checks?.strictFrame === true || !Object.values(frameObs).some((v) => isObj(v) && v.observed === false);
+    verifyCaseFrame(ctx, caseId, frameObs, strictFrame);
   }
 }
 
@@ -182,9 +234,14 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
   if (!Array.isArray(variants) || !variants.length || typeof execute !== 'function') {
     throwError(`checkAdverse for ${ctx.contractId}.${caseId} requires non-empty variants and an execute callback`);
   }
+  const pfx = `${ctx.contractId}.${caseId}`;
   const whenTbl = ctx._wt(caseId);
   const whenProj = ctx._projMap('when');
+  let sawCrossOwner = false;
   for (const variant of variants) {
+    if (checkBolaVariantPair(pfx, variant)) {
+      sawCrossOwner = true;
+    }
     if (isObj(variant)) {
       for (const [wk, wexp] of Object.entries(whenTbl)) {
         const ptr = whenProj[wk] || `/${escapePointer(wk)}`;
@@ -196,6 +253,12 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
     }
     const observed = await execute(variant);
     await runProjectionChecks(ctx, caseId, observed, checks);
+  }
+  if ((harness?.requireCrossOwner === true || harness?.bola === true) && !sawCrossOwner) {
+    ctx.reads.get(caseId)?.clear();
+    if (harness?.strict !== false) {
+      throwAssertionError(`${pfx}: bola.unobserved: no cross-owner variant with distinct actor_owner and resource_owner supplied`);
+    }
   }
 }
 
@@ -273,7 +336,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.4.0',
+    version: '0.5.0',
   };
 }
 

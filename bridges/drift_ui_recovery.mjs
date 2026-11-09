@@ -441,3 +441,104 @@ export async function evaluateScenarioMatrix(spec, checkViewTableFn) {
     claim_scope: 'verified_in_declared_scenarios_and_environments',
   };
 }
+
+export const CAPS_03 = ['rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1'];
+const stripSide03 = (s) => (isStr(s) && (s.startsWith('when.') || s.startsWith('then.')) ? s.slice(s.indexOf('.') + 1) : s);
+export function desugar03Rel(raw) {
+  if (!isObj(raw)) return raw;
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === 'tol' && isObj(v)) {
+      if ('abs' in v) out.abs_tol = v.abs;
+      if ('rel' in v) out.rel_tol = v.rel;
+    } else if (k === 'len' && isObj(v)) {
+      if ('min' in v) out.min_len = v.min;
+      if ('max' in v) out.max_len = v.max;
+    } else if (k === 'keys' && isObj(v)) {
+      if ('allow' in v) out.allowed_keys = v.allow;
+      if ('forbid' in v) out.forbid_keys = v.forbid;
+    } else if (k === 'peer' && isObj(v)) {
+      if ('le' in v) out.le_field = stripSide03(v.le);
+      if ('ge' in v) out.ge_field = stripSide03(v.ge);
+      if ('eq' in v) out.eq_field = stripSide03(v.eq);
+      if (Array.isArray(v.sum)) out.sum_fields = v.sum.map(stripSide03);
+      if (isObj(v.balance)) {
+        out.balance_fields = {
+          ...(Array.isArray(v.balance.add) ? { add: v.balance.add.map(stripSide03) } : {}),
+          ...(Array.isArray(v.balance.sub) ? { sub: v.balance.sub.map(stripSide03) } : {}),
+        };
+      }
+    } else if (k === 'series' && isObj(v)) {
+      Object.assign(out, v);
+      if (out.monotonic === 'increasing' || out.monotonic === 'decreasing') {
+        out.monotonic = `strictly_${out.monotonic}`;
+      }
+    } else if (k !== 'convert_from') {
+      out[k] = v;
+    }
+  }
+  if ('eq' in out && ('abs_tol' in out || 'rel_tol' in out) && !('balance_fields' in out) && !('sum_fields' in out)) {
+    out.approx = out.eq;
+    delete out.eq;
+  }
+  return out;
+}
+
+function expandSingleDomain(spec, first = false) {
+  if (Array.isArray(spec)) {
+    if (!spec.length) throw new Error('domain sample array must not be empty');
+    return first ? [spec[0]] : [...spec];
+  }
+  if (!isObj(spec)) throw new Error('domain specification must be an array or an object');
+  if (spec.type === 'int') {
+    const min = Number(spec.min);
+    const max = Number(spec.max);
+    if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max) {
+      throw new Error(`invalid int domain [${spec.min}, ${spec.max}]`);
+    }
+    if (first) return [min < 0 && max > 0 ? 0 : min];
+    return [...new Set([...(min < 0 && max > 0 ? [0] : []), min, min < max ? min + 1 : min, Math.trunc((min + max) / 2), max > min ? max - 1 : max, max])];
+  }
+  if (spec.type === 'string' && Array.isArray(spec.enum) && spec.enum.length) {
+    return first ? [String(spec.enum[0])] : [...new Set(spec.enum.map(String))];
+  }
+  return spec.type === 'bool' ? (first ? [false] : [false, true]) : null;
+}
+
+export function expandDomain(domain, first = false) {
+  const single = expandSingleDomain(domain, first);
+  if (single !== null) return single;
+  const keys = Object.keys(domain).sort();
+  const d = keys.length;
+  if (!d) throw new Error('Cartesian domain map must not be empty');
+  const valsByKey = keys.map((k) => {
+    const vals = expandSingleDomain(domain[k], first);
+    if (vals === null) throw new Error(`invalid domain specification for key "${k}"`);
+    return vals;
+  });
+  const cur = {};
+  let prod = 1;
+  for (let i = 0; i < d; i++) {
+    cur[keys[i]] = valsByKey[i][0];
+    if (prod <= 16) prod *= valsByKey[i].length;
+  }
+  if (first) return [cur];
+  const maxExcursions = prod <= 16 ? d : (d >= 3 ? 2 : d);
+  const out = [];
+  const dfs = (pos, exc) => {
+    if (pos === d || exc >= maxExcursions) {
+      out.push({ ...cur });
+      return;
+    }
+    dfs(pos + 1, exc);
+    const vals = valsByKey[pos];
+    const k = keys[pos];
+    for (let i = 1; i < vals.length; i++) {
+      cur[k] = vals[i];
+      dfs(pos + 1, exc + 1);
+    }
+    cur[k] = vals[0];
+  };
+  dfs(0, 0);
+  return out;
+}

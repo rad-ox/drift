@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Two-phase pre/post-execution JUnit XML and external harness shadow adapter (D297, SPEC §36.2)."""
+"""Two-phase pre/post-execution JUnit XML and external harness shadow adapter."""
 import argparse, hashlib, json, os, subprocess, sys, tomllib, xml.etree.ElementTree as ET
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import drift_verify as dv
-
 SHADOW_RUN_SCHEMA = "drift.shadow-run/1"
-SHADOW_RUN_KEYS = frozenset(("schema", "run_id", "source_snapshot", "bindings_ref", "shadow_snapshot", "selected_tests", "shadow_inputs"))
+SHADOW_RUN_KEYS = frozenset(("schema", "run_id", "source_snapshot", "bindings_ref", "shadow_snapshot", "selected_tests", "shadow_inputs", "sequence", "supersedes"))
 SNAPSHOT_RE = dv.SNAPSHOT_RE
-
-
 def validate_shadow_run_dict(sr):
  if not isinstance(sr, dict) or any(k not in SHADOW_RUN_KEYS for k in sr) or sr.get("schema") != SHADOW_RUN_SCHEMA: raise ValueError("shadow_run")
  rid, s_snap, b_ref, sh_snap, s_in = sr.get("run_id", ""), sr.get("source_snapshot", ""), sr.get("bindings_ref", ""), sr.get("shadow_snapshot", ""), sr.get("shadow_inputs")
@@ -17,8 +14,9 @@ def validate_shadow_run_dict(sr):
  if not isinstance(s_snap, str) or not SNAPSHOT_RE.match(s_snap) or not isinstance(b_ref, str) or len(b_ref) != 71 or not b_ref.startswith("sha256:") or not isinstance(sh_snap, str) or len(sh_snap) != 71 or not sh_snap.startswith("sha256:"): raise ValueError("shadow_run.ref")
  if not isinstance(s_in, dict) or not s_in or any(not isinstance(k, str) or not k.strip() or k.startswith("/") or "\\" in k or any(p in ("", ".", "..") for p in k.split("/")) or not isinstance(v, str) or len(v) != 71 or not v.startswith("sha256:") for k, v in s_in.items()): raise ValueError("shadow_run.inputs")
  if "selected_tests" in sr and (not isinstance(st_l := sr["selected_tests"], list) or not all(isinstance(x, str) and "#" in x for x in st_l) or st_l != sorted(set(st_l))): raise ValueError("shadow_run.selected_tests")
-
-
+ if "sequence" in sr and (not isinstance(seq := sr["sequence"], int) or isinstance(seq, bool) or seq < 1): raise ValueError("shadow_run.sequence")
+ if "supersedes" in sr and (not isinstance(sup_l := sr["supersedes"], list) or not all(isinstance(x, str) and bool(x.strip()) and x == x.strip() and "/" not in x and "\\" not in x and ".." not in x and x != rid for x in sup_l) or sup_l != sorted(set(sup_l))): raise ValueError("shadow_run.supersedes")
+from drift_verify_sim import order_shadow_shards_py
 def lookup_registered_shadow_py(probe_path: Path) -> str:
  reg = os.environ.get("DRIFT_SHADOW_REGISTRY", "").strip()
  reg_p = Path(reg) if reg else (Path(os.environ.get("XDG_CONFIG_HOME", "").strip() or (Path.home() / ".config")) / "drift" / "shadows.toml")
@@ -33,8 +31,6 @@ def lookup_registered_shadow_py(probe_path: Path) -> str:
   sd = str(areas.get(str(d), "")).strip()
   if sd and (Path(sd) / "shadow.toml").is_file(): return sd
  return ""
-
-
 def resolve_shadow_roots_impl(path, state_dir=""):
  p = Path(path)
  def _area_of(cand):
@@ -75,8 +71,6 @@ def resolve_shadow_roots_impl(path, state_dir=""):
   if (cand.exists() or cand.is_symlink()) and cand.resolve().is_relative_to(r_src):
    raise ValueError(f"shadow state directory must lie outside source_root: {cand}")
  return {"is_shadow": True, "source_root": r_src, "area_root": r_area, "work_root": r_area / ".drift-work"}
-
-
 def shadow_inputs_fresh(sr, sf, area_root=None):
  if not isinstance(sr, dict) or not isinstance(s_in := sr.get("shadow_inputs"), dict): return True
  try:
@@ -84,15 +78,11 @@ def shadow_inputs_fresh(sr, sf, area_root=None):
   cur_inputs, cur_b_ref, cur_sh_snap = collect_shadow_inputs(roots["area_root"])
  except Exception: return False
  return cur_b_ref == sr.get("bindings_ref") and cur_sh_snap == sr.get("shadow_snapshot") and cur_inputs == s_in
-
-
 def _expect_err(fn, arg):
  try:
   fn(arg)
   raise AssertionError(arg)
  except ValueError: pass
-
-
 def run_verifier_self_test():
  assert dv.canonical_json(-0.0) == "0" and dv.canonical_json(1e21) == "1e+21" and dv.canonical_json(1e-6) == "0.000001" and dv.canonical_json(1e-7) == "1e-7" and dv.canonical_json({"\ue000": 1, "\U0001f600": 2}) == '{"\U0001f600":2,"\ue000":1}'
  for b in (1 << 53, -(1 << 53), float("nan"), float("inf")): _expect_err(dv.canonical_json, b)
@@ -108,30 +98,20 @@ def run_verifier_self_test():
  ev = [{"test": "T#ok", "contract": "svc", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": ck["ref"]}]
  assert not dv.evaluate_contract(ck, "current", ev, 0, 0, [])["ok"] and dv.evaluate_contract(ck, "current", ev, 0, 0, [], mutations_ok=True)["ok"]
  dv.run_sec_self_test(ck, dv.digest_matches)
+ dv.run_ra_self_test(ck, dv.digest_matches)
  print("drift_verify.py self-test: ok (RFC 8785 JCS, event & full inventory schema vectors passed)")
  return 0
-
-
-
 def normalize_bytes(raw: bytes) -> bytes:
  return raw.replace(b"\r\n", b"\n") if b"\x00" not in raw else raw
-
-
 def file_sha256(path: Path) -> str:
  return "sha256:" + hashlib.sha256(normalize_bytes(path.read_bytes())).hexdigest()
-
-
 _SKIP_SNAPSHOT_DIRS = frozenset((".git", ".drift", ".drift-work", "target", ".build", "node_modules", "__pycache__"))
 _OUTCOME_RANK = {"failed": 3, "skipped": 2, "passed": 1}
-
-
 def validate_run_id(raw_id: str) -> str:
  rid = raw_id.strip() if isinstance(raw_id, str) else ""
  if not rid or rid != raw_id or "/" in rid or "\\" in rid or ".." in rid:
   raise ValueError(f"invalid --run-id '{raw_id}'")
  return rid
-
-
 def capture_source_snapshot(source_root: Path) -> str:
  env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
  if (source_root / ".git").exists():
@@ -146,8 +126,6 @@ def capture_source_snapshot(source_root: Path) -> str:
   norm = normalize_bytes(p.read_bytes())
   h.update(f"{rel}\x00{len(norm)}\x00".encode("utf-8") + norm + b"\n")
  return h.hexdigest()
-
-
 def collect_shadow_inputs(area_root: Path) -> tuple[dict[str, str], str, str]:
  inputs: dict[str, str] = {}
  proves_p = area_root / ".drift" / "proves.toml"
@@ -168,8 +146,6 @@ def collect_shadow_inputs(area_root: Path) -> tuple[dict[str, str], str, str]:
  b_ref = inputs.get(".drift/proves.toml", "sha256:" + hashlib.sha256(b"").hexdigest())
  sh_snap = "sha256:" + hashlib.sha256(dv.canonical_json(inputs).encode("utf-8")).hexdigest()
  return inputs, b_ref, sh_snap
-
-
 def collect_contract_digests(area_root: Path) -> dict[str, str]:
  c_dir = area_root / ".drift" / "contracts"
  p_dir = area_root / ".drift" / "profiles"
@@ -179,8 +155,6 @@ def collect_contract_digests(area_root: Path) -> dict[str, str]:
    info = dv.verify_contract_toml(cf, p_dir)
    out[info["id"]] = info["ref"]
  return out
-
-
 def parse_proves_toml(area_root: Path, contract_refs: dict[str, str]) -> dict[str, list[tuple[str, str]]]:
  proves_p = area_root / ".drift" / "proves.toml"
  if not proves_p.is_file(): return {}
@@ -204,8 +178,6 @@ def parse_proves_toml(area_root: Path, contract_refs: dict[str, str]) -> dict[st
   if pairs:
    bindings[tid] = sorted(set(pairs))
  return bindings
-
-
 def parse_junit_xml_dir(reports_dir: Path) -> tuple[bool, str, set[str], dict[str, str]]:
  xml_files = sorted(reports_dir.glob("*.xml")) if reports_dir.is_dir() else []
  if not xml_files:
@@ -248,8 +220,32 @@ def parse_junit_xml_dir(reports_dir: Path) -> tuple[bool, str, set[str], dict[st
     if prev_out is None or _OUTCOME_RANK[cand_out] > _OUTCOME_RANK[prev_out]:
      outcomes[tid] = cand_out
  return True, "", executed_classes, outcomes
-
-
+def _scan_existing_shadow_runs(work_root: Path, exclude_run_id: str = "") -> tuple[int, list[str]]:
+ events_dir = work_root / "events"
+ max_seq, prior_ids = 0, set()
+ if events_dir.is_dir():
+  for mp in sorted(events_dir.glob("*.meta.json")):
+   try:
+    doc = json.loads(mp.read_text("utf-8"))
+    sr = doc.get("shadow_run")
+    if isinstance(sr, dict) and sr.get("run_id") and sr.get("run_id") != exclude_run_id:
+     prior_ids.add(str(sr["run_id"]))
+     max_seq = max(max_seq, int(sr.get("sequence") or 0))
+   except Exception:
+    pass
+ seq_file = work_root / "runs" / ".sequence"
+ if seq_file.is_file():
+  try: max_seq = max(max_seq, int(seq_file.read_text("utf-8").strip() or "0"))
+  except Exception: pass
+ return max(max_seq, len(prior_ids)), sorted(prior_ids)
+def _allocate_shadow_run_sequence(work_root: Path, exclude_run_id: str, pre_supersedes: list[str] | None = None) -> tuple[int, list[str]]:
+ cur_max, cur_priors = _scan_existing_shadow_runs(work_root, exclude_run_id)
+ seq_num = cur_max + 1
+ seq_file = work_root / "runs" / ".sequence"
+ seq_file.parent.mkdir(parents=True, exist_ok=True)
+ seq_file.write_text(f"{seq_num}\n", encoding="utf-8")
+ sup_ids = sorted((set(pre_supersedes or ()) | set(cur_priors)) - {exclude_run_id})
+ return seq_num, sup_ids
 def cmd_begin(args) -> int:
  roots = dv.resolve_shadow_roots(args.state_dir, str(args.state_dir))
  if not roots["is_shadow"]:
@@ -270,6 +266,7 @@ def cmd_begin(args) -> int:
  sel = sorted({t.strip() for t in (args.select or []) if t.strip()})
  if any("#" not in t for t in sel):
   print("drift_shadow_junit: --select requires Class#method test IDs", file=sys.stderr); return 2
+ _, prior_ids = _scan_existing_shadow_runs(work_root, run_id)
  pre = {
   "schema": SHADOW_RUN_SCHEMA,
   "phase": "pre_run",
@@ -280,13 +277,12 @@ def cmd_begin(args) -> int:
   "shadow_inputs": sh_inputs,
   "contract_digests": c_refs,
   "selected_tests": sel,
+  "supersedes": prior_ids,
  }
  (run_dir / "pre_run.json").write_text(dv.canonical_json(pre) + "\n", encoding="utf-8")
  if args.json:
   print(json.dumps({"ok": True, "run_id": run_id, "reports_dir": str(reports_dir), "source_snapshot": src_snap, "shadow_snapshot": sh_snap}, sort_keys=True))
  return 0
-
-
 def cmd_finish(args) -> int:
  roots = dv.resolve_shadow_roots(args.state_dir, str(args.state_dir))
  area_root, src_root, work_root = roots["area_root"], roots["source_root"], roots["work_root"]
@@ -309,6 +305,7 @@ def cmd_finish(args) -> int:
  events_dir.mkdir(parents=True, exist_ok=True)
  shard_jsonl = events_dir / f"shadow-{run_id}.jsonl"
  shard_meta = events_dir / f"shadow-{run_id}.meta.json"
+ seq_num, sup_ids = _allocate_shadow_run_sequence(work_root, run_id, pre.get("supersedes"))
  sr_meta = {
   "schema": SHADOW_RUN_SCHEMA,
   "run_id": run_id,
@@ -316,6 +313,8 @@ def cmd_finish(args) -> int:
   "bindings_ref": post_b_ref,
   "shadow_snapshot": post_sh_snap,
   "shadow_inputs": post_inputs,
+  "sequence": seq_num,
+  **({"supersedes": sup_ids} if sup_ids else {}),
   **({"selected_tests": sel_list} if sel_list else {}),
  }
  validate_shadow_run_dict(sr_meta)
@@ -353,12 +352,12 @@ def cmd_finish(args) -> int:
    by_contract.setdefault(cid, []).append(case_id)
   for cid in sorted(by_contract):
    ev = {
-    "test": tid,
-    "contract": cid,
-    "cases": sorted(set(by_contract[cid])),
-    "level": args.level,
-    "outcome": outcomes[tid],
-    "digest": post_c_refs[cid],
+  "test": tid,
+  "contract": cid,
+  "cases": sorted(set(by_contract[cid])),
+  "level": args.level,
+  "outcome": outcomes[tid],
+  "digest": post_c_refs[cid],
    }
    event_lines.append(dv.canonical_json(ev))
  inputs_map = {tid: post_inputs for tid in sorted(disc_tests)}
@@ -375,8 +374,6 @@ def cmd_finish(args) -> int:
  if args.json:
   print(json.dumps({"ok": True, "run_id": run_id, "shard": str(shard_jsonl), "events": len(event_lines), "discovered_tests": sorted(disc_tests), "removed_tests": removed_tests}, sort_keys=True))
  return 0
-
-
 def cmd_stamp_harness(args) -> int:
  roots = dv.resolve_shadow_roots(args.state_dir, str(args.state_dir))
  area_root, src_root, work_root = roots["area_root"], roots["source_root"], roots["work_root"]
@@ -391,6 +388,7 @@ def cmd_stamp_harness(args) -> int:
  if post_src_snap != pre["source_snapshot"] or post_sh_snap != pre["shadow_snapshot"] or post_c_refs != pre["contract_digests"]:
   print("drift_shadow_junit: shadow.context_mutated_during_run", file=sys.stderr); return 2
  sel_list = pre.get("selected_tests") or []
+ seq_num, sup_ids = _allocate_shadow_run_sequence(work_root, run_id, pre.get("supersedes"))
  sr_meta = {
   "schema": SHADOW_RUN_SCHEMA,
   "run_id": run_id,
@@ -398,6 +396,8 @@ def cmd_stamp_harness(args) -> int:
   "bindings_ref": post_b_ref,
   "shadow_snapshot": post_sh_snap,
   "shadow_inputs": post_inputs,
+  "sequence": seq_num,
+  **({"supersedes": sup_ids} if sup_ids else {}),
   **({"selected_tests": sel_list} if sel_list else {}),
  }
  validate_shadow_run_dict(sr_meta)
@@ -421,8 +421,6 @@ def cmd_stamp_harness(args) -> int:
  if args.json:
   print(json.dumps({"ok": True, "run_id": run_id, "stamped": [str(mp)]}, sort_keys=True))
  return 0
-
-
 def cmd_import_historical(args) -> int:
  xf = Path(args.historical_xml)
  if not xf.is_file():
@@ -431,8 +429,6 @@ def cmd_import_historical(args) -> int:
  if args.json: print(json.dumps(out, sort_keys=True))
  else: print("drift_shadow_junit: shadow.unanchored_xml_rejected (historical XML cannot be accredited without pre-run provenance)", file=sys.stderr)
  return 1
-
-
 def main(argv=None) -> int:
  ap = argparse.ArgumentParser(prog="drift_shadow_junit.py")
  sub = ap.add_subparsers(dest="cmd", required=True)
@@ -464,7 +460,5 @@ def main(argv=None) -> int:
  except Exception as exc:
   print(f"drift_shadow_junit: {exc}", file=sys.stderr); return 2
  return 2
-
-
 if __name__ == "__main__":
  sys.exit(main())

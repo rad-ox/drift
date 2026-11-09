@@ -2,11 +2,7 @@
 name: drift
 description: Drafts, checks and proves DRIFT behaviour contracts (one TOML file per slice under .drift/contracts) and binds their cases to tests through the DRIFT gate. Use when work in an area with .drift/config.toml adds or changes intended behaviour, when its gate or proof needs attention, or when the user names DRIFT for an area without it. Do not use to approve contracts on behalf of the owner.
 ---
-
-# DRIFT (Free Edition)
-
 One contract per slice, `.drift/contracts/<id>.toml`, states intended behaviour with profile predicates.
-
 ## Workflow
 1. **Adopt**: If `.drift/config.toml` is absent and DRIFT was named, adopt with [references/adoption.md](references/adoption.md).
 2. **Draft**: Run `drift new <file> [--from <sibling.toml> | --profile <ref>] [--code <path>...]`. Write concrete `then` values at `at` levels; fill `[scope]` and `[open.<id>]`.

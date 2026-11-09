@@ -1,5 +1,5 @@
 // Bounded formal verification harness, conservative subject manifest builder,
-// and counterexample fixture replay for the DRIFT Rust bridge (SPEC §§4.2, 9.2, D269).
+// and counterexample fixture replay for the DRIFT Rust bridge.
 
 use crate::checks::{escape_pointer, resolve_pointer, unescape_pointer, values_equal, write_pointer};
 use crate::json::{parse_json, sha256_hex, JsonValue};
@@ -299,6 +299,228 @@ pub fn replay_counterexample_fixture(
             "counterexample fixture '{}' violated: pointer_seg '{}' roundtrip_ok={}, expected={}",
             rel_fixture_path, seg, actual_ok, expected_ok
         )));
+    }
+    Ok(())
+}
+
+pub fn check_tuning_and_numeric_rel(
+    doc: &JsonValue,
+    actual: &JsonValue,
+    rel: &BTreeMap<String, JsonValue>,
+    proj_then: &BTreeMap<String, String>,
+    pred: &str,
+    is_seq_tuning: bool,
+) -> Result<(), String> {
+    let tol = rel
+        .get("abs_tol")
+        .and_then(|v| v.as_f64())
+        .filter(|&v| v >= 0.0)
+        .unwrap_or(1e-9);
+    if let Some(ap_v) = rel.get("approx") {
+        let af = actual
+            .as_f64()
+            .ok_or_else(|| format!("{}: expected finite number for approx", pred))?;
+        let apf = ap_v
+            .as_f64()
+            .ok_or_else(|| format!("{}: invalid approx target", pred))?;
+        if !rel.contains_key("abs_tol") && !rel.contains_key("rel_tol") {
+            return Err(format!("{}: approx requires abs_tol or rel_tol", pred));
+        }
+        let at = if let Some(v) = rel.get("abs_tol") {
+            let f = v
+                .as_f64()
+                .ok_or_else(|| format!("{}: invalid abs_tol", pred))?;
+            if f < 0.0 {
+                return Err(format!("{}: abs_tol must be >= 0", pred));
+            }
+            f
+        } else {
+            0.0
+        };
+        let rt = if let Some(v) = rel.get("rel_tol") {
+            let f = v
+                .as_f64()
+                .ok_or_else(|| format!("{}: invalid rel_tol", pred))?;
+            if f < 0.0 {
+                return Err(format!("{}: rel_tol must be >= 0", pred));
+            }
+            f
+        } else {
+            0.0
+        };
+        let rad = at + rt * apf.abs();
+        if !rad.is_finite() || (af - apf).abs() > rad {
+            return Err(format!("{}: {} outside approx {} +/- {}", pred, af, apf, rad));
+        }
+    }
+    if let Some(bf_v) = rel.get("balance_fields") {
+        let af = actual
+            .as_f64()
+            .ok_or_else(|| format!("{}: expected finite number for balance_fields", pred))?;
+        let bf_map = bf_v
+            .as_object()
+            .ok_or_else(|| format!("{}: invalid balance_fields object", pred))?;
+        let mut sum = 0.0;
+        for (sgn, side) in [(1.0_f64, "add"), (-1.0_f64, "sub")] {
+            if let Some(arr_v) = bf_map.get(side) {
+                let arr = arr_v
+                    .as_array()
+                    .ok_or_else(|| format!("{}: invalid balance_fields.{}", pred, side))?;
+                for item in arr {
+                    let ref_name = item
+                        .as_str()
+                        .ok_or_else(|| format!("{}: invalid balance_fields entry", pred))?;
+                    let peer = crate::checks::resolve_peer_target(doc, proj_then, ref_name)
+                        .ok_or_else(|| format!("{}: missing balance_fields peer '{}'", pred, ref_name))?;
+                    let pf = peer.as_f64().ok_or_else(|| {
+                        format!("{}: non-numeric balance_fields peer '{}'", pred, ref_name)
+                    })?;
+                    sum += sgn * pf;
+                }
+            }
+        }
+        if (af - sum).abs() > tol {
+            return Err(format!("{}: {} != balance_fields {}", pred, af, sum));
+        }
+    }
+    if is_seq_tuning {
+        if let Some(arr) = actual.as_array() {
+            if let Some(min_v) = rel.get("min").and_then(|v| v.as_f64()) {
+                for item in arr {
+                    let cur = item
+                        .as_f64()
+                        .ok_or_else(|| format!("{}: non-numeric element", pred))?;
+                    if cur + tol < min_v {
+                        return Err(format!("{}: element {} < min {}", pred, cur, min_v));
+                    }
+                }
+            }
+            if let Some(max_v) = rel.get("max").and_then(|v| v.as_f64()) {
+                for item in arr {
+                    let cur = item
+                        .as_f64()
+                        .ok_or_else(|| format!("{}: non-numeric element", pred))?;
+                    if cur - tol > max_v {
+                        return Err(format!("{}: element {} > max {}", pred, cur, max_v));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(mono_v) = rel.get("monotonic") {
+        let mode = mono_v
+            .as_str()
+            .ok_or_else(|| format!("{}: invalid monotonic mode", pred))?;
+        let arr = actual
+            .as_array()
+            .ok_or_else(|| format!("{}: expected array for monotonic", pred))?;
+        if arr.is_empty() {
+            return Err(format!("{}: empty array for monotonic", pred));
+        }
+        let mut prev = arr[0]
+            .as_f64()
+            .ok_or_else(|| format!("{}: non-numeric element in monotonic array", pred))?;
+        for (idx, item) in arr.iter().enumerate().skip(1) {
+            let cur = item
+                .as_f64()
+                .ok_or_else(|| format!("{}: non-numeric element in monotonic array", pred))?;
+            let ok = match mode {
+                "non_decreasing" => prev - tol <= cur,
+                "strictly_increasing" => prev + tol < cur,
+                "non_increasing" => prev + tol >= cur,
+                "strictly_decreasing" => prev - tol > cur,
+                _ => false,
+            };
+            if !ok {
+                return Err(format!("{}: monotonic {} violated at index {}", pred, mode, idx));
+            }
+            prev = cur;
+        }
+    }
+    if let Some(delta_v) = rel.get("step_max_delta") {
+        let delta = delta_v
+            .as_f64()
+            .ok_or_else(|| format!("{}: invalid step_max_delta", pred))?;
+        if delta <= 0.0 {
+            return Err(format!("{}: step_max_delta must be > 0", pred));
+        }
+        let arr = actual
+            .as_array()
+            .ok_or_else(|| format!("{}: expected array for step_max_delta", pred))?;
+        if arr.is_empty() {
+            return Err(format!("{}: empty array for step_max_delta", pred));
+        }
+        let mut prev = arr[0]
+            .as_f64()
+            .ok_or_else(|| format!("{}: non-numeric element in step_max_delta array", pred))?;
+        for (idx, item) in arr.iter().enumerate().skip(1) {
+            let cur = item
+                .as_f64()
+                .ok_or_else(|| format!("{}: non-numeric element in step_max_delta array", pred))?;
+            if (cur - prev).abs() > delta + tol {
+                return Err(format!("{}: step_max_delta {} exceeded at index {}", pred, delta, idx));
+            }
+            prev = cur;
+        }
+    }
+    if let Some(st_v) = rel.get("sum_total") {
+        if crate::checks::is_relational_table(actual) {
+            return Err(format!("{}: literal relational table cannot satisfy sum_total", pred));
+        }
+        let mut total = 0.0;
+        if let Some(arr) = actual.as_array() {
+            if arr.is_empty() {
+                return Err(format!("{}: empty array for sum_total", pred));
+            }
+            for item in arr {
+                total += item
+                    .as_f64()
+                    .ok_or_else(|| format!("{}: non-numeric element in sum_total", pred))?;
+            }
+        } else if let Some(obj) = actual.as_object() {
+            if obj.is_empty() {
+                return Err(format!("{}: empty map for sum_total", pred));
+            }
+            for item in obj.values() {
+                total += item
+                    .as_f64()
+                    .ok_or_else(|| format!("{}: non-numeric value in sum_total", pred))?;
+            }
+        } else {
+            return Err(format!("{}: expected array or map for sum_total", pred));
+        }
+        if let Some(target) = st_v.as_f64() {
+            if (total - target).abs() > tol {
+                return Err(format!("{}: sum_total {} != {}", pred, total, target));
+            }
+        } else if let Some(st_map) = st_v.as_object() {
+            if let Some(eq_v) = st_map.get("eq") {
+                let eq_n = eq_v
+                    .as_f64()
+                    .ok_or_else(|| format!("{}: invalid sum_total.eq", pred))?;
+                if (total - eq_n).abs() > tol {
+                    return Err(format!("{}: sum_total {} != {}", pred, total, eq_n));
+                }
+            }
+            if let Some(min_v) = st_map.get("min") {
+                let min_n = min_v
+                    .as_f64()
+                    .ok_or_else(|| format!("{}: invalid sum_total.min", pred))?;
+                if total + tol < min_n {
+                    return Err(format!("{}: sum_total {} < {}", pred, total, min_n));
+                }
+            }
+            if let Some(max_v) = st_map.get("max") {
+                let max_n = max_v
+                    .as_f64()
+                    .ok_or_else(|| format!("{}: invalid sum_total.max", pred))?;
+                if total - tol > max_n {
+                    return Err(format!("{}: sum_total {} > {}", pred, total, max_n));
+                }
+            }
+        } else {
+            return Err(format!("{}: invalid sum_total", pred));
+        }
     }
     Ok(())
 }

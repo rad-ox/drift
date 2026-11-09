@@ -45,23 +45,23 @@ public final class GateMojo extends DriftMojo {
     @Parameter(property = "drift.changed")
     String changed;
 
-    /** Optional level filter ({@code --at}, e.g. {@code unit} or {@code field}, D58/D62). */
+    /** Optional level filter ({@code --at}, e.g. {@code unit} or {@code field}). */
     @Parameter(property = "drift.at")
     String at;
 
-    /** Optional prerequisite phase gate ({@code --phase}, {@code execution} or {@code release}, D77). */
+    /** Optional prerequisite phase gate ({@code --phase}, {@code execution} or {@code release}). */
     @Parameter(property = "drift.phase")
     String phase;
 
-    /** Optional gate attestation file path ({@code --attest FILE}, D48/D62). */
+    /** Optional gate attestation file path ({@code --attest FILE}). */
     @Parameter(property = "drift.attest")
     String attest;
 
-    /** Optional pre-fix proof/gate report for F2P gating ({@code --compare-before FILE}, D70). */
+    /** Optional pre-fix proof/gate report for F2P gating ({@code --compare-before FILE}). */
     @Parameter(property = "drift.compareBefore")
     String compareBefore;
 
-    /** Optional explain flag ({@code --explain}, D44/D49/D62). */
+    /** Optional explain flag ({@code --explain}). */
     @Parameter(property = "drift.explain", defaultValue = "false")
     boolean explain;
 

@@ -318,7 +318,7 @@ pub(crate) fn forbidden_writes_of(view: &BTreeMap<String, JsonValue>, case_id: &
     out
 }
 
-fn verify_single_frame_obs(
+pub(crate) fn verify_single_frame_obs(
     contract_id: &str,
     case_id: &str,
     res: &str,
@@ -337,7 +337,7 @@ fn verify_single_frame_obs(
         format!("frame state mutation on resource '{}'", res)
     };
     if let Some(n) = obs.as_f64() {
-        if n.is_finite() && n >= 0.0 {
+        if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
             checked = true;
             if n > 0.0 {
                 return Err(TestError::assertion(format!(
@@ -350,7 +350,7 @@ fn verify_single_frame_obs(
         for wk in ["writes", "operations", "events"] {
             if let Some(wv) = om.get(wk) {
                 if let Some(wn) = wv.as_f64() {
-                    if wn.is_finite() && wn >= 0.0 {
+                    if wn.is_finite() && wn >= 0.0 && wn.fract() == 0.0 {
                         checked = true;
                         if wn > 0.0 {
                             return Err(TestError::assertion(format!(
@@ -358,6 +358,11 @@ fn verify_single_frame_obs(
                                 contract_id, case_id, write_lbl, wn
                             )));
                         }
+                    } else {
+                        return Err(TestError::assertion(format!(
+                            "{}.{}: invalid frame {} for '{}': expected non-negative integer, got {}",
+                            contract_id, case_id, wk, res, wn
+                        )));
                     }
                 } else if let Some(arr) = wv.as_array() {
                     checked = true;
@@ -370,6 +375,11 @@ fn verify_single_frame_obs(
                             arr.len()
                         )));
                     }
+                } else {
+                    return Err(TestError::assertion(format!(
+                        "{}.{}: invalid frame {} for '{}': expected non-negative integer",
+                        contract_id, case_id, wk, res
+                    )));
                 }
             }
         }
@@ -427,44 +437,6 @@ pub(crate) fn required_ui_capability_for(pred: &str, ptr: &str) -> Option<&'stat
 }
 
 impl DriftContext {
-    pub fn check_frame(&mut self, case_id: &str, frame_json: &str) -> Result<(), TestError> {
-        let _ = self.case_map(case_id)?;
-        let forbidden = forbidden_writes_of(&self.view, case_id);
-        let doc = parse_json(frame_json)
-            .map_err(|e| TestError::assertion(format!("frame_json is not valid JSON: {}", e)))?;
-        let fmap = doc
-            .as_object()
-            .ok_or_else(|| TestError::assertion("frame_json must be a JSON object"))?;
-        let mut checked_keys = BTreeSet::new();
-        for res in &forbidden {
-            let base_res = res.split('#').next().unwrap_or(res.as_str());
-            checked_keys.insert(res.as_str());
-            checked_keys.insert(base_res);
-            let obs = fmap.get(res).or_else(|| fmap.get(base_res)).ok_or_else(|| {
-                TestError::assertion(format!(
-                    "{}.{}: missing frame observation for forbidden write resource '{}'",
-                    self.contract_id, case_id, res
-                ))
-            })?;
-            verify_single_frame_obs(&self.contract_id, case_id, res, obs, false)?;
-            self.mark_read(case_id, &format!("@frame:{}", res));
-        }
-        let extra_obs: Vec<(String, JsonValue)> = {
-            let (allowed, allowed_bases, _) = allowed_write_sets_of(&self.view, case_id);
-            fmap.iter()
-                .filter(|(k, _)| {
-                    !checked_keys.contains(k.as_str())
-                        && !is_write_resource_allowed(k.as_str(), &allowed, &allowed_bases)
-                })
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        };
-        for (k, obs_k) in &extra_obs {
-            verify_single_frame_obs(&self.contract_id, case_id, k, obs_k, true)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn case_map(&self, case_id: &str) -> Result<&BTreeMap<String, JsonValue>, TestError> {
         self.accessed_view.set(true);
         if !self.cases.iter().any(|c| c == case_id) {
@@ -616,10 +588,12 @@ impl DriftContext {
                 .cloned()
                 .unwrap_or_default()
         };
+        let pfx = format!("{}.{}", self.contract_id, case_id);
         let proj_when = extract_when_projections(&self.view);
         for v_json in variants_json {
             let v_doc = parse_json(v_json)
                 .map_err(|e| TestError::assertion(format!("variant is not valid JSON: {}", e)))?;
+            let _ = crate::probes::check_bola_variant_pair(&pfx, &v_doc)?;
             if v_doc.as_object().is_some() {
                 for (wk, wexp) in &when_map {
                     let default_ptr = format!("/{}", escape_pointer(wk));

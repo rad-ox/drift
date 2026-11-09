@@ -1,5 +1,6 @@
 // Single-command CLI runner and test-file selection for the DRIFT JavaScript bridge.
 
+import { ensureExportGeneration, runPrecheckTestLiterals } from './drift_ui_collector.mjs';
 import { tightenThenMapBySumResiduals } from './drift_ui_surface.mjs';
 export { tightenThenMapBySumResiduals };
 
@@ -104,6 +105,42 @@ function captureWorktreeSnapshot(area, execFileSync, fs, path, process) {
   return '';
 }
 
+export function parseTestCommand(raw) {
+  const s = isStr(raw) ? raw.trim() : '';
+  if (!s) return [];
+  if (s.startsWith('[')) {
+    let arr = null;
+    try { arr = JSON.parse(s); } catch { throwError('invalid JSON in DRIFT_TEST_CMD'); }
+    if (!Array.isArray(arr) || !arr.every(isStr)) throwError('DRIFT_TEST_CMD JSON must be an array of strings');
+    return arr.filter(Boolean);
+  }
+  const out = [];
+  let cur = '', inQ = false, q = '', hasTok = false;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inQ) {
+      if (ch === '\\' && q === '"' && i + 1 < s.length && (s[i + 1] === '"' || s[i + 1] === '\\')) cur += s[++i];
+      else if (ch === q) inQ = false;
+      else cur += ch;
+    } else if (ch === "'" || ch === '"') {
+      inQ = true; q = ch; hasTok = true;
+    } else if (ch === '\\' && i + 1 < s.length && (s[i + 1] === '"' || s[i + 1] === "'" || /\s/u.test(s[i + 1]))) {
+      cur += s[++i]; hasTok = true;
+    } else if (/\s/u.test(ch)) {
+      if (hasTok) { out.push(cur); cur = ''; hasTok = false; }
+    } else {
+      cur += ch; hasTok = true;
+    }
+  }
+  if (inQ) throwError('unterminated quote in DRIFT_TEST_CMD');
+  if (hasTok) out.push(cur);
+  return out;
+}
+
+export function precheckTestLiterals(testFiles, resDir, area, fs, path) {
+  return runPrecheckTestLiterals(testFiles, resDir, area, fs, path);
+}
+
 export function runDriftCli(argv, execFileSync, fs, path, process) {
   let mode = 'gate', jsonOut = false, allGate = false, forceMut = false, mutWhen = false, mutBudget = '', baseRef = '', wantChanged = false;
   const changedPaths = [], targets = [];
@@ -166,7 +203,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     } catch (e) { if (String(e?.message || '').includes('not found at')) throw e; }
     if (!ids.length) throwError(`contract "${relSrcs[0].raw}" not found at ${relSrcs[0].direct}`);
   }
-  try { execFileSync(cli, ['show', ...tomls, '--out', resDir], { cwd: area, stdio: ['ignore', 'pipe', 'pipe'] }); } catch {}
+  const genDir = ensureExportGeneration(area, cli, ids, tomls, resDir, execFileSync, fs, path);
   let selFile = '', narrowedFiles = null, selectWidened = false, selectReasons = [];
   if (baseRef) {
     const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, '--base', baseRef, '--events', evDir, '--files', '--json', ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []))];
@@ -268,14 +305,16 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   }
   let testStatus = 0;
   if (runFiles.length) {
-    const cmdParts = (process.env.DRIFT_TEST_CMD || '').trim().split(/\s+/u).filter(Boolean);
+    const pre = precheckTestLiterals(runFiles, genDir, area, fs, path);
+    if (!pre.ok) throwError(pre.findings.map((f) => `${f.file}: ${f.code}: ${f.message}`).join('\n'));
+    const cmdParts = parseTestCommand(process.env.DRIFT_TEST_CMD || '');
     const runnerBin = cmdParts.length ? cmdParts[0] : process.execPath;
     const runnerArgs = cmdParts.length ? [...cmdParts.slice(1), ...runFiles] : ['--test', ...runFiles];
     try {
       execFileSync(runnerBin, runnerArgs, {
         cwd: area,
         env: {
-          ...process.env, DRIFT_RESOLVED: resDir, DRIFT_EVENTS: evDir, DRIFT_CONTRACTS: ids.join(','),
+          ...process.env, DRIFT_RESOLVED: genDir, DRIFT_EVENTS: evDir, DRIFT_CONTRACTS: ids.join(','),
           ...(autoSnap ? { DRIFT_SNAPSHOT: autoSnap } : {}), ...(autoTouched ? { DRIFT_TOUCHED: autoTouched } : {}),
           ...(selFile ? { DRIFT_SELECT: selFile } : {}), ...(needMut && fs.existsSync(mutFile) ? { DRIFT_MUTANTS: mutFile, DRIFT_MUTATION_EVENTS: mutEvDir } : {}),
         },
@@ -284,7 +323,8 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     } catch (e) { testStatus = typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
   }
   if (mode === 'test') {
-    if (jsonOut) process.stdout.write(JSON.stringify({ ok: testStatus === 0, ran: runFiles.length, selected_files: runFiles, ...(baseRef ? { widened: selectWidened, reasons: selectReasons } : {}) }) + '\n');
+    const act = selectWidened ? 'widened' : (runFiles.length ? 'narrowed' : 'skip');
+    if (jsonOut) process.stdout.write(JSON.stringify({ ok: testStatus === 0, action: act, ran: runFiles.length, selected_files: runFiles, ...(baseRef ? { widened: selectWidened, reasons: selectReasons } : {}) }) + '\n');
     else if (!runFiles.length) process.stdout.write('drift test: 0 test file(s) selected\n');
     return testStatus;
   }

@@ -1,4 +1,4 @@
-// Zero-dependency native V bridge projection, relational, and stub helpers (SPEC §§9, 25, D224, D245).
+// Zero-dependency native V bridge projection, relational, and stub helpers.
 module drift_v
 
 import math
@@ -21,7 +21,102 @@ const rel_keys = [
 	'sum_fields',
 	'allowed_keys',
 	'forbid_keys',
+	'monotonic',
+	'sum_total',
+	'step_max_delta',
+	'approx',
+	'abs_tol',
+	'rel_tol',
+	'balance_fields',
+	'unit',
+	'unit_conversion',
+	'eq',
+	'len',
+	'keys',
+	'peer',
+	'series',
+	'tol',
+	'convert_from',
 ]!
+
+fn strip_side_03(s string) string {
+	if s.starts_with('when.') || s.starts_with('then.') {
+		return s.all_after('.')
+	}
+	return s
+}
+
+fn desugar_03_rel(raw map[string]json2.Any) map[string]json2.Any {
+	mut out := map[string]json2.Any{}
+	for k, v in raw {
+		if k == 'tol' && v is map[string]json2.Any {
+			if a := v['abs'] {
+				out['abs_tol'] = a
+			}
+			if r := v['rel'] {
+				out['rel_tol'] = r
+			}
+		} else if k == 'len' && v is map[string]json2.Any {
+			if l := v['min'] {
+				out['min_len'] = l
+			}
+			if u := v['max'] {
+				out['max_len'] = u
+			}
+		} else if k == 'keys' && v is map[string]json2.Any {
+			if al := v['allow'] {
+				out['allowed_keys'] = al
+			}
+			if fb := v['forbid'] {
+				out['forbid_keys'] = fb
+			}
+		} else if k == 'peer' && v is map[string]json2.Any {
+			for pk in ['le', 'ge', 'eq'] {
+				if pv := v[pk] {
+					if pv is string {
+						out['${pk}_field'] = json2.Any(strip_side_03(pv))
+					}
+				}
+			}
+			if sf := v['sum'] {
+				if sf is []json2.Any {
+					out['sum_fields'] = json2.Any(sf.map(json2.Any(strip_side_03(it.str()))))
+				}
+			}
+			if bf := v['balance'] {
+				if bf is map[string]json2.Any {
+					mut nb := map[string]json2.Any{}
+					for side in ['add', 'sub'] {
+						if arr := bf[side] {
+							if arr is []json2.Any {
+								nb[side] = json2.Any(arr.map(json2.Any(strip_side_03(it.str()))))
+							}
+						}
+					}
+					out['balance_fields'] = json2.Any(nb)
+				}
+			}
+		} else if k == 'series' && v is map[string]json2.Any {
+			for sk, sv in v {
+				if sk == 'monotonic' && sv.str() in ['increasing', 'decreasing'] {
+					out[sk] = json2.Any('strictly_${sv.str()}')
+				} else {
+					out[sk] = sv
+				}
+			}
+		} else if k != 'convert_from' {
+			out[k] = v
+		}
+	}
+	if 'eq' in out && ('abs_tol' in out || 'rel_tol' in out) && 'balance_fields' !in out
+		&& 'sum_fields' !in out {
+		if eq_v := out['eq'] {
+			out['approx'] = eq_v
+		}
+		out.delete('eq')
+	}
+	return out
+}
 
 pub fn escape_pointer(seg string) string {
 	return seg.replace('~', '~0').replace('/', '~1')
@@ -222,7 +317,18 @@ fn resolve_peer_target(doc json2.Any, proj_then map[string]string, ref string) ?
 	return resolve_pointer(doc, ptr)
 }
 
-pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]json2.Any, proj_then map[string]string, pred string) ! {
+pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string]json2.Any, proj_then map[string]string, pred string) ! {
+	rel := desugar_03_rel(raw_rel)
+	if 'eq' in rel {
+		if eq_v := rel['eq'] {
+			if !values_equal(actual, eq_v) {
+				return error('${pred}: mismatch on eq: got ${actual.json_str()}, expected ${eq_v.json_str()}')
+			}
+		}
+		if rel.len == 1 {
+			return
+		}
+	}
 	if 'allowed_keys' in rel || 'forbid_keys' in rel {
 		if actual !is map[string]json2.Any {
 			return error('${pred}: expected JSON object for allowed_keys/forbid_keys')
@@ -249,16 +355,17 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]jso
 			}
 		}
 		if fk_v := rel['forbid_keys'] {
+			is_root_t := actual.json_str() == doc.json_str()
 			if fk_v is []json2.Any {
 				for item in fk_v {
 					if item is string {
-						if item in act_map {
+						if has_key_recursive(actual, item, is_root_t) {
 							return error('${pred}: forbidden key "${item}" present on ${pred}')
 						}
 					}
 				}
 			} else if fk_v is string {
-				if fk_v !in act_map {
+				if !has_key_recursive(actual, fk_v, is_root_t) {
 					return error('${pred}: drop-forbid-key mutant on forbid_keys killed')
 				}
 			} else {
@@ -281,18 +388,103 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]jso
 			return error('${pred}: pick-forbidden-value mutant on not_in killed')
 		}
 	}
-	if min_v := rel['min'] {
-		af := as_finite_f64(actual) or { return error('${pred}: expected finite number for min') }
-		mf := as_finite_f64(min_v) or { return error('${pred}: invalid min bound') }
-		if af < mf - 1e-9 {
-			return error('${pred}: ${af} < min ${mf}')
+	is_seq_tuning := 'monotonic' in rel || 'step_max_delta' in rel || 'sum_total' in rel
+	mut tol := 1e-9
+	if at_v := rel['abs_tol'] {
+		if at_f := as_finite_f64(at_v) {
+			if at_f >= 0.0 {
+				tol = at_f
+			}
 		}
 	}
-	if max_v := rel['max'] {
-		af := as_finite_f64(actual) or { return error('${pred}: expected finite number for max') }
-		mf := as_finite_f64(max_v) or { return error('${pred}: invalid max bound') }
-		if af > mf + 1e-9 {
-			return error('${pred}: ${af} > max ${mf}')
+	if !is_seq_tuning {
+		if min_v := rel['min'] {
+			af := as_finite_f64(actual) or {
+				return error('${pred}: expected finite number for min')
+			}
+			mf := as_finite_f64(min_v) or { return error('${pred}: invalid min bound') }
+			if af < mf - 1e-9 {
+				return error('${pred}: ${af} < min ${mf}')
+			}
+		}
+		if max_v := rel['max'] {
+			af := as_finite_f64(actual) or {
+				return error('${pred}: expected finite number for max')
+			}
+			mf := as_finite_f64(max_v) or { return error('${pred}: invalid max bound') }
+			if af > mf + 1e-9 {
+				return error('${pred}: ${af} > max ${mf}')
+			}
+		}
+	}
+	if ap_v := rel['approx'] {
+		af := as_finite_f64(actual) or {
+			return error('${pred}: expected finite number for approx')
+		}
+		apf := as_finite_f64(ap_v) or { return error('${pred}: invalid approx target') }
+		if 'abs_tol' !in rel && 'rel_tol' !in rel {
+			return error('${pred}: approx requires abs_tol or rel_tol')
+		}
+		mut at := 0.0
+		if at_v := rel['abs_tol'] {
+			at = as_finite_f64(at_v) or { return error('${pred}: invalid abs_tol') }
+			if at < 0.0 {
+				return error('${pred}: abs_tol must be >= 0')
+			}
+		}
+		mut rt := 0.0
+		if rt_v := rel['rel_tol'] {
+			rt = as_finite_f64(rt_v) or { return error('${pred}: invalid rel_tol') }
+			if rt < 0.0 {
+				return error('${pred}: rel_tol must be >= 0')
+			}
+		}
+		rad := at + rt * math.abs(apf)
+		if math.abs(af - apf) > rad {
+			return error('${pred}: ${af} outside approx ${apf} +/- ${rad}')
+		}
+	}
+	if bf_v := rel['balance_fields'] {
+		if bf_v is map[string]json2.Any {
+			af := as_finite_f64(actual) or {
+				return error('${pred}: non-numeric balance_fields target')
+			}
+			mut total := 0.0
+			if add_v := bf_v['add'] {
+				if add_v is []json2.Any {
+					for item in add_v {
+						if item is string {
+							peer := resolve_peer_target(doc, proj_then, item) or {
+								return error('${pred}: missing balance_fields operand "${item}"')
+							}
+							pf := as_finite_f64(peer) or {
+								return error('${pred}: non-numeric balance_fields operand "${item}"')
+							}
+							total += pf
+						}
+					}
+				}
+			}
+			if sub_v := bf_v['sub'] {
+				if sub_v is []json2.Any {
+					for item in sub_v {
+						if item is string {
+							peer := resolve_peer_target(doc, proj_then, item) or {
+								return error('${pred}: missing balance_fields operand "${item}"')
+							}
+							pf := as_finite_f64(peer) or {
+								return error('${pred}: non-numeric balance_fields operand "${item}"')
+							}
+							total -= pf
+						}
+					}
+				}
+			}
+			if math.abs(af - total) > tol {
+				return error('${pred}: ${af} != balance_fields ${total}')
+			}
+		} else {
+			return error('${pred}: invalid balance_fields')
 		}
 	}
 	if ml_v := rel['min_len'] {
@@ -451,6 +643,138 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, rel map[string]jso
 			}
 		}
 	}
+	if is_seq_tuning {
+		if actual is []json2.Any {
+			if min_v := rel['min'] {
+				mf := as_finite_f64(min_v) or { return error('${pred}: invalid min bound') }
+				for item in actual {
+					cur := as_finite_f64(item) or { return error('${pred}: non-numeric element') }
+					if cur + tol < mf {
+						return error('${pred}: element ${cur} < min ${mf}')
+					}
+				}
+			}
+			if max_v := rel['max'] {
+				mf := as_finite_f64(max_v) or { return error('${pred}: invalid max bound') }
+				for item in actual {
+					cur := as_finite_f64(item) or { return error('${pred}: non-numeric element') }
+					if cur - tol > mf {
+						return error('${pred}: element ${cur} > max ${mf}')
+					}
+				}
+			}
+		}
+	}
+	if mono_v := rel['monotonic'] {
+		mode := if mono_v is string { mono_v } else { '' }
+		if actual is []json2.Any {
+			if actual.len == 0 {
+				return error('${pred}: empty array for monotonic')
+			}
+			mut prev := as_finite_f64(actual[0]) or {
+				return error('${pred}: non-numeric element in monotonic array')
+			}
+			for i := 1; i < actual.len; i++ {
+				cur := as_finite_f64(actual[i]) or {
+					return error('${pred}: non-numeric element in monotonic array')
+				}
+				ok := match mode {
+					'non_decreasing' { prev - tol <= cur }
+					'strictly_increasing' { prev + tol < cur }
+					'non_increasing' { prev + tol >= cur }
+					'strictly_decreasing' { prev - tol > cur }
+					else { false }
+				}
+
+				if !ok {
+					return error('${pred}: monotonic ${mode} violated at index ${i} (${prev} -> ${cur})')
+				}
+				prev = cur
+			}
+		} else {
+			return error('${pred}: expected array for monotonic')
+		}
+	}
+	if delta_v := rel['step_max_delta'] {
+		delta := as_finite_f64(delta_v) or { return error('${pred}: invalid step_max_delta') }
+		if delta <= 0.0 {
+			return error('${pred}: step_max_delta must be > 0')
+		}
+		if actual is []json2.Any {
+			if actual.len == 0 {
+				return error('${pred}: empty array for step_max_delta')
+			}
+			mut prev := as_finite_f64(actual[0]) or {
+				return error('${pred}: non-numeric element in step_max_delta array')
+			}
+			for i := 1; i < actual.len; i++ {
+				cur := as_finite_f64(actual[i]) or {
+					return error('${pred}: non-numeric element in step_max_delta array')
+				}
+				if math.abs(cur - prev) > delta + tol {
+					return error('${pred}: step_max_delta ${delta} exceeded at index ${i}')
+				}
+				prev = cur
+			}
+		} else {
+			return error('${pred}: expected array for step_max_delta')
+		}
+	}
+	if st_v := rel['sum_total'] {
+		if is_relational_table(actual) {
+			return error('${pred}: literal relational table cannot satisfy sum_total')
+		}
+		mut total := 0.0
+		if actual is []json2.Any {
+			if actual.len == 0 {
+				return error('${pred}: empty array for sum_total')
+			}
+			for item in actual {
+				n := as_finite_f64(item) or {
+					return error('${pred}: non-numeric element in sum_total')
+				}
+				total += n
+			}
+		} else if actual is map[string]json2.Any {
+			if actual.len == 0 {
+				return error('${pred}: empty map for sum_total')
+			}
+			for _, item in actual {
+				n := as_finite_f64(item) or {
+					return error('${pred}: non-numeric value in sum_total')
+				}
+				total += n
+			}
+		} else {
+			return error('${pred}: expected array or map for sum_total')
+		}
+		if target := as_finite_f64(st_v) {
+			if math.abs(total - target) > tol {
+				return error('${pred}: sum_total ${total} != ${target}')
+			}
+		} else if st_v is map[string]json2.Any {
+			if eq_v := st_v['eq'] {
+				eq_n := as_finite_f64(eq_v) or { return error('${pred}: invalid sum_total.eq') }
+				if math.abs(total - eq_n) > tol {
+					return error('${pred}: sum_total ${total} != ${eq_n}')
+				}
+			}
+			if min_v := st_v['min'] {
+				min_n := as_finite_f64(min_v) or { return error('${pred}: invalid sum_total.min') }
+				if total + tol < min_n {
+					return error('${pred}: sum_total ${total} < ${min_n}')
+				}
+			}
+			if max_v := st_v['max'] {
+				max_n := as_finite_f64(max_v) or { return error('${pred}: invalid sum_total.max') }
+				if total - tol > max_n {
+					return error('${pred}: sum_total ${total} > ${max_n}')
+				}
+			}
+		} else {
+			return error('${pred}: invalid sum_total')
+		}
+	}
 }
 
 pub fn round_decimal_witness(v f64) f64 {
@@ -551,7 +875,7 @@ fn verify_single_frame_obs(pfx string, res string, obs json2.Any, is_ambient boo
 		'frame state mutation on resource "${res}"'
 	}
 	if n := as_finite_f64(obs) {
-		if n >= 0 {
+		if n >= 0 && n == math.trunc(n) {
 			checked = true
 			if n > 0 {
 				return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${n}')
@@ -561,17 +885,21 @@ fn verify_single_frame_obs(pfx string, res string, obs json2.Any, is_ambient boo
 		for wk in ['writes', 'operations', 'events'] {
 			if wv := obs[wk] {
 				if wn := as_finite_f64(wv) {
-					if wn >= 0 {
+					if wn >= 0 && wn == math.trunc(wn) {
 						checked = true
 						if wn > 0 {
 							return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${wn}')
 						}
+					} else {
+						return error('${pfx}: invalid frame ${wk} for "${res}": expected non-negative integer, got ${wn}')
 					}
 				} else if wv is []json2.Any {
 					checked = true
 					if wv.len > 0 {
 						return error('${pfx}: ${write_lbl}: expected 0 writes, observed ${wv.len}')
 					}
+				} else {
+					return error('${pfx}: invalid frame ${wk} for "${res}": expected non-negative integer')
 				}
 			}
 		}
@@ -619,6 +947,9 @@ pub fn synthesize_leaf_witness(expected json2.Any, built map[string]json2.Any, p
 			return json2.Any(rounded)
 		}
 	}
+	if ap_v := rel['approx'] {
+		return ap_v
+	}
 	if min_v := rel['min'] {
 		return min_v
 	}
@@ -644,6 +975,57 @@ pub fn synthesize_leaf_witness(expected json2.Any, built map[string]json2.Any, p
 		if ne_v is bool && ne_v {
 			return json2.Any('x')
 		}
+	}
+	if 'sum_total' in rel || 'monotonic' in rel || 'step_max_delta' in rel {
+		mut tgt := 1.0
+		if st_v := rel['sum_total'] {
+			if f := as_finite_f64(st_v) {
+				tgt = f
+			} else if st_v is map[string]json2.Any {
+				if eq_v := st_v['eq'] {
+					if f := as_finite_f64(eq_v) {
+						tgt = f
+					}
+				} else if min_v := st_v['min'] {
+					if f := as_finite_f64(min_v) {
+						tgt = f
+					}
+				} else if max_v := st_v['max'] {
+					if f := as_finite_f64(max_v) {
+						tgt = f
+					}
+				}
+			}
+		}
+		mut eps := 0.2
+		if d_v := rel['step_max_delta'] {
+			if df := as_finite_f64(d_v) {
+				if df > 0.0 && df / 2.0 < eps {
+					eps = df / 2.0
+				}
+			}
+		}
+		mut mode := ''
+		if m_v := rel['monotonic'] {
+			if m_v is string {
+				mode = m_v
+			}
+		}
+		if mode in ['strictly_decreasing', 'non_increasing'] {
+			if 'sum_total' in rel {
+				a := round_decimal_witness(tgt / 2.0 + eps / 2.0)
+				return json2.Any([json2.Any(a), json2.Any(round_decimal_witness(tgt - a))])
+			}
+			return json2.Any([json2.Any(round_decimal_witness(1.0 + eps)), json2.Any(1.0)])
+		}
+		if mode in ['strictly_increasing', 'non_decreasing'] {
+			if 'sum_total' in rel {
+				a := round_decimal_witness(tgt / 2.0 - eps / 2.0)
+				return json2.Any([json2.Any(a), json2.Any(round_decimal_witness(tgt - a))])
+			}
+			return json2.Any([json2.Any(1.0), json2.Any(round_decimal_witness(1.0 + eps))])
+		}
+		return json2.Any([json2.Any(tgt / 2.0), json2.Any(tgt - tgt / 2.0)])
 	}
 	return json2.Any(0)
 }
