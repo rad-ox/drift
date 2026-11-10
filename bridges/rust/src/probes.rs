@@ -36,7 +36,7 @@ pub fn has_key_recursive(val: &JsonValue, fk: &str, is_root: bool) -> bool {
                 return true;
             }
             for (k, v) in map {
-                if is_root && k == "_frame" && fk != "_frame" && v.as_object().is_some() {
+                if is_root && (k == "_frame" || k == "_when_env") && fk != k && v.as_object().is_some() {
                     continue;
                 }
                 if has_key_recursive(v, fk, false) {

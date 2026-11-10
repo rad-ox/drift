@@ -329,7 +329,7 @@ class DriftBridgeTest {
         assertEquals(snap, metadata.get("snapshot"));
         @SuppressWarnings("unchecked")
         Map<String, Object> env = (Map<String, Object>) metadata.get("env");
-        assertEquals("drift-junit@0.5.0", env.get("adapter"));
+        assertEquals("drift-junit@0.5.1", env.get("adapter"));
         assertEquals("junit-platform", env.get("runner"));
     }
 

@@ -1,0 +1,49 @@
+name: Feature or Bridge Request
+description: Propose an enhancement to the Open Integration Surface, a language bridge, verifier parity, schemas, or CLI capabilities.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Community contributions and proposals are welcome across the **Open Integration Surface** (`bridges/`, `verifier/`, `hooks/`, `schemas/`, `skill/drift/`, `example/`, installers, and documentation) as well as feedback on the DRIFT CLI.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Target Surface
+      description: Which area of DRIFT does this proposal target?
+      options:
+        - Language Bridge (bridges/)
+        - Open Reference Verifier (verifier/drift_verify.py)
+        - Agent Hooks & Skill (hooks/, skill/drift/)
+        - JSON Schemas & Documentation (schemas/, *.md)
+        - Installers & Packaging (install.sh, install.ps1, install.cmd)
+        - DRIFT CLI (Free / Pro / Enterprise)
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: What specification, verification, or test-binding workflow is currently difficult or unsupported?
+      placeholder: "When binding contract cases in ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the desired contract syntax, bridge API, verifier check, or CLI behaviour, keeping fail-closed verification and zero external runtime dependencies in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any existing workarounds, profile configurations, or alternative designs you considered.
+    validations:
+      required: false

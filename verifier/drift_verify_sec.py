@@ -12,7 +12,7 @@ SEC_OUTCOMES=frozenset(("passed","violated","inconclusive"))
 SEC_REQ_KEYS=frozenset(("kind","category","tool","tool_ref","ruleset_ref","contract","digest","code_snapshot","covered_scope","cases","outcome"))
 SEC_KEYS=SEC_REQ_KEYS | frozenset(("subject_ref","artifact_ref","reproducer"))
 SHA256_REF_RE=re.compile(r"^sha256:[0-9a-f]{64}$")
-DIGEST_RE=re.compile(r"^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
+DIGEST_RE=re.compile(r"^(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
 from drift_verify_mig import check_sec_stage1_core,classify_sec_reproducer_core,collect_receipt_files,parse_security_lock_core,run_sec_self_test_core,validate_mutation_manifest_core,verify_tool_pin_cli_core
 def validate_mutation_manifest_impl(text: str, decode_fn: Callable[[str], Any]) -> dict[str, Any]:
  return validate_mutation_manifest_core(text,decode_fn)
@@ -213,7 +213,7 @@ def load_formal_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str
    ver,vref,sref=_sec_str(doc,"verifier"),_sec_str(doc,"verifier_ref"),_sec_str(doc,"subject_ref")
    sid,edet,csnap=_sec_str(doc,"subject_identity"),_sec_str(doc,"execution_determinism"),_sec_str(doc,"code_snapshot")
    evk,comp,lnk,outc=_sec_str(doc,"evidence_kind"),_sec_str(doc,"completion"),_sec_str(doc,"linkage"),_sec_str(doc,"outcome")
-   if not ID_RE.match(cid) or not DIGEST_RE.match(dig) or not ID_RE.match(fid) or not re.fullmatch(r"dr1:sha256:[0-9a-f]{64}",rref) or ver not in FORMAL_VERIFIERS or not SHA256_REF_RE.match(vref) or not SHA256_REF_RE.match(sref) or sid not in ("pinned","opaque_external") or edet not in ("bitwise","statistical") or not SNAPSHOT_RE.match(csnap) or evk not in FORMAL_EVIDENCES or comp not in FORMAL_COMPLETIONS or lnk not in FORMAL_LINKAGES or outc not in SEC_OUTCOMES:
+   if not ID_RE.match(cid) or not DIGEST_RE.match(dig) or not ID_RE.match(fid) or not re.fullmatch(r"(?:dr1|dr2r):sha256:[0-9a-f]{64}",rref) or ver not in FORMAL_VERIFIERS or not SHA256_REF_RE.match(vref) or not SHA256_REF_RE.match(sref) or sid not in ("pinned","opaque_external") or edet not in ("bitwise","statistical") or not SNAPSHOT_RE.match(csnap) or evk not in FORMAL_EVIDENCES or comp not in FORMAL_COMPLETIONS or lnk not in FORMAL_LINKAGES or outc not in SEC_OUTCOMES:
     raise ValueError("formal_fields")
    cov,cs,vps=doc.get("covered_scope"),doc.get("cases"),doc.get("verified_properties")
    if not isinstance(cov,list) or not cov or len(set(cov))!=len(cov) or not all(_valid_rel_scope(x) for x in cov):raise ValueError("covered_scope")
@@ -250,6 +250,7 @@ def validate_formal_equivalence(rec: dict[str, Any], ob_ver: str, ob_pkind: str,
   if isinstance(wm,dict):
    for bk in FORMAL_BOUND_KEYS:
     wv = wm.get(bk)
+    if isinstance(wv,dict) and "eq" in wv:wv = wv["eq"]
     if isinstance(wv,int) and not isinstance(wv,bool) and wv >= 1 and int(db.get(bk,0)) < wv:return "formal.bound_insufficient"
  if ob_ver=="gappa" and rec.get("arithmetic_model") not in ("ieee754_binary64","ieee754_binary32"):return "formal.arithmetic_model_mismatch"
  eq=rec.get("equivalence")

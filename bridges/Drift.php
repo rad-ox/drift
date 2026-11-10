@@ -11,7 +11,7 @@ use RuntimeException;
  */
 final class Drift
 {
-    public const VERSION = 'drift.php@0.5.0';
+    public const VERSION = 'drift.php@0.5.1';
     public const BRIDGE_RUNTIME_BASELINE = 'php-8.2-cli';
     public const CAPABILITIES = [
         'predicates',
@@ -64,6 +64,7 @@ final class Drift
     }
 
     public const SUPPORTED_REL_KEYS = [
+        'eq',
         'in',
         'not_in',
         'min',
@@ -157,7 +158,7 @@ final class Drift
         return false;
     }
 
-    public static function checkValue(string $key, mixed $actual, mixed $expected, bool $actualPresent = true, array $observed = [], array $projThen = []): void
+    public static function checkValue(string $key, mixed $actual, mixed $expected, bool $actualPresent = true, array $observed = [], array $projThen = [], array $whenEnv = []): void
     {
         if (is_float($actual) && (is_nan($actual) || is_infinite($actual))) {
             throw new RuntimeException("then.{$key}: non-finite float value is forbidden");
@@ -176,7 +177,11 @@ final class Drift
                 throw new RuntimeException("then.{$key}: unsupported predicate operator {$op}");
             }
         }
-        $len = is_string($actual) ? strlen($actual) : (is_array($actual) ? count($actual) : -1);
+        $len = is_string($actual) ? (function_exists('mb_strlen') ? mb_strlen($actual, 'UTF-8') : preg_match_all('/./us', $actual)) : (is_array($actual) ? count($actual) : -1);
+        if (array_key_exists('eq', $expected) && (!$actualPresent || !self::valuesEqual($actual, $expected['eq']))) {
+            throw new RuntimeException("then.{$key}: eq violation");
+        }
+        $series = array_key_exists('monotonic', $expected) || array_key_exists('sum_total', $expected) || array_key_exists('step_max_delta', $expected);
         if (array_key_exists('in', $expected)) {
             if (!is_array($expected['in']) || !$actualPresent) {
                 throw new RuntimeException("then.{$key}: value " . json_encode($actual) . ' not in allowed set');
@@ -217,12 +222,12 @@ final class Drift
                 throw new RuntimeException("then.{$key}: " . json_encode($actual) . " outside approx {$ap}");
             }
         }
-        if (array_key_exists('min', $expected)) {
+        if (!$series && array_key_exists('min', $expected)) {
             if (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['min']) || (float)$actual + 1e-9 < (float)$expected['min']) {
                 throw new RuntimeException("then.{$key}: " . json_encode($actual) . " < min {$expected['min']}");
             }
         }
-        if (array_key_exists('max', $expected)) {
+        if (!$series && array_key_exists('max', $expected)) {
             if (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['max']) || (float)$actual - 1e-9 > (float)$expected['max']) {
                 throw new RuntimeException("then.{$key}: " . json_encode($actual) . " > max {$expected['max']}");
             }
@@ -328,6 +333,85 @@ final class Drift
                 }
             }
         }
+        $tol = $expected['abs_tol'] ?? 1e-9;
+        foreach (['le_field', 'ge_field', 'eq_field'] as $op) {
+            if (!array_key_exists($op, $expected)) continue;
+            [$found, $peer] = self::resolvePeer($observed, $projThen, $expected[$op], $whenEnv);
+            $ok = $found && ($op === 'eq_field' ? self::valuesEqual($actual, $peer)
+                : (self::isFiniteNum($actual) && self::isFiniteNum($peer)
+                    && ($op === 'le_field' ? $actual - $tol <= $peer : $actual + $tol >= $peer)));
+            if (!$ok) throw new RuntimeException("then.{$key}: {$op} violation");
+        }
+        foreach (['sum_fields', 'balance_fields'] as $op) {
+            if (!array_key_exists($op, $expected)) continue;
+            $expr = $expected[$op];
+            if (!is_array($expr) || !self::isFiniteNum($actual) || ($op === 'sum_fields' && count($expr) < 2)) {
+                throw new RuntimeException("then.{$key}: invalid {$op}");
+            }
+            $sides = $op === 'sum_fields' ? ['add' => $expr] : $expr;
+            $total = 0.0;
+            foreach (['add' => 1, 'sub' => -1] as $side => $sign) {
+                foreach (($sides[$side] ?? []) as $ref) {
+                    [$found, $peer] = self::resolvePeer($observed, $projThen, $ref, $whenEnv);
+                    if (!$found || !self::isFiniteNum($peer)) throw new RuntimeException("then.{$key}: missing numeric peer {$ref}");
+                    $total += $sign * $peer;
+                }
+            }
+            if (!is_finite($total) || abs($actual - $total) > $tol) throw new RuntimeException("then.{$key}: {$op} violation");
+        }
+        if ($series) {
+            if (!is_array($actual) || !$actual || ((array_key_exists('monotonic', $expected) || array_key_exists('step_max_delta', $expected)) && !array_is_list($actual))) {
+                throw new RuntimeException("then.{$key}: expected non-empty numeric sequence");
+            }
+            $values = array_values($actual);
+            foreach ($values as $i => $value) {
+                if (!self::isFiniteNum($value)) throw new RuntimeException("then.{$key}: non-numeric sequence");
+                if ((array_key_exists('min', $expected) && $value + $tol < $expected['min']) || (array_key_exists('max', $expected) && $value - $tol > $expected['max'])) {
+                    throw new RuntimeException("then.{$key}: sequence element outside bounds");
+                }
+                if ($i === 0) continue;
+                $prev = $values[$i - 1];
+                if (array_key_exists('monotonic', $expected)) {
+                    $ok = match ($expected['monotonic']) {
+                        'non_decreasing' => $prev - $tol <= $value,
+                        'non_increasing' => $prev + $tol >= $value,
+                        'strictly_increasing' => $prev + $tol < $value,
+                        'strictly_decreasing' => $prev - $tol > $value,
+                        default => false,
+                    };
+                    if (!$ok) throw new RuntimeException("then.{$key}: monotonic violation");
+                }
+                if (array_key_exists('step_max_delta', $expected) && (!self::isFiniteNum($expected['step_max_delta']) || $expected['step_max_delta'] <= 0 || abs($value - $prev) > $expected['step_max_delta'] + $tol)) {
+                    throw new RuntimeException("then.{$key}: step_max_delta violation");
+                }
+            }
+            if (array_key_exists('sum_total', $expected)) {
+                $total = array_sum($values);
+                $bounds = is_array($expected['sum_total']) ? $expected['sum_total'] : ['eq' => $expected['sum_total']];
+                if (!is_finite((float)$total) || !$bounds) throw new RuntimeException("then.{$key}: invalid sum_total");
+                foreach ($bounds as $op => $bound) {
+                    if (!self::isFiniteNum($bound) || !match ($op) {
+                        'eq' => abs($total - $bound) <= $tol,
+                        'min' => $total + $tol >= $bound,
+                        'max' => $total - $tol <= $bound,
+                        default => false,
+                    }) throw new RuntimeException("then.{$key}: sum_total violation");
+                }
+            }
+        }
+    }
+
+    private static function resolvePeer(array $observed, array $projThen, mixed $ref, array $whenEnv): array
+    {
+        if (!is_string($ref) || $ref === '') return [false, null];
+        if (str_starts_with($ref, 'when.')) {
+            if (array_key_exists($ref, $observed)) return [true, $observed[$ref]];
+            $inputs = array_replace($whenEnv, $observed['_when_env'] ?? [], $observed['before'] ?? [], $observed['when'] ?? []);
+            $key = substr($ref, 5);
+            return [array_key_exists($key, $inputs), $inputs[$key] ?? null];
+        }
+        if (str_starts_with($ref, 'then.')) $ref = substr($ref, 5);
+        return self::resolvePointer($observed, $projThen[$ref] ?? (str_starts_with($ref, '/') ? $ref : '/' . str_replace(['~', '/'], ['~0', '~1'], $ref)));
     }
 
     private static function verifySinglePhpFrame(string $res, mixed $obs, bool $isAmbient): void
@@ -412,16 +496,80 @@ final class Drift
         }
     }
 
+    private static function unwrapOrDesugar03(mixed $raw, array $units = [], ?string $predUnit = null): mixed
+    {
+        if (!is_array($raw) || array_is_list($raw)) {
+            return $raw;
+        }
+        if (count($raw) === 1 && array_key_exists('eq', $raw) && !is_array($raw['eq'])) {
+            return $raw['eq'];
+        }
+        $out = [];
+        foreach ($raw as $k => $v) {
+            if ($k === 'eq') {
+                if (array_key_exists('tol', $raw)) {
+                    $out['approx'] = $v;
+                } else {
+                    $out['eq'] = $v;
+                }
+            } elseif ($k === 'len' && is_array($v)) {
+                if (array_key_exists('min', $v)) $out['min_len'] = $v['min'];
+                if (array_key_exists('max', $v)) $out['max_len'] = $v['max'];
+            } elseif ($k === 'keys' && is_array($v)) {
+                if (array_key_exists('allow', $v)) $out['allowed_keys'] = $v['allow'];
+                if (array_key_exists('forbid', $v)) $out['forbid_keys'] = $v['forbid'];
+            } elseif ($k === 'tol' && is_array($v)) {
+                if (array_key_exists('abs', $v)) $out['abs_tol'] = $v['abs'];
+                if (array_key_exists('rel', $v)) $out['rel_tol'] = $v['rel'];
+            } elseif ($k === 'peer' && is_array($v)) {
+                if (array_key_exists('eq', $v)) $out['eq_field'] = $v['eq'];
+                if (array_key_exists('le', $v)) $out['le_field'] = $v['le'];
+                if (array_key_exists('ge', $v)) $out['ge_field'] = $v['ge'];
+                if (array_key_exists('sum', $v) && is_array($v['sum'])) {
+                    $out['sum_fields'] = $v['sum'];
+                }
+                if (array_key_exists('balance', $v)) $out['balance_fields'] = $v['balance'];
+            } elseif ($k === 'series' && is_array($v)) {
+                foreach ($v as $sk => $sv) {
+                    $out[$sk] = $sk === 'monotonic' && in_array($sv, ['increasing', 'decreasing'], true) ? "strictly_{$sv}" : $sv;
+                }
+            } elseif ($k !== 'convert_from') {
+                $out[$k] = $v;
+            }
+        }
+        if (array_key_exists('convert_from', $raw)) {
+            $from = $raw['convert_from'];
+            $target = $predUnit ?? $raw['unit'] ?? null;
+            if (!$units && is_array($raw['unit_conversion'] ?? null)) $units = $raw['unit_conversion'];
+            $matches = array_filter(array_keys($units), fn($k) => str_starts_with((string)$k, "{$from}->"));
+            $ratio = $target === $from ? 1 : ($units[$target !== null ? "{$from}->{$target}" : (count($matches) === 1 ? reset($matches) : '')] ?? null);
+            if (!self::isFiniteNum($ratio) || $ratio <= 0) throw new RuntimeException("missing unit conversion from {$from}");
+            $scale = fn($v) => self::isFiniteNum($v) ? $v * $ratio : $v;
+            foreach (['eq', 'approx', 'min', 'max', 'abs_tol', 'step_max_delta'] as $k) {
+                if (array_key_exists($k, $out)) $out[$k] = $scale($out[$k]);
+            }
+            foreach (['in', 'not_in'] as $k) {
+                if (is_array($out[$k] ?? null)) $out[$k] = array_map($scale, $out[$k]);
+            }
+            if (array_key_exists('sum_total', $out)) $out['sum_total'] = is_array($out['sum_total']) ? array_map($scale, $out['sum_total']) : $scale($out['sum_total']);
+        }
+        return $out;
+    }
+
     public static function runProjectionChecks(array $contractView, string $caseId, array $observed, array $frames = []): array
     {
         $caseDef = $contractView['cases'][$caseId] ?? null;
         if (!is_array($caseDef)) {
             throw new RuntimeException("unknown case {$caseId}");
         }
+        $is03 = ($contractView['drift'] ?? '') === '0.3';
         $thenTable = $caseDef['then'] ?? [];
         $projThen = $contractView['projections']['then'] ?? [];
         $readKeys = [];
-        foreach ($thenTable as $key => $expected) {
+        $whenEnv = [];
+        foreach (($caseDef['when'] ?? []) as $wk => $wv) $whenEnv[$wk] = $is03 ? self::unwrapOrDesugar03($wv) : $wv;
+        foreach ($thenTable as $key => $rawExpected) {
+            $expected = $is03 ? self::unwrapOrDesugar03($rawExpected, $contractView['units'] ?? [], $contractView['schema']['then'][$key]['unit'] ?? null) : $rawExpected;
             $ptr = $projThen[$key] ?? "/{$key}";
             [$present, $actual] = self::resolvePointer($observed, (string)$ptr);
             if (!$present && array_key_exists((string)$key, $observed)) {
@@ -432,7 +580,7 @@ final class Drift
                 $present = true;
                 $actual = $observed;
             }
-            self::checkValue((string)$key, $actual, $expected, $present, $observed, $projThen);
+            self::checkValue((string)$key, $actual, $expected, $present, $observed, $projThen, $whenEnv);
             $readKeys[] = (string)$key;
         }
         self::checkFrame($contractView, $caseId, $frames, $readKeys);
@@ -500,6 +648,10 @@ final class Drift
             if (!empty($r['read'])) {
                 $ev['read'] = $r['read'];
             }
+            if (($contractView['drift'] ?? '') === '0.3') {
+                $ev['schema'] = '0.3';
+                $ev['capabilities'] = ['rel-keys-guard/1', 'rel-peer-sum/1', 'rel-tol/1'];
+            }
             $lines[] = json_encode($ev, JSON_UNESCAPED_SLASHES);
         }
         file_put_contents($eventsPath, implode("\n", $lines) . "\n");
@@ -514,7 +666,7 @@ final class Drift
                 'deps' => 'composer-lock-0',
                 'config' => 'phpunit-1',
                 'runner' => 'phpunit',
-                'drift' => '0.5.0',
+                'drift' => '0.5.1',
                 'adapter' => self::VERSION,
                 'policy' => 'core@1',
             ], $envMeta),

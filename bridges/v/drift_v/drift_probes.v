@@ -23,7 +23,7 @@ pub fn has_key_recursive(val json2.Any, fk string, is_root bool) bool {
 		return true
 	}
 	for k, v in m {
-		if is_root && k == '_frame' && fk != '_frame' && v is map[string]json2.Any {
+		if is_root && (k == '_frame' || k == '_when_env') && fk != k && v is map[string]json2.Any {
 			continue
 		}
 		if has_key_recursive(v, fk, false) {

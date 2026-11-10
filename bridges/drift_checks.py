@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis
+    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce
 except ImportError:
     try:
-        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis  # type: ignore[no-redef]
+        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce  # type: ignore[no-redef]
     except ImportError:
         def _ld(n: str) -> Any:
             s = importlib.util.spec_from_file_location(n, Path(__file__).with_name(f'{n}.py'))
@@ -22,57 +22,13 @@ except ImportError:
             s.loader.exec_module(m)
             return m
         _up, _sec, _ui, _uis = _ld('drift_upstream'), _ld('drift_security'), _ld('drift_ui'), _ld('drift_ui_surface')
+        _ce = _ld('drift_ui_recovery')
 
 REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion', 'eq', 'len', 'keys', 'peer', 'series', 'tol', 'convert_from'))
 CAPS_03 = ('rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1')
 
 
-def _strip_side_03(s: Any) -> Any:
-    return s.split('.', 1)[1] if isinstance(s, str) and (s.startswith('when.') or s.startswith('then.')) else s
-
-
-def desugar_03_rel(raw: Mapping[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k, v in raw.items():
-        if k == 'tol' and isinstance(v, Mapping):
-            if 'abs' in v:
-                out['abs_tol'] = v['abs']
-            if 'rel' in v:
-                out['rel_tol'] = v['rel']
-        elif k == 'len' and isinstance(v, Mapping):
-            if 'min' in v:
-                out['min_len'] = v['min']
-            if 'max' in v:
-                out['max_len'] = v['max']
-        elif k == 'keys' and isinstance(v, Mapping):
-            if 'allow' in v:
-                out['allowed_keys'] = v['allow']
-            if 'forbid' in v:
-                out['forbid_keys'] = v['forbid']
-        elif k == 'peer' and isinstance(v, Mapping):
-            if 'le' in v:
-                out['le_field'] = _strip_side_03(v['le'])
-            if 'ge' in v:
-                out['ge_field'] = _strip_side_03(v['ge'])
-            if 'eq' in v:
-                out['eq_field'] = _strip_side_03(v['eq'])
-            if isinstance(v.get('sum'), list):
-                out['sum_fields'] = [_strip_side_03(x) for x in v['sum']]
-            if isinstance(v.get('balance'), Mapping):
-                b = v['balance']
-                out['balance_fields'] = {
-                    **({'add': [_strip_side_03(x) for x in b['add']]} if isinstance(b.get('add'), list) else {}),
-                    **({'sub': [_strip_side_03(x) for x in b['sub']]} if isinstance(b.get('sub'), list) else {}),
-                }
-        elif k == 'series' and isinstance(v, Mapping):
-            out.update(v)
-            if out.get('monotonic') in ('increasing', 'decreasing'):
-                out['monotonic'] = f"strictly_{out['monotonic']}"
-        elif k != 'convert_from':
-            out[k] = v
-    if 'eq' in out and ('abs_tol' in out or 'rel_tol' in out) and 'balance_fields' not in out and 'sum_fields' not in out:
-        out['approx'] = out.pop('eq')
-    return out
+desugar_03_rel = _ce.desugar_03_rel
 NON_VERIFIED_OP_STATES = frozenset(('prepared', 'accepted', 'queued', 'running', 'in_progress', 'partial_failure', 'cancellation_requested', 'unknown'))
 TERMINAL_UI_CLAIMS = frozenset(('completed', 'complete', 'verified', 'done', 'fulfilled', 'available', 'sent', 'paid', 'approved'))
 COMPARATIVE_BASELINE_RE = re.compile(r'^(?:invariato|unchanged|same|nessuna variazione|[+-]\s*\d)')
@@ -106,14 +62,15 @@ def invoke_verified_callback(fn: Callable[..., Any], contract_id: str, case_id: 
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} must inspect and assert the expected value')
 
 
-def run_simple_checks(contract_id: str, case_id: str, then_table: Mapping[str, Any], seen: set[str], checks: Mapping[str, Any]) -> None:
+def run_simple_checks(contract_id: str, case_id: str, then_table: Mapping[str, Any], seen: set[str], checks: Mapping[str, Any], when_env: Mapping[str, Any] | None = None) -> None:
+    src = checks.get('then') if isinstance(checks, Mapping) and isinstance(checks.get('then'), Mapping) and not any(k in checks for k in then_table) else checks
     for k, exp in then_table.items():
-        if not isinstance(checks, Mapping) or k not in checks:
+        if not isinstance(src, Mapping) or k not in src:
             raise AssertionError(f'{contract_id}.{case_id}: no check for then.{k}')
-        fn = checks[k]
+        fn = src[k]
         if callable(fn):
-            invoke_verified_callback(fn, contract_id, case_id, k, exp)
-        elif not check_relational_leaf(contract_id, case_id, k, exp, fn, checks, {}, None) and values_mismatch(fn, exp):
+            invoke_verified_callback(fn, contract_id, case_id, k, _uis.unwrap_03_eq(exp))
+        elif not check_relational_leaf(contract_id, case_id, k, exp, fn, checks, {}, None, when_env) and values_mismatch(fn, exp):
             raise AssertionError(f'{contract_id}.{case_id}: expected then.{k}={exp!r}, got {fn!r}')
         seen.add(k)
 
@@ -121,7 +78,8 @@ def run_simple_checks(contract_id: str, case_id: str, then_table: Mapping[str, A
 def build_projected_input(view: Mapping[str, Any], when_table: Mapping[str, Any], base: Mapping[str, Any] | None = None) -> Any:
     when_proj = extract_projection_map(view, 'when')
     out = clone_json(base if isinstance(base, Mapping) else {})
-    for k, v in when_table.items():
+    for k, raw_v in when_table.items():
+        v = _uis.unwrap_03_eq(raw_v)
         if k in when_proj:
             out = write_pointer(out, when_proj[k], v)
         elif isinstance(out, dict):
@@ -137,7 +95,7 @@ def run_domain_bounds_check(contract_id: str, case_id: str, then_table: Mapping[
         fn = checks.get(k) if isinstance(checks, Mapping) else None
         if not callable(fn):
             raise AssertionError(f'{contract_id}.{case_id}: no check for then.{k}')
-        b_checks.append((k, exp, fn))
+        b_checks.append((k, _uis.unwrap_03_eq(exp), fn))
     for s in samples:
         for k, exp, fn in b_checks:
             try:
@@ -218,10 +176,11 @@ def expand_domain(domain: Any, first: bool = False) -> list[Any]:
 ThenView = _sec.ThenView
 
 
-def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None) -> bool:
+def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, when_env: Mapping[str, Any] | None = None, contract: Mapping[str, Any] | None = None) -> bool:
     if not isinstance(raw_exp, Mapping) or not raw_exp or not all(rk in REL_KEYS for rk in raw_exp):
         return False
-    exp = desugar_03_rel(raw_exp)
+    context = contract if contract is not None else (payload if isinstance(payload, Mapping) else {})
+    exp = desugar_03_rel(raw_exp, context.get('units', {}), context.get('schema', {}).get('then', {}).get(key, {}).get('unit'))
     pfx = f'{contract_id}.{case_id}'
     if 'eq' in exp:
         if values_mismatch(act, exp['eq']):
@@ -230,17 +189,7 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
             return True
     is_num = is_finite_num
     act_len = len(act) if isinstance(act, (str, list, tuple, Mapping)) else -1
-
-    def peer_of(ref: Any) -> tuple[bool, Any]:
-        if not isinstance(ref, str) or not ref.strip():
-            return (False, None)
-        if ref.startswith('/'):
-            return read_pointer(payload, ref)
-        if ref in proj:
-            return read_pointer(payload, proj[ref])
-        if isinstance(payload, Mapping) and ref in payload:
-            return (True, payload[ref])
-        return (False, None)
+    peer_of = lambda ref: _uis.resolve_peer_value(ref, payload, proj, when_env, read_pointer)
 
     is_seq_tuning = 'monotonic' in exp or 'step_max_delta' in exp or 'sum_total' in exp
     if not is_seq_tuning:
@@ -276,6 +225,14 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
                 raise AssertionError(f"{pfx}: forbidden value {act!r} in then.{key}.not_in {exp['not_in']!r}")
         elif values_mismatch(act, exp['not_in']):
             raise AssertionError(f'{pfx}: pick-forbidden-value mutant on then.{key}.not_in killed (got {act!r})')
+    if 'allowed_keys' in exp:
+        if not isinstance(act, Mapping) or not isinstance(exp['allowed_keys'], (list, tuple)):
+            raise AssertionError(f'{pfx}: expected mapping and allowed_keys list for then.{key}')
+        for k in act:
+            if act is payload and k == '_frame' and isinstance(act[k], Mapping):
+                continue
+            if k not in exp['allowed_keys']:
+                raise AssertionError(f'{pfx}: unexpected key "{k}" on then.{key}')
     if 'forbid_keys' in exp:
         if not isinstance(act, Mapping):
             raise AssertionError(f'{pfx}: exp mapping for then.{key}.forbid_keys')
@@ -297,7 +254,9 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
         if not is_num(act) or not is_num(total) or abs(float(act) - total) > 1e-9:
             raise AssertionError(f'{pfx}: exp then.{key} == sum({exp["sum_fields"]!r}) ({total}), got {act!r}')
     if 'contains' in exp:
-        if not isinstance(act, (list, tuple)) or not isinstance(exp['contains'], (list, tuple)) or not all(any(not values_mismatch(x, req) for x in act) for req in exp['contains']):
+        reqs = exp['contains'] if isinstance(exp['contains'], (list, tuple)) else [exp['contains']]
+        ok = all(isinstance(req, str) and req in act for req in reqs) if isinstance(act, str) else isinstance(act, (list, tuple)) and all(any(not values_mismatch(x, req) for x in act) for req in reqs)
+        if not ok:
             raise AssertionError(f"{pfx}: exp then.{key} to contain {exp['contains']!r}, got {act!r}")
     if 'prefix' in exp and (not isinstance(act, str) or not act.startswith(str(exp['prefix']))):
         raise AssertionError(f"{pfx}: exp then.{key} to start with {exp['prefix']!r}, got {act!r}")
@@ -307,9 +266,10 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
     return True
 
 
-def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, with_at: bool, miss_msg: str) -> None:
+def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, with_at: bool, miss_msg: str, when_env: Mapping[str, Any] | None = None, contract: Mapping[str, Any] | None = None) -> None:
     pfx = f'{contract_id}.{case_id}'
     is_ui_obs = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
+    t_pay = payload.get('then') if isinstance(payload, Mapping) and isinstance(payload.get('then'), Mapping) and key not in payload else payload
 
     def bump_unverifiable() -> None:
         ev_map = payload.get('evidence') if isinstance(payload, Mapping) else None
@@ -320,27 +280,29 @@ def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, pay
 
     if key in proj:
         ptr = proj[key]
-        found, act = read_pointer(payload, ptr)
+        found, act = read_pointer(t_pay, ptr)
+        if not found and t_pay is not payload:
+            found, act = read_pointer(payload, ptr)
         if not found:
             bump_unverifiable()
             raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{key}')
         if is_ui_obs and exp is not None and (act is None or (act == '' and isinstance(exp, str) and exp != '')):
             bump_unverifiable()
             raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value at "{ptr}"')
-        if check_relational_leaf(contract_id, case_id, key, exp, act, payload, proj, mutation_override):
+        if check_relational_leaf(contract_id, case_id, key, exp, act, payload, proj, mutation_override, when_env, contract):
             return
         if values_mismatch(act, exp):
             at_suffix = f' at "{ptr}"' if with_at else ''
             raise AssertionError(f'{pfx}: exp then.{key}={exp!r}{at_suffix}, got {act!r}')
         return
-    if isinstance(payload, Mapping) and key in payload:
-        if is_ui_obs and exp is not None and payload[key] is None:
+    if isinstance(t_pay, Mapping) and key in t_pay:
+        if is_ui_obs and exp is not None and t_pay[key] is None:
             bump_unverifiable()
             raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value')
-        if check_relational_leaf(contract_id, case_id, key, exp, payload[key], payload, proj, mutation_override):
+        if check_relational_leaf(contract_id, case_id, key, exp, t_pay[key], payload, proj, mutation_override, when_env, contract):
             return
-        if values_mismatch(payload[key], exp):
-            raise AssertionError(f'{pfx}: exp then.{key}={exp!r}, got {payload[key]!r}')
+        if values_mismatch(t_pay[key], exp):
+            raise AssertionError(f'{pfx}: exp then.{key}={exp!r}, got {t_pay[key]!r}')
         return
     bump_unverifiable()
     raise AssertionError(f'{pfx}: {miss_msg} then.{key}')
@@ -365,7 +327,7 @@ def _unobserved_controls(controls: Any, then_table: Mapping[str, Any], proj: Map
     return [c for c in ctrls if c not in obs]
 
 
-def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, Any], seen: set[str], view: Any, checks: Mapping[str, Callable[[Any], Any]] | None, mutation_override: Mapping[str, Any] | None, metrics_store: dict[str, dict[str, Any]], proj_loader: Callable[[], Mapping[str, str]]) -> None:
+def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, Any], seen: set[str], view: Any, checks: Mapping[str, Callable[[Any], Any]] | None, mutation_override: Mapping[str, Any] | None, metrics_store: dict[str, dict[str, Any]], proj_loader: Callable[[], Mapping[str, str]], when_env: Mapping[str, Any] | None = None) -> None:
     v = dict(view) if isinstance(view, Mapping) else {}
     pfx = f'{contract_id}.{case_id}'
     is_mut = mutation_override is not None
@@ -399,7 +361,7 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
     ]
     for key, exp in ordered_items:
         if isinstance(checks, Mapping) and callable(checks.get(key)):
-            invoke_verified_callback(checks[key], contract_id, case_id, key, exp)
+            invoke_verified_callback(checks[key], contract_id, case_id, key, _uis.unwrap_03_eq(exp))
             seen.add(key)
             continue
         if isinstance(v.get('adapter'), Mapping) and proj is None:
@@ -462,7 +424,7 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
         else:
             if proj is None:
                 proj = proj_loader()
-            check_projected_leaf(contract_id, case_id, key, exp, v, proj, mutation_override, False, 'no check for')
+            check_projected_leaf(contract_id, case_id, key, exp, v, proj, mutation_override, False, 'no check for', when_env)
         seen.add(key)
     if isinstance(v.get('controls'), Mapping) and isinstance(view, dict) and not isinstance(view.get('unobservedControls'), list):
         if proj is None:
@@ -506,8 +468,8 @@ def merge_prior_inventory(out: str, inv: dict[str, Any], is_shard: bool, root_di
     _sec.merge_prior_inventory(out, inv, is_shard, root_dir, resolve_selected_files)
 
 
-def run_projection_checks(ctx: Any, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
-    _sec.run_projection_checks(ctx, case_id, payload, checks, invoke_verified_callback, check_projected_leaf, read_pointer)
+def run_projection_checks(ctx: Any, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None, when_obs: Mapping[str, Any] | None = None) -> None:
+    _sec.run_projection_checks(ctx, case_id, payload, checks, invoke_verified_callback, check_projected_leaf, read_pointer, when_obs)
 
 
 def run_adverse_checks(ctx: Any, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:

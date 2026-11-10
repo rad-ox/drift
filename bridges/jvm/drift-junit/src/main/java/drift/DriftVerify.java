@@ -477,7 +477,6 @@ final class DriftVerify {
                     throw new AssertionError(pfx + ": invalid forbid_keys on then." + key);
                 }
             }
-            return true;
         }
         if (exp.containsKey("not_in")) {
             if (actual == null) {
@@ -514,7 +513,7 @@ final class DriftVerify {
         out.put("capabilities", new ArrayList<>(new java.util.TreeSet<>(CAPABILITIES)));
         out.put("runtime_baseline", "java-25-lts");
         out.put("schema", "drift.bridge-capabilities/1");
-        out.put("version", "0.5.0");
+        out.put("version", "0.5.1");
         return out;
     }
 

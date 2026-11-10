@@ -284,10 +284,10 @@ if [ "$action" = uninstall ]; then
 				for ext in jar pom; do
 					f=$path/drift-junit-$v.$ext
 					if [ -f "$f" ]; then
-						remove "$f" "/drift/drift-junit/$v/drift-junit-$v.$ext"
+						remove "$f" "/io/github/rad-ox/drift-junit/$v/drift-junit-$v.$ext"
 					fi
 				done
-				[ "$dry" = 1 ] || rmdir "$path" "${path%/*}" 2>/dev/null || true
+				[ "$dry" = 1 ] || rmdir "$path" "${path%/*}" "${path%/*/*}" "${path%/*/*/*}" "${path%/*/*/*/*}" 2>/dev/null || true
 				ok "removed DRIFT artifacts in $(tilde "$path")" "rimossi gli artefatti DRIFT in $(tilde "$path")"
 			elif [ -f "$path" ]; then
 				v=${path%/*}
@@ -299,8 +299,8 @@ if [ "$action" = uninstall ]; then
 				drift-maven-plugin:"drift-maven-plugin-$v.jar" | drift-maven-plugin:"drift-maven-plugin-$v.pom") ;;
 				*) die "Refusing to remove unexpected Maven artifact $path" "Rimozione dell'artefatto Maven inatteso $path rifiutata" ;;
 				esac
-				remove "$path" "/drift/$a/$v/${path##*/}"
-				[ "$dry" = 1 ] || rmdir "${path%/*}" "${path%/*/*}" 2>/dev/null || true
+				remove "$path" "/io/github/rad-ox/$a/$v/${path##*/}"
+				[ "$dry" = 1 ] || rmdir "${path%/*}" "${path%/*/*}" "${path%/*/*/*}" "${path%/*/*/*/*}" "${path%/*/*/*/*/*}" 2>/dev/null || true
 				ok "removed $(tilde "$path")" "rimosso $(tilde "$path")"
 			fi
 			;;
@@ -390,8 +390,8 @@ fi
 
 bindir=$prefix/bin
 artifacts='drift-junit drift-maven-plugin'
-mdir=$maven_repo/drift/drift-junit/$version
-mfile() { printf '%s/drift/%s/%s/%s-%s.%s' "$maven_repo" "$1" "$version" "$1" "$version" "$2"; } # artifact ext
+mdir=$maven_repo/io/github/rad-ox/drift-junit/$version
+mfile() { printf '%s/io/github/rad-ox/%s/%s/%s-%s.%s' "$maven_repo" "$1" "$version" "$1" "$version" "$2"; } # artifact ext
 # Maven files this installer owns, tab-separated: only those are replaced and
 # recorded; an identical file that was already there stays the user's.
 owned=
@@ -831,13 +831,13 @@ fi
 
 if [ "$with_maven" = 1 ]; then
 	for a in $artifacts; do
-		run mkdir -p "$maven_repo/drift/$a/$version"
+		run mkdir -p "$maven_repo/io/github/rad-ox/$a/$version"
 		for ext in jar pom; do
 			target=$(mfile "$a" "$ext")
 			source=$here/maven/$a-$version.$ext
 			if [ ! -e "$target" ] || { owns "$target" && ! cmp -s "$source" "$target"; }; then
 				if [ -e "$target.new" ] || [ -L "$target.new" ]; then
-					remove "$target.new" "/drift/$a/$version/$a-$version.$ext.new"
+					remove "$target.new" "/io/github/rad-ox/$a/$version/$a-$version.$ext.new"
 				fi
 				run cp "$source" "$target.new"
 				run mv -f "$target.new" "$target"
@@ -845,10 +845,10 @@ if [ "$with_maven" = 1 ]; then
 			fi
 		done
 	done
-	ok "JUnit bridge drift:drift-junit:$version → $(tilde "$mdir")" \
-		"bridge JUnit drift:drift-junit:$version → $(tilde "$mdir")"
-	ok "Maven plugin drift:drift-maven-plugin:$version → $(tilde "$maven_repo/drift/drift-maven-plugin/$version")" \
-		"plugin Maven drift:drift-maven-plugin:$version → $(tilde "$maven_repo/drift/drift-maven-plugin/$version")"
+	ok "JUnit bridge io.github.rad-ox:drift-junit:$version → $(tilde "$mdir")" \
+		"bridge JUnit io.github.rad-ox:drift-junit:$version → $(tilde "$mdir")"
+	ok "Maven plugin io.github.rad-ox:drift-maven-plugin:$version → $(tilde "$maven_repo/io/github/rad-ox/drift-maven-plugin/$version")" \
+		"plugin Maven io.github.rad-ox:drift-maven-plugin:$version → $(tilde "$maven_repo/io/github/rad-ox/drift-maven-plugin/$version")"
 fi
 
 if [ "$dry" = 1 ]; then

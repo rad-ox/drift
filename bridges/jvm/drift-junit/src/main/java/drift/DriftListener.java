@@ -241,6 +241,10 @@ public final class DriftListener implements TestExecutionListener {
         if (digest != null) {
             Json.field(line.append(','), "digest", digest);
         }
+        if (Drift.isSchema03(contract)) {
+            Json.field(line.append(','), "schema", "0.3");
+            Json.field(line.append(','), "capabilities", Drift.requiredCapabilities(contract));
+        }
         line.append("}\n");
         append(Path.of(file), line.toString());
     }
@@ -538,10 +542,10 @@ public final class DriftListener implements TestExecutionListener {
             return null;
         }
         Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.5.0");
+        base.put("adapter", "drift-junit@0.5.1");
         base.put("config", "default");
         base.put("deps", "none");
-        base.put("drift", "0.5.0");
+        base.put("drift", "0.5.1");
         base.put("policy", "core@1");
         base.put("runner", "junit-platform");
         base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));

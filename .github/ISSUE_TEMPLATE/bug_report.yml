@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a bug in the DRIFT CLI, open reference verifier, language bridges, hooks, schemas, or installers.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue with DRIFT.
+        **Security Note:** Please do **not** report security vulnerabilities in public issues. Follow [`SECURITY.md`](https://github.com/rad-ox/drift/blob/main/SECURITY.md) to submit a private advisory.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Which part of the DRIFT distribution or Open Integration Surface is affected?
+      options:
+        - DRIFT CLI (drift / drift-pro / drift-enterprise)
+        - Open Reference Verifier (verifier/drift_verify.py)
+        - JVM Bridges (JUnit 5 / Legacy JUnit 4 / Scala MUnit / Maven Plugin)
+        - JavaScript / TypeScript Bridge (bridges/drift.mjs)
+        - Python Bridge (bridges/drift.py)
+        - Rust Bridge (bridges/rust)
+        - V Bridge (bridges/v/drift_v)
+        - Other Language Bridge (PHP / COBOL / C++20 / C# / GDScript)
+        - Agent Skill & Hooks (skill/drift, hooks/)
+        - Installers & Release Archives (install.sh, install.ps1, install.cmd)
+        - JSON Schemas & Documentation (schemas/, *.md)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: DRIFT Version
+      description: Paste the output of `drift version`.
+      placeholder: "drift 0.5.0 (schema 0.2/0.3)"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Architecture & Runtime
+      description: Operating system, CPU architecture, and relevant runtime version (Java, Node.js, Python, Rust, etc.).
+      placeholder: "Linux x86_64 (Ubuntu 24.04), Temurin JDK 25, Python 3.14"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproduction
+      description: Provide the exact command, minimal `.drift/contracts/*.toml` contract, `.jsonl` proof event, or test bridge snippet that reproduces the problem.
+      placeholder: |
+        ```toml
+        drift = "0.2"
+        id = "example-slice"
+        ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behaviour & Diagnostics
+      description: Paste the exact CLI/verifier output, exit code, `DR-E*` diagnostic codes, or gate failure reasons.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behaviour
+      description: Describe what you expected DRIFT, the verifier, or the language bridge to do instead.
+    validations:
+      required: true

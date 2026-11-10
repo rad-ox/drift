@@ -28,70 +28,11 @@ final class DriftViewChecks {
             "balance_fields", "unit", "unit_conversion",
             "eq", "len", "keys", "peer", "series", "tol", "convert_from");
 
-    private static String stripSide03(Object raw) {
-        if (raw instanceof String s && (s.startsWith("when.") || s.startsWith("then."))) {
-            return s.substring(s.indexOf('.') + 1);
-        }
-        return raw instanceof String s ? s : "";
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> desugar03Rel(Map<?, ?> raw) {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        for (Map.Entry<?, ?> e : raw.entrySet()) {
-            String k = String.valueOf(e.getKey());
-            Object v = e.getValue();
-            if ("tol".equals(k) && v instanceof Map<?, ?> m) {
-                if (m.containsKey("abs")) out.put("abs_tol", m.get("abs"));
-                if (m.containsKey("rel")) out.put("rel_tol", m.get("rel"));
-            } else if ("len".equals(k) && v instanceof Map<?, ?> m) {
-                if (m.containsKey("min")) out.put("min_len", m.get("min"));
-                if (m.containsKey("max")) out.put("max_len", m.get("max"));
-            } else if ("keys".equals(k) && v instanceof Map<?, ?> m) {
-                if (m.containsKey("allow")) out.put("allowed_keys", m.get("allow"));
-                if (m.containsKey("forbid")) out.put("forbid_keys", m.get("forbid"));
-            } else if ("peer".equals(k) && v instanceof Map<?, ?> m) {
-                if (m.containsKey("le")) out.put("le_field", stripSide03(m.get("le")));
-                if (m.containsKey("ge")) out.put("ge_field", stripSide03(m.get("ge")));
-                if (m.containsKey("eq")) out.put("eq_field", stripSide03(m.get("eq")));
-                if (m.get("sum") instanceof List<?> sumList) {
-                    out.put("sum_fields", sumList.stream().map(DriftViewChecks::stripSide03).toList());
-                }
-                if (m.get("balance") instanceof Map<?, ?> bm) {
-                    Map<String, Object> nb = new java.util.LinkedHashMap<>();
-                    if (bm.get("add") instanceof List<?> addList) {
-                        nb.put("add", addList.stream().map(DriftViewChecks::stripSide03).toList());
-                    }
-                    if (bm.get("sub") instanceof List<?> subList) {
-                        nb.put("sub", subList.stream().map(DriftViewChecks::stripSide03).toList());
-                    }
-                    out.put("balance_fields", nb);
-                }
-            } else if ("series".equals(k) && v instanceof Map<?, ?> m) {
-                for (Map.Entry<?, ?> se : m.entrySet()) {
-                    String sk = String.valueOf(se.getKey());
-                    Object sv = se.getValue();
-                    if ("monotonic".equals(sk) && ("increasing".equals(sv) || "decreasing".equals(sv))) {
-                        sv = "strictly_" + sv;
-                    }
-                    out.put(sk, sv);
-                }
-            } else if (!"convert_from".equals(k)) {
-                out.put(k, v);
-            }
-        }
-        if (out.containsKey("eq") && (out.containsKey("abs_tol") || out.containsKey("rel_tol"))
-                && !out.containsKey("balance_fields") && !out.containsKey("sum_fields")) {
-            out.put("approx", out.remove("eq"));
-        }
-        return out;
-    }
-
     private DriftViewChecks() {}
 
     private static int lengthOfValue(Object v) {
         if (v instanceof String s) {
-            return s.length();
+            return s.codePointCount(0, s.length());
         }
         if (v instanceof List<?> l) {
             return l.size();
@@ -103,17 +44,49 @@ final class DriftViewChecks {
     }
 
     static Json.PointerLookup resolvePeer(Object payload, Map<String, String> proj, Object rawRef) {
-        if (!(rawRef instanceof String ref) || ref.isBlank()) {
+        return resolvePeer(null, payload, proj, rawRef);
+    }
+
+    static Json.PointerLookup resolvePeer(Drift.Case c, Object payload, Map<String, String> proj, Object rawRef) {
+        if (!(rawRef instanceof String rawStr) || rawStr.isBlank()) {
             return new Json.PointerLookup(false, null);
         }
-        if (ref.startsWith("/")) {
-            return Json.readJsonPointer(payload, ref);
+        String ref = rawStr.trim();
+        if (ref.startsWith("when.")) {
+            String wk = ref.substring(5);
+            if (wk.isEmpty()) return new Json.PointerLookup(false, null);
+            if (payload instanceof Map<?, ?> pm) {
+                if (pm.containsKey(ref)) return new Json.PointerLookup(true, pm.get(ref));
+                if (pm.get("when") instanceof Map<?, ?> wm) {
+                    return wm.containsKey(wk) ? new Json.PointerLookup(true, wm.get(wk)) : new Json.PointerLookup(false, null);
+                }
+                if (pm.get("before") instanceof Map<?, ?> bm) {
+                    return bm.containsKey(wk) ? new Json.PointerLookup(true, bm.get(wk)) : new Json.PointerLookup(false, null);
+                }
+            }
+            if (c != null) {
+                Object wv = c.when().get(wk);
+                if (wv instanceof Map<?, ?> wm) {
+                    if (wm.containsKey("eq") && !wm.containsKey("peer") && !wm.containsKey("eq_field")) {
+                        return new Json.PointerLookup(true, wm.get("eq"));
+                    }
+                } else if (wv != null) {
+                    return new Json.PointerLookup(true, wv);
+                }
+            }
+            return new Json.PointerLookup(false, null);
         }
-        if (proj != null && proj.containsKey(ref)) {
-            return Json.readJsonPointer(payload, proj.get(ref));
+        String effRef = ref.startsWith("then.") ? ref.substring(5) : ref;
+        if (effRef.isEmpty()) return new Json.PointerLookup(false, null);
+        if (effRef.startsWith("/")) {
+            return Json.readJsonPointer(payload, effRef);
         }
-        if (payload instanceof Map<?, ?> m && m.containsKey(ref)) {
-            return new Json.PointerLookup(true, m.get(ref));
+        if (proj != null && proj.containsKey(effRef)) {
+            return Json.readJsonPointer(payload, proj.get(effRef));
+        }
+        if (payload instanceof Map<?, ?> m) {
+            if (m.containsKey(effRef)) return new Json.PointerLookup(true, m.get(effRef));
+            if (m.containsKey(ref)) return new Json.PointerLookup(true, m.get(ref));
         }
         return new Json.PointerLookup(false, null);
     }
@@ -133,7 +106,11 @@ final class DriftViewChecks {
                 return false;
             }
         }
-        Map<String, Object> exp = desugar03Rel(rawExp);
+        Map<String, Object> exp = Json.desugar03Rel(rawExp);
+        if (rawExp.containsKey("convert_from")) {
+            Map<?, ?> context = payload instanceof Map<?, ?> pm && pm.containsKey("units") ? pm : Drift.view(c.contract());
+            Json.scaleConstraint03(exp, rawExp.get("convert_from"), context, key);
+        }
         String pfx = c.contract() + "." + c.id();
         if (exp.containsKey("eq")) {
             if (!Json.valuesEqual(actual, exp.get("eq"))) {
@@ -143,9 +120,7 @@ final class DriftViewChecks {
                 return true;
             }
         }
-        if (DriftVerify.checkObjectKeysAndNotIn(pfx, key, exp, actual)) {
-            return true;
-        }
+        DriftVerify.checkObjectKeysAndNotIn(pfx, key, exp, actual);
         boolean isSeqTuning = exp.containsKey("monotonic") || exp.containsKey("step_max_delta") || exp.containsKey("sum_total");
         if (!isSeqTuning) {
             if (exp.containsKey("min")) {
@@ -188,7 +163,7 @@ final class DriftViewChecks {
             if (!exp.containsKey(fk)) {
                 continue;
             }
-            Json.PointerLookup peer = resolvePeer(payload, proj, exp.get(fk));
+            Json.PointerLookup peer = resolvePeer(c, payload, proj, exp.get(fk));
             if (!peer.found()) {
                 throw new AssertionError(pfx + ": missing peer \"" + exp.get(fk) + "\" for then." + key + "." + fk);
             }
@@ -219,7 +194,7 @@ final class DriftViewChecks {
             }
             double sum = 0.0;
             for (Object ref : sumRefs) {
-                Json.PointerLookup pr = resolvePeer(payload, proj, ref);
+                Json.PointerLookup pr = resolvePeer(c, payload, proj, ref);
                 if (!pr.found() || !Json.isFiniteNumber(pr.value())) {
                     throw new AssertionError(pfx + ": missing numeric peer \"" + ref + "\" for then." + key + ".sum_fields");
                 }
@@ -231,8 +206,13 @@ final class DriftViewChecks {
             }
         }
         if (exp.containsKey("contains")) {
-            if (!(actual instanceof List<?> actList) || !(exp.get("contains") instanceof List<?> reqList)
-                    || !reqList.stream().allMatch(req -> actList.stream().anyMatch(x -> Json.valuesEqual(x, req)))) {
+            Object contains = exp.get("contains");
+            List<?> reqList = contains instanceof List<?> l ? l : Collections.singletonList(contains);
+            boolean ok = actual instanceof String s
+                    ? reqList.stream().allMatch(req -> req instanceof String sub && s.contains(sub))
+                    : actual instanceof List<?> actList
+                        && reqList.stream().allMatch(req -> actList.stream().anyMatch(x -> Json.valuesEqual(x, req)));
+            if (!ok) {
                 throw new AssertionError(pfx + ": expected then." + key + " to contain " + exp.get("contains") + ", got " + actual);
             }
         }
@@ -248,7 +228,7 @@ final class DriftViewChecks {
                 throw new AssertionError(pfx + ": expected then." + key + " to end with \"" + wantSfx + "\", got " + actual);
             }
         }
-        Json.checkNumericAndTuningClauses(pfx, key, exp, actual, payload, proj, RELATIONAL_KEYS);
+        Json.checkNumericAndTuningClauses(c, pfx, key, exp, actual, payload, proj, RELATIONAL_KEYS);
         return true;
     }
 
@@ -349,30 +329,21 @@ final class DriftViewChecks {
                     continue;
                 }
                 if ("baseline_state".equals(key)) {
-                    boolean hasBaseline = v.containsKey("hasBaseline")
-                            ? Boolean.TRUE.equals(v.get("hasBaseline"))
-                            : v.get("baseline") != null;
-                    String label = String.valueOf(v.getOrDefault("baselineLabel",
-                            v.getOrDefault("deltaLabel", ""))).trim().toLowerCase();
+                    boolean hasBaseline = v.containsKey("hasBaseline") ? Boolean.TRUE.equals(v.get("hasBaseline")) : v.get("baseline") != null;
+                    String label = String.valueOf(v.getOrDefault("baselineLabel", v.getOrDefault("deltaLabel", ""))).trim().toLowerCase();
                     if (!hasBaseline && COMPARATIVE_BASELINE_PATTERN.matcher(label).matches()) {
-                        throw new AssertionError(contract + "." + id
-                                + ": comparative baseline label \"" + label + "\" without baseline");
+                        throw new AssertionError(contract + "." + id + ": comparative baseline label \"" + label + "\" without baseline");
                     }
-                    String actual = v.get("baseline_state") instanceof String s
-                            ? s
-                            : (hasBaseline ? "compared" : "first_observation");
+                    String actual = v.get("baseline_state") instanceof String s ? s : (hasBaseline ? "compared" : "first_observation");
                     if (!actual.equals(expected)) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected baseline_state=" + expected + ", got " + actual);
+                        throw new AssertionError(contract + "." + id + ": expected baseline_state=" + expected + ", got " + actual);
                     }
                     continue;
                 }
                 if ("duplicate_figures".equals(key)) {
                     List<String> figs = new ArrayList<>();
                     if (v.get("figures") instanceof List<?> rawFigs) {
-                        for (Object f : rawFigs) {
-                            figs.add(String.valueOf(f));
-                        }
+                        for (Object f : rawFigs) figs.add(String.valueOf(f));
                     } else if (v.get("metrics") instanceof List<?> rawMetrics) {
                         for (Object item : rawMetrics) {
                             if (item instanceof Map<?, ?> m) {
@@ -384,50 +355,34 @@ final class DriftViewChecks {
                     long dupCount = figs.size() - new HashSet<>(figs).size();
                     long want = expected instanceof Number n ? n.longValue() : -1L;
                     if (dupCount != want) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected duplicate_figures=" + expected + ", got " + dupCount);
+                        throw new AssertionError(contract + "." + id + ": expected duplicate_figures=" + expected + ", got " + dupCount);
                     }
                     continue;
                 }
                 if ("preserved_input_on_error".equals(key)) {
-                    boolean actual = !v.containsKey("preserved_input_on_error")
-                            || Boolean.TRUE.equals(v.get("preserved_input_on_error"));
-                    boolean hasError = Boolean.TRUE.equals(v.get("error"))
-                            || (v.get("error") instanceof String s && !s.isBlank())
-                            || Boolean.TRUE.equals(v.get("hasError"));
+                    boolean actual = !v.containsKey("preserved_input_on_error") || Boolean.TRUE.equals(v.get("preserved_input_on_error"));
+                    boolean hasError = Boolean.TRUE.equals(v.get("error")) || (v.get("error") instanceof String s && !s.isBlank()) || Boolean.TRUE.equals(v.get("hasError"));
                     if (hasError && v.get("dirtyInputs") instanceof Map<?, ?> dirty) {
                         Object rawCur = v.containsKey("currentInputs") ? v.get("currentInputs") : v.get("inputs");
                         Map<?, ?> cur = rawCur instanceof Map<?, ?> m ? m : Map.of();
                         actual = true;
                         for (Map.Entry<?, ?> de : dirty.entrySet()) {
                             Object curVal = cur.get(de.getKey());
-                            if (curVal == null ? de.getValue() != null : !curVal.equals(de.getValue())) {
-                                actual = false;
-                                break;
-                            }
+                            if (curVal == null ? de.getValue() != null : !curVal.equals(de.getValue())) { actual = false; break; }
                         }
                     }
                     if (!Boolean.valueOf(actual).equals(expected)) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected preserved_input_on_error=" + expected + ", got " + actual);
+                        throw new AssertionError(contract + "." + id + ": expected preserved_input_on_error=" + expected + ", got " + actual);
                     }
                     continue;
                 }
                 if ("claim_matches_evidence".equals(key)) {
-                    String opState = String.valueOf(v.getOrDefault("operationState",
-                            v.getOrDefault("evidenceState", ""))).trim().toLowerCase();
-                    String uiClaim = String.valueOf(v.getOrDefault("uiClaim",
-                            v.getOrDefault("statusLabel",
-                                    v.getOrDefault("completionState", "")))).trim().toLowerCase();
-                    boolean claimsComplete = Boolean.TRUE.equals(v.get("claimedComplete"))
-                            || TERMINAL_UI_CLAIMS.contains(uiClaim);
-                    boolean actual = (!opState.isEmpty() && NON_VERIFIED_OP_STATES.contains(opState) && claimsComplete)
-                            ? false
-                            : (!v.containsKey("claim_matches_evidence")
-                                    || Boolean.TRUE.equals(v.get("claim_matches_evidence")));
+                    String opState = String.valueOf(v.getOrDefault("operationState", v.getOrDefault("evidenceState", ""))).trim().toLowerCase();
+                    String uiClaim = String.valueOf(v.getOrDefault("uiClaim", v.getOrDefault("statusLabel", v.getOrDefault("completionState", "")))).trim().toLowerCase();
+                    boolean claimsComplete = Boolean.TRUE.equals(v.get("claimedComplete")) || TERMINAL_UI_CLAIMS.contains(uiClaim);
+                    boolean actual = (!opState.isEmpty() && NON_VERIFIED_OP_STATES.contains(opState) && claimsComplete) ? false : (!v.containsKey("claim_matches_evidence") || Boolean.TRUE.equals(v.get("claim_matches_evidence")));
                     if (!Boolean.valueOf(actual).equals(expected)) {
-                        throw new AssertionError(contract + "." + id
-                                + ": expected claim_matches_evidence=" + expected + ", got " + actual);
+                        throw new AssertionError(contract + "." + id + ": expected claim_matches_evidence=" + expected + ", got " + actual);
                     }
                     continue;
                 }

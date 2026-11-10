@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.rad-ox</groupId>
+  <artifactId>drift-cli</artifactId>
+  <version>0.5.1</version>
+  <packaging>pom</packaging>
+  <name>DRIFT command</name>
+  <description>The drift command as native executables, one per platform, resolved by the DRIFT Maven plugin.</description>
+  <url>https://github.com/rad-ox/drift</url>
+  <licenses>
+    <license>
+      <name>DRIFT Free Edition License</name>
+      <url>https://github.com/rad-ox/drift/blob/main/LICENSE</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>rad-ox</id>
+      <name>Lukasz Radkiewicz</name>
+      <email>rad-ox@users.noreply.github.com</email>
+    </developer>
+  </developers>
+  <scm>
+    <url>https://github.com/rad-ox/drift</url>
+    <connection>scm:git:https://github.com/rad-ox/drift.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/rad-ox/drift.git</developerConnection>
+  </scm>
+
+  <properties>
+    <drift.linux>${project.basedir}/../../../.build/dist/bin/drift</drift.linux>
+    <drift.windows>${project.basedir}/../../../.build/dist/bin/drift.exe</drift.windows>
+  </properties>
+
+  <profiles>
+    <!-- Publication to Maven Central, see PUBLISHING.md: the binaries of make dist. -->
+    <profile>
+      <id>central</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <version>3.6.1</version>
+            <executions>
+              <execution>
+                <id>attach-binaries</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>attach-artifact</goal>
+                </goals>
+                <configuration>
+                  <artifacts>
+                    <artifact>
+                      <file>${drift.linux}</file>
+                      <type>exe</type>
+                      <classifier>linux-x86_64</classifier>
+                    </artifact>
+                    <artifact>
+                      <file>${drift.windows}</file>
+                      <type>exe</type>
+                      <classifier>windows-x86_64</classifier>
+                    </artifact>
+                  </artifacts>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.9.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

@@ -2,6 +2,23 @@
 
 User-visible changes and capabilities by release.
 
+## 0.5.1
+
+- Release `0.5.1`.
+- Harden `0.3` constraint algebra (unit-aware meet/refinement, `not_in`/UTF-8 codepoint lengths, `assurance_ref` simulation, `fmt --upgrade`, `mutants`, bridges, and small-model/ASan/fuzz checks).
+- Fix `0.3` guard target globs, `ObsValue` `series`/`contains`, transitive `peer`/unit closures, exempt-case isolation, `extends`/invariant refinement, and upstream owner keys (DR-E105).
+- Harden schema `0.3` across `stats`, `approve`, `review`, `sweep`, `merge`, `new`, `drift_verify.py`, and bridges (`dr2b`/`dr2a`, `bind.*`, `scenario`, `ConstraintExpr`).
+- Add `.github/workflows/publish.yml` (crates.io OIDC & Maven Central `io.github.rad-ox`) and `make setup-github-env` for zero-local-secret GitHub Environment setup.
+- Add the complimentary Open-Source Maintainer Grant for DRIFT Enterprise in `LICENSE` Part III, `EDITIONS.md`, `README.md`, and `SUPPORT.md`.
+- Switch Maven `groupId` to `io.github.rad-ox` across POMs, installers (`install.sh`, `install.ps1`), skills, and docs for Maven Central readiness.
+- Showcase standout Free → Pro → Enterprise capabilities in `README.md`/`GUIDE*.md`/`EDITIONS.md`, add `skills/drift/` export for `skills.sh`, and add POM/Cargo metadata.
+- Add portable DRIFT dogfooding & perimeter release audit to `AGENTS.md`/`PUBLISHING.md`, sync `README.md`, `EDITIONS.md`, and `SECURITY.md`, and verify `0.3` schemas in CI.
+- Add `type = "any"` polymorphic `0.3` predicates, `dr1`-preserving `0.3`->`0.2` profile projection, and migrate `.drift/profiles/*.toml` and initial contracts to `0.3`.
+- Align `bridges/rust/Cargo.toml` license to `MIT`, add Part III Pro/Enterprise terms to `LICENSE`, and update `PUBLISHING.md` Maven Central `<licenses>` note.
+- Add `0.3` JSON Schema projections (`drift-{contract, profile, config, proof-event}-0.3.schema.json`) in `SPEC.md` §26 and `schemas/` alongside `0.2`.
+- Add GitHub issue forms (`.github/ISSUE_TEMPLATE/`) and `.github/PULL_REQUEST_TEMPLATE.md` and include them in public exports.
+- Separate `0.3` `when.*`/`then.*` peer environments in bridges, fix `isStr` in `drift_ui_recovery.mjs`, and verify `0.3` `dr2b`/`dr2a` contracts in `drift_verify.py`.
+
 ## 0.5.0
 
 - Release `0.5.0`.

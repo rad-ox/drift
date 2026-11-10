@@ -421,3 +421,90 @@ def evaluate_scenario_matrix(spec: Mapping[str, Any], check_view_table_fn: Calla
         'all_scenarios_passed': len(verified_scenarios) == len(required),
         'claim_scope': 'verified_in_declared_scenarios_and_environments',
     }
+
+
+def strip_bom(text: str) -> str:
+    return text[1:] if text.startswith('\ufeff') else text
+
+
+def read_json(path: Any) -> Any:
+    import json
+    return json.loads(strip_bom(path.read_text(encoding='utf-8')))
+
+
+def dump_json(obj: Any) -> str:
+    import json
+    return json.dumps(obj, separators=(',', ':'))
+
+
+def hash_bytes(raw: bytes) -> str:
+    import hashlib
+    normalized = raw if b'\x00' in raw else raw.replace(b'\r\n', b'\n')
+    return f'sha256:{hashlib.sha256(normalized).hexdigest()}'
+
+
+def _is_finite_num_03(v: Any) -> bool:
+    import math
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+
+
+def _qualify_peer_03(s: Any) -> Any:
+    return (s if s.startswith(('when.', 'then.', '/')) else f'then.{s}') if isinstance(s, str) and s.strip() else s
+
+
+def desugar_03_rel(raw: Mapping[str, Any], units: Mapping[str, Any] | None = None, pred_unit: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if k == 'tol' and isinstance(v, Mapping):
+            if 'abs' in v: out['abs_tol'] = v['abs']
+            if 'rel' in v: out['rel_tol'] = v['rel']
+        elif k == 'len' and isinstance(v, Mapping):
+            if 'min' in v: out['min_len'] = v['min']
+            if 'max' in v: out['max_len'] = v['max']
+        elif k == 'keys' and isinstance(v, Mapping):
+            if 'allow' in v: out['allowed_keys'] = v['allow']
+            if 'forbid' in v: out['forbid_keys'] = v['forbid']
+        elif k == 'peer' and isinstance(v, Mapping):
+            if 'le' in v: out['le_field'] = _qualify_peer_03(v['le'])
+            if 'ge' in v: out['ge_field'] = _qualify_peer_03(v['ge'])
+            if 'eq' in v: out['eq_field'] = _qualify_peer_03(v['eq'])
+            if isinstance(v.get('sum'), list): out['sum_fields'] = [_qualify_peer_03(x) for x in v['sum']]
+            if isinstance(v.get('balance'), Mapping):
+                b = v['balance']
+                out['balance_fields'] = {
+                    **({'add': [_qualify_peer_03(x) for x in b['add']]} if isinstance(b.get('add'), list) else {}),
+                    **({'sub': [_qualify_peer_03(x) for x in b['sub']]} if isinstance(b.get('sub'), list) else {}),
+                }
+        elif k == 'series' and isinstance(v, Mapping):
+            out.update(v)
+            if out.get('monotonic') in ('increasing', 'decreasing'):
+                out['monotonic'] = f"strictly_{out['monotonic']}"
+        elif k != 'convert_from':
+            out[k] = v
+    if 'convert_from' in raw:
+        units = units or {}
+        cf = raw['convert_from']
+        matches = [k for k in units if k.startswith(f'{cf}->')]
+        target = pred_unit or raw.get('unit')
+        ratio = 1 if target == cf else units.get(f'{cf}->{target}' if target else (matches[0] if len(matches) == 1 else ''))
+        if not _is_finite_num_03(ratio) or ratio <= 0:
+            raise AssertionError(f'missing unit conversion from {cf} to {target}')
+        scale = lambda v: v * ratio if _is_finite_num_03(v) else v
+        for k in ('eq', 'min', 'max', 'approx', 'abs_tol', 'step_max_delta'):
+            if k in out: out[k] = scale(out[k])
+        for k in ('in', 'not_in'):
+            if isinstance(out.get(k), (list, tuple)): out[k] = [scale(v) for v in out[k]]
+        if 'sum_total' in out:
+            st = out['sum_total']
+            out['sum_total'] = {k: scale(v) for k, v in st.items()} if isinstance(st, Mapping) else scale(st)
+    if 'eq' in out and ('abs_tol' in out or 'rel_tol' in out) and 'balance_fields' not in out and 'sum_fields' not in out:
+        out['approx'] = out.pop('eq')
+    return out
+
+
+def converted_table(view: Mapping[str, Any], side: str, table: dict[str, Any]) -> dict[str, Any]:
+    if not any(isinstance(v, Mapping) and 'convert_from' in v for v in table.values()):
+        return table
+    return {k: desugar_03_rel(v, view.get('units', {}), view.get('schema', {}).get(side, {}).get(k, {}).get('unit'))
+            if isinstance(v, Mapping) and 'convert_from' in v else v for k, v in table.items()}
+

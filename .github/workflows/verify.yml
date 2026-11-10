@@ -207,6 +207,8 @@ jobs:
             assert c['ok'] is False and 'events.invalid' in c['reasons'], c
           inv = json.load(open('schemas/drift-proof-event-0.2.schema.json'))['$defs']['inventorySidecar']
           assert inv['properties']['version']['enum'] == [1, 2] and 'execution_ref' in inv['properties']
+          for k in ('contract', 'profile', 'config', 'proof-event'):
+            assert json.load(open(f'schemas/drift-{k}-0.3.schema.json'))['$schema'].endswith('2020-12/schema')
           PY
 
   verify-macos-arm64:

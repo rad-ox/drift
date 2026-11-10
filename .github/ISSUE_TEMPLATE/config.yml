@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private Security Vulnerability Report
+    url: https://github.com/rad-ox/drift/security/advisories/new
+    about: Do not report security vulnerabilities in public issues. Submit a private advisory per SECURITY.md.
+  - name: Documentation & Support Guide
+    url: https://github.com/rad-ox/drift/blob/main/SUPPORT.md
+    about: Consult GUIDE.md, INSTALL.md, GUARANTEES.md, and built-in drift explain diagnostics before opening an issue.

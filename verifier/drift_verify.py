@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""DRIFT Independent Reference Proof Verifier (MIT License)."""
 import argparse,hashlib,json,math,os,re,sys,tomllib
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from drift_verify_perf import evaluate_contract_budgets,evaluate_contract_mutations_impl,extract_contract_budgets,load_measurement_bundle,load_mutation_events_impl
 from drift_verify_sec import evaluate_contract_formal_impl,evaluate_contract_migration_impl,evaluate_contract_security_impl,extract_contract_formal,load_formal_receipts_impl,load_migration_receipts_impl,load_security_receipts_impl,parse_security_lock_impl,parse_subject_manifest_impl,run_sec_self_test,validate_mutation_manifest_impl
 from drift_verify_sim import evaluate_contract_simulation_impl,load_simulation_receipts_impl
-from drift_verify_ssh import _has_approval_blocker,_is_unanchored_prose_source,apply_openssh_trust_verdicts,evaluate_contract_parity_impl,extract_contract_cutover,load_merged_profile_impl,load_parity_receipts_impl
+from drift_verify_ssh import _has_approval_blocker,_is_unanchored_prose_source,apply_openssh_trust_verdicts,evaluate_contract_parity_impl,extract_contract_cutover,load_merged_profile_impl,load_parity_receipts_impl,verify_contract_03_toml
 from drift_verify_ra import evaluate_contract_ra_bundle,evaluate_detached_signatures_core,extract_contract_risks_and_controls,load_ra_receipts_core,run_ra_self_test
 SAFE_INT = (1 << 53) - 1
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -47,7 +46,7 @@ def canonical_json(obj):
 def dr1_digest(obj): return "dr1:sha256:" + hashlib.sha256(canonical_json(obj).encode("utf-8")).hexdigest()
 def dr1_ref(d):
  if d.startswith("dr1:sha256:"): return "dr1:" + d[11:23]
- for p in ("dr2b:sha256:","dr2a:sha256:"):
+ for p in ("dr2b:sha256:","dr2a:sha256:","dr2r:sha256:","dr2x:sha256:"):
   if d.startswith(p): return p[:5] + d[len(p):len(p)+12]
  return ""
 def digest_matches(ed, fd): return bool(fd) and (ed == fd or ed == dr1_ref(fd))
@@ -109,6 +108,7 @@ def _strip_outside_digest(cases, decs):
    if dm.get("evidence") == "observed" and _is_unanchored_prose_source(str(dm.get("source",""))):dm.pop("source",None)
 def verify_contract_toml(path, profiles_dir):
  raw = tomllib.loads(path.read_text("utf-8"))
+ if raw.get("drift") == "0.3":return verify_contract_03_toml(raw,path,profiles_dir,canonical_json,dr1_ref,_proof_rank,resolve_shadow_roots)
  cid,appr,_ = raw.get("id",path.stem),raw.pop("approval",None),raw.pop("note",None)
  raw_sc = raw.get("scope") if isinstance(raw.get("scope"),dict) else {}
  sc_code,sc_reads,sc_writes = ([str(x) for x in raw_sc.get(k,[]) if isinstance(x,str)] if isinstance(raw_sc.get(k),list) else [] for k in ("code","reads","writes"))
@@ -196,11 +196,7 @@ def load_proof_events(events_paths, area_root=None, target_run_id=""):
    if not has_inv or cls not in c_set or tid not in t_set or tid not in class_latest.get(cls,t_set):gone[ev["contract"]] = gone.get(ev["contract"],0) + 1
    else:events.append(ev)
   if has_inv and snap and t_set and cnt == 0:inc += 1
- sec_recs,sec_errs = load_security_receipts_impl(events_paths,_decode_no_dup_keys)
- form_recs,form_errs = load_formal_receipts_impl(events_paths,_decode_no_dup_keys)
- par_recs,par_errs = load_parity_receipts_impl(events_paths,_decode_no_dup_keys)
- mig_recs,mig_errs = load_migration_receipts_impl(events_paths,_decode_no_dup_keys)
- sim_recs,sim_errs = load_simulation_receipts_impl(events_paths,_decode_no_dup_keys)
+ (sec_recs,sec_errs),(form_recs,form_errs),(par_recs,par_errs),(mig_recs,mig_errs),(sim_recs,sim_errs) = (fn(events_paths,_decode_no_dup_keys) for fn in (load_security_receipts_impl,load_formal_receipts_impl,load_parity_receipts_impl,load_migration_receipts_impl,load_simulation_receipts_impl))
  errs.extend(sec_errs + form_errs + par_errs + mig_errs + sim_errs)
  return events,gone,inc,errs,sec_recs,form_recs,par_recs,mig_recs,shard_subs,(next(iter(snaps)) if all_snap and inc == 0 and events and len(snaps) == 1 else ""),sh_hashes,sorted(snaps),bool(all_snap and shards)
 def _proof_rank(floor): return {"killed": 3, "verified": 2, "bound": 1}.get(floor, 0)
@@ -235,7 +231,7 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
  if phase == "release" and contract.get("rel_blk"):rsn.append("contract.blocked.release")
  if ev_errors or hs_bad:rsn.append("events.invalid")
  if incomplete_shards > 0:rsn.append("shard.incomplete")
- eff_rank = max(_proof_rank(min_proof),_proof_rank(str(pol.get("proof","")) if pol_on else ""),_proof_rank(str(contract.get("profile_proof",""))))
+ eff_rank = max(_proof_rank(min_proof),_proof_rank(str(pol.get("proof","")) if pol_on else ""),_proof_rank(str(contract.get("profile_proof","")))) or 2
  if gone > 0 or incomplete_shards > 0 or not res or any(r["state"] not in (("verified",) if eff_rank >= 2 else ("verified","bound")) for r in res) or (eff_rank >= 3 and not mutations_ok):rsn.append("proof.not_green")
  p_rsn,pend_b,p_sum = evaluate_contract_budgets(contract,phase,perf_bundle,expected_subject,digest_matches,pol)
  s_rsn,s_checks = evaluate_contract_security_impl(contract,sec_receipts or [],pol if pol_on else {},expected_snapshot,digest_matches,expected_subject,allow_exec_reuse and phase != "release",base_contract)
@@ -250,7 +246,7 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
   if r not in rsn:rsn.append(r)
  if phase == "release" and release_attest and (expected_subject or {}).get("has_manifest") and not (expected_subject or {}).get("binary_ref") and "trust.artifact_required" not in rsn:rsn.append("trust.artifact_required")
  out = {"id":cid,"digest":dig,"ref":contract["ref"],"approval":contract["approval"],"ok":not rsn,"reasons":rsn,"ignored":ignored,"superseded":sup,"gone":gone,"results":res,**ra_extra}
- for k,v in (("performance",p_sum),("pending_budgets",pend_b),("pending_formal",pend_f),("security_checks",s_checks),("formal_checks",f_checks),("parity_checks",par_checks),("migration_checks",m_checks),("simulation_checks",sim_checks),("composition_checks",comp_checks)):
+ for k,v in (("assurance_digest",contract.get("assurance_digest")),("assurance_ref",contract.get("assurance_ref")),("performance",p_sum),("pending_budgets",pend_b),("pending_formal",pend_f),("security_checks",s_checks),("formal_checks",f_checks),("parity_checks",par_checks),("migration_checks",m_checks),("simulation_checks",sim_checks),("composition_checks",comp_checks)):
   if v:out[k] = v
  return out
 def main(argv):
@@ -263,7 +259,7 @@ def main(argv):
  ap.add_argument("--changed",action="append",default=[])
  for fl in ("--changed-none","--json"):ap.add_argument(fl,action="store_true")
  for fl in ("--subject-artifact","--subject-tree","--run-id","--verify-time","--phase"):ap.add_argument(fl,default="")
- ap.add_argument("--min-proof",choices=("bound","verified","killed"),default="verified")
+ ap.add_argument("--min-proof",choices=("bound","verified","killed"),default="")
  a = ap.parse_args(argv)
  from drift_shadow_junit import lookup_registered_shadow_py
  ex_sd = str(a.state_dir) if a.state_dir else ""

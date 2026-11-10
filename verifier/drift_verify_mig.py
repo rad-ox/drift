@@ -149,7 +149,7 @@ def run_ra_self_test_impl(ck: dict[str, Any], digest_matches_fn: Any) -> None:
   e_rec = {"schema": "drift.evaluation-receipt/1", "contract": "svc", "digest": ck["digest"], "evaluation_id": "e1", "subject_ref": h1, "config_ref": h1, "corpus_ref": h1, "protocol_ref": h1, "preprocessing_ref": h1, "reference_labels_ref": h1, "criteria_ref": h1, "criteria": {"min_metrics": {"sens": 0.90}, "max_metrics": {}, "required_subgroups": ["pediatric"]}, "aggregate": {"sample_size": 500, "metrics": {"sens": 0.96}, "ci_lower": {"sens": 0.94}, "ci_upper": {"sens": 0.98}}, "subgroups": [{"id": "pediatric", "sample_size": 40, "min_sample_size": 30, "metrics": {"sens": 0.82}, "ci_lower": {"sens": 0.75}, "ci_upper": {"sens": 0.88}, "outcome": "supported"}], "validity_context": vc1, "archival": ac1, "outcome": "supported"}
   assert "evaluation.subgroup_violated" in evaluate_contract_evaluations_core(c_ra, [e_rec], h1, digest_matches_fn)[0]
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-DIGEST_RE = re.compile(r"^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
+DIGEST_RE = re.compile(r"^(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
 THEN_MUT_OPS = frozenset(("negate", "add-one", "minus-one", "set-one", "multiply-two", "divide-two", "append-tilde", "drop-last", "seed-array", "swap-peer-then", "zero-sum-shear", "drop-forbid-key", "pick-forbidden-value", "break-monotonicity", "skew-sum-total", "exceed-step-delta", "shift-approx-target", "flip-balance-sign"))
 WHEN_MUT_OPS = frozenset(("swap-case-when", "perturb-case-when"))
 def validate_mutation_manifest_core(text: str, decode_fn: Any) -> dict[str, Any]:
@@ -189,6 +189,7 @@ def run_sec_self_test_core(ck: dict[str, Any], digest_matches_fn: Any, eval_sec_
     for fn_n, u_c in (("c1.toml", 'concepts = ["orders.c"]\n'), ("c2.toml", "")):
       (tp / fn_n).write_text(f'drift = "0.2"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
     assert _dv.verify_contract_toml(tp / "c1.toml", tp)["digest"] == _dv.verify_contract_toml(tp / "c2.toml", tp)["digest"]
+  from drift_verify_03 import run_03_self_test; run_03_self_test(_dv)
 def parse_security_lock_core(text: str, decode_fn: Any, canon_fn: Any, sec_str_fn: Any, sec_cats: Any) -> dict[str, Any]:
   import hashlib
   doc = decode_fn(text)
@@ -214,7 +215,7 @@ def classify_sec_reproducer_core(repro: Any, raw_cases: dict[str, Any], active_c
     if wk not in wm: return "draft_case_required"
     av = wm[wk]
     if isinstance(wv, dict):
-      if ("in" in wv and av not in wv["in"]) or ("not_in" in wv and av in wv["not_in"]) or ("min" in wv and (not isinstance(av, int) or isinstance(av, bool) or av < wv["min"])) or ("max" in wv and (not isinstance(av, int) or isinstance(av, bool) or av > wv["max"])):
+      if ("eq" in wv and av != wv["eq"]) or ("in" in wv and av not in wv["in"]) or ("not_in" in wv and av in wv["not_in"]) or ("min" in wv and (not isinstance(av, int) or isinstance(av, bool) or av < wv["min"])) or ("max" in wv and (not isinstance(av, int) or isinstance(av, bool) or av > wv["max"])):
         return "draft_case_required"
     elif av != wv: return "draft_case_required"
   return "bound_cex"

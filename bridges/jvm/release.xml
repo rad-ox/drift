@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The artifacts published to Maven Central, in one deployment: see PUBLISHING.md.
+     The reactor itself is not published. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.rad-ox</groupId>
+  <artifactId>drift-release</artifactId>
+  <version>0.5.1</version>
+  <packaging>pom</packaging>
+  <name>DRIFT release reactor</name>
+
+  <properties>
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
+
+  <modules>
+    <module>drift-junit</module>
+    <module>drift-maven-plugin</module>
+    <module>drift-cli</module>
+  </modules>
+</project>

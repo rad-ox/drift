@@ -16,7 +16,7 @@
 
 namespace drift {
 
-inline constexpr const char* VERSION = "drift.cpp@0.5.0";
+inline constexpr const char* VERSION = "drift.cpp@0.5.1";
 inline constexpr const char* BRIDGE_RUNTIME_BASELINE = "cpp-20";
 
 inline const std::vector<std::string>& capabilities() {
@@ -33,7 +33,7 @@ inline const std::vector<std::string>& capabilities() {
 }
 
 inline std::string bridgeCapabilitiesJson() {
-    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.5.0","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
+    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.5.1","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
 }
 
 inline void requireCapabilities(const std::vector<std::string>& required) {
@@ -212,10 +212,14 @@ inline void emitProofShard(
     const std::string& inputFile,
     const std::string& inputHash) {
     {
+        const bool is03 = digest.rfind("dr2b:", 0) == 0;
         std::ofstream ef(eventsPath, std::ios::trunc);
-        ef << "{\"cases\":[\"" << caseId << "\"],\"contract\":\"" << contractId
+        ef << (is03 ? "{\"capabilities\":[\"rel-keys-guard/1\",\"rel-series/1\",\"rel-tol/1\"],\"cases\":[\"" : "{\"cases\":[\"")
+           << caseId << "\"],\"contract\":\"" << contractId
            << "\",\"digest\":\"" << digest << "\",\"level\":\"unit\",\"outcome\":\"passed\",\"read\":["
-           << (verified ? ("\"" + caseId + "\"") : "") << "],\"test\":\"" << testId << "\"}\n";
+           << (verified ? ("\"" + caseId + "\"") : "") << "]"
+           << (is03 ? ",\"schema\":\"0.3\"" : "")
+           << ",\"test\":\"" << testId << "\"}\n";
     }
     std::string cls = testId.substr(0, testId.find('#'));
     {

@@ -329,10 +329,10 @@ try {
                         foreach ($ext in @('jar', 'pom')) {
                             $file = Join @($path, "drift-junit-$v.$ext")
                             if (Test-Path -LiteralPath $file -PathType Leaf) {
-                                Remove-Safely $file (Join @('drift', 'drift-junit', $v, (Split-Path -Leaf $file)))
+                                Remove-Safely $file (Join @('io', 'github', 'rad-ox', 'drift-junit', $v, (Split-Path -Leaf $file)))
                             }
                         }
-                        $parents = @($path, (Split-Path $path), (Split-Path (Split-Path $path)))
+                        $parents = @($path, (Split-Path $path), (Split-Path (Split-Path $path)), (Split-Path (Split-Path (Split-Path $path))), (Split-Path (Split-Path (Split-Path (Split-Path $path)))))
                         foreach ($up in $parents) {
                             if (-not $DryRun -and (Test-Path -LiteralPath $up -PathType Container) -and
                                 -not (Get-ChildItem -LiteralPath $up -Force | Select-Object -First 1)) {
@@ -347,9 +347,9 @@ try {
                         if ($a -notin @('drift-junit', 'drift-maven-plugin') -or $leaf -notin @("$a-$v.jar", "$a-$v.pom")) {
                             Stop-Install "Refusing to remove unexpected Maven artifact $path" "Rimozione dell'artefatto Maven inatteso $path rifiutata"
                         }
-                        Remove-Safely $path (Join @('drift', $a, $v, $leaf))
-                        $parents = @((Split-Path $path), (Split-Path (Split-Path $path)), (Split-Path (Split-Path (Split-Path $path))))
-                        foreach ($up in $parents) {
+                        Remove-Safely $path (Join @('io', 'github', 'rad-ox', $a, $v, $leaf))
+                        $p1 = Split-Path $path; $p2 = Split-Path $p1; $p3 = Split-Path $p2; $p4 = Split-Path $p3; $p5 = Split-Path $p4
+                        foreach ($up in @($p1, $p2, $p3, $p4, $p5)) {
                             if (-not $DryRun -and (Test-Path -LiteralPath $up -PathType Container) -and
                                 -not (Get-ChildItem -LiteralPath $up -Force | Select-Object -First 1)) {
                                 Remove-Item -LiteralPath $up -Force
@@ -432,7 +432,7 @@ try {
             }
         }
     }
-    $mavenDir = Join @($MavenRepo, 'drift', 'drift-junit', $version)
+    $mavenDir = Join @($MavenRepo, 'io', 'github', 'rad-ox', 'drift-junit', $version)
     # Maven files of this version; only owned ones are replaced and recorded,
     # an identical file that was already there stays the user's.
     $mavenFiles = @(foreach ($a in @('drift-junit', 'drift-maven-plugin')) {
@@ -440,8 +440,8 @@ try {
                 $src = (Join @($here, 'maven', "$a-$version.$ext"))
                 [pscustomobject]@{
                     Artifact   = $a
-                    Dir        = (Join @($MavenRepo, 'drift', $a, $version))
-                    Path       = (Join @($MavenRepo, 'drift', $a, $version, "$a-$version.$ext"))
+                    Dir        = (Join @($MavenRepo, 'io', 'github', 'rad-ox', $a, $version))
+                    Path       = (Join @($MavenRepo, 'io', 'github', 'rad-ox', $a, $version, "$a-$version.$ext"))
                     Source     = $src
                     SourceHash = $sourceHashes[$src]
                     Exists     = $false
@@ -772,7 +772,7 @@ try {
         foreach ($item in $mavenFiles) {
             if (-not $item.Exists) { $item.Owned = $true }
         }
-        Invoke-Step "copy drift-junit and drift-maven-plugin $version to $(Join @($MavenRepo, 'drift'))" {
+        Invoke-Step "copy drift-junit and drift-maven-plugin $version to $(Join @($MavenRepo, 'io', 'github', 'rad-ox'))" {
             foreach ($item in $mavenFiles) {
                 New-Item -ItemType Directory -Force -Path $item.Dir | Out-Null
                 if ((-not $item.Exists) -or ($item.Owned -and $item.Different)) {
@@ -783,11 +783,11 @@ try {
                 }
             }
         }
-        Ok "JUnit bridge drift:drift-junit:$version -> $(Show-Path $mavenDir)" `
-            "bridge JUnit drift:drift-junit:$version -> $(Show-Path $mavenDir)"
-        $pluginDir = Join @($MavenRepo, 'drift', 'drift-maven-plugin', $version)
-        Ok "Maven plugin drift:drift-maven-plugin:$version -> $(Show-Path $pluginDir)" `
-            "plugin Maven drift:drift-maven-plugin:$version -> $(Show-Path $pluginDir)"
+        Ok "JUnit bridge io.github.rad-ox:drift-junit:$version -> $(Show-Path $mavenDir)" `
+            "bridge JUnit io.github.rad-ox:drift-junit:$version -> $(Show-Path $mavenDir)"
+        $pluginDir = Join @($MavenRepo, 'io', 'github', 'rad-ox', 'drift-maven-plugin', $version)
+        Ok "Maven plugin io.github.rad-ox:drift-maven-plugin:$version -> $(Show-Path $pluginDir)" `
+            "plugin Maven io.github.rad-ox:drift-maven-plugin:$version -> $(Show-Path $pluginDir)"
     }
 
     $pathAdded = $false

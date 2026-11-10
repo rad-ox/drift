@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.5.0";
-pub const BRIDGE_VERSION: &str = "0.5.0";
+pub const ADAPTER_ID: &str = "drift_rust@0.5.1";
+pub const BRIDGE_VERSION: &str = "0.5.1";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",
@@ -389,17 +389,37 @@ fn resolve_env_map() -> Result<BTreeMap<String, String>, TestError> {
 
 impl DriftContext {
     pub fn check_projection(&mut self, case_id: &str, payload_json: &str) -> Result<(), TestError> {
-        let then_map = {
+        let (when_map, then_map) = {
             let cm = self.case_map(case_id)?;
-            cm.get("then")
+            let wm = cm.get("when").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let tm = cm
+                .get("then")
                 .and_then(|v| v.as_object())
                 .cloned()
                 .ok_or_else(|| {
                     TestError::assertion(format!("case '{}' has no then table", case_id))
-                })?
+                })?;
+            (wm, tm)
         };
-        let doc = parse_json(payload_json)
+        let mut doc = parse_json(payload_json)
             .map_err(|e| TestError::assertion(format!("payload is not valid JSON: {}", e)))?;
+        if let JsonValue::Object(ref mut obj) = doc {
+            if !obj.contains_key("when") && !obj.contains_key("before") {
+                let mut w_env = BTreeMap::new();
+                for (wk, wv) in &when_map {
+                    if let Some(wm) = wv.as_object() {
+                        if let Some(eq_v) = wm.get("eq") {
+                            if !wm.contains_key("peer") && !wm.contains_key("eq_field") {
+                                w_env.insert(wk.clone(), eq_v.clone());
+                            }
+                        }
+                    } else {
+                        w_env.insert(wk.clone(), wv.clone());
+                    }
+                }
+                obj.insert("_when_env".to_string(), JsonValue::Object(w_env));
+            }
+        }
         let is_ui_obs = doc
             .as_object()
             .and_then(|o| o.get("schema"))
@@ -448,6 +468,14 @@ impl DriftContext {
             });
         let proj_then = extract_then_projections(&self.view);
         for (pred, expected) in &then_map {
+            let lowered;
+            let expected = if let Some(raw) = expected.as_object().filter(|_| is_relational_table(expected)) {
+                lowered = JsonValue::Object(checks::normalize_constraint_03(raw, Some(&self.view), pred)
+                    .map_err(TestError::assertion)?);
+                &lowered
+            } else {
+                expected
+            };
             self.mark_read(case_id, pred);
             let default_ptr = format!("/{}", escape_pointer(pred));
             let ptr = proj_then.get(pred).unwrap_or(&default_ptr);

@@ -38,11 +38,12 @@ const REL_KEYS: &[&str] = &[
     "convert_from",
 ];
 
-fn strip_side_03(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix("when.").or_else(|| s.strip_prefix("then.")) {
-        rest.to_string()
+fn qualify_peer_03(s: &str) -> String {
+    let t = s.trim();
+    if t.is_empty() || t.starts_with("when.") || t.starts_with("then.") || t.starts_with('/') {
+        t.to_string()
     } else {
-        s.to_string()
+        format!("then.{}", t)
     }
 }
 
@@ -84,13 +85,13 @@ fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonVal
                 if let Some(m) = v.as_object() {
                     for pk in ["le", "ge", "eq"] {
                         if let Some(ps) = m.get(pk).and_then(|x| x.as_str()) {
-                            out.insert(format!("{}_field", pk), JsonValue::Str(strip_side_03(ps)));
+                            out.insert(format!("{}_field", pk), JsonValue::Str(qualify_peer_03(ps)));
                         }
                     }
                     if let Some(arr) = m.get("sum").and_then(|x| x.as_array()) {
                         let sfs: Vec<JsonValue> = arr
                             .iter()
-                            .filter_map(|x| x.as_str().map(|s| JsonValue::Str(strip_side_03(s))))
+                            .filter_map(|x| x.as_str().map(|s| JsonValue::Str(qualify_peer_03(s))))
                             .collect();
                         out.insert("sum_fields".to_string(), JsonValue::Array(sfs));
                     }
@@ -100,7 +101,7 @@ fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonVal
                             if let Some(arr) = bm.get(side).and_then(|x| x.as_array()) {
                                 let items: Vec<JsonValue> = arr
                                     .iter()
-                                    .filter_map(|x| x.as_str().map(|s| JsonValue::Str(strip_side_03(s))))
+                                    .filter_map(|x| x.as_str().map(|s| JsonValue::Str(qualify_peer_03(s))))
                                     .collect();
                                 nb.insert(side.to_string(), JsonValue::Array(items));
                             }
@@ -141,6 +142,10 @@ fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonVal
     }
     out
 }
+
+#[path = "constraint_units.rs"]
+mod constraint_units;
+pub(crate) use constraint_units::normalize_constraint_03;
 
 pub fn escape_pointer(seg: &str) -> String {
     seg.replace('~', "~0").replace('/', "~1")
@@ -257,17 +262,40 @@ pub fn is_relational_table(v: &JsonValue) -> bool {
     !map.is_empty() && map.keys().all(|k| REL_KEYS.contains(&k.as_str()))
 }
 
+#[cfg(test)]
+#[path = "constraint_parity_test.rs"]
+mod constraint_parity_tests;
+
 pub(crate) fn resolve_peer_target<'a>(
     doc: &'a JsonValue,
     proj_then: &BTreeMap<String, String>,
     reference: &str,
 ) -> Option<&'a JsonValue> {
-    let ptr = if reference.starts_with('/') {
-        reference.to_string()
-    } else if let Some(mapped) = proj_then.get(reference) {
+    if let Some(wk) = reference.strip_prefix("when.") {
+        if wk.is_empty() {
+            return None;
+        }
+        let obj = doc.as_object()?;
+        if let Some(v) = obj.get(reference) {
+            return Some(v);
+        }
+        for sub_k in ["when", "before", "_when_env"] {
+            if let Some(sub) = obj.get(sub_k).and_then(|v| v.as_object()) {
+                return sub.get(wk);
+            }
+        }
+        return None;
+    }
+    let eff_ref = reference.strip_prefix("then.").unwrap_or(reference);
+    if eff_ref.is_empty() {
+        return None;
+    }
+    let ptr = if eff_ref.starts_with('/') {
+        eff_ref.to_string()
+    } else if let Some(mapped) = proj_then.get(eff_ref) {
         mapped.clone()
     } else {
-        format!("/{}", escape_pointer(reference))
+        format!("/{}", escape_pointer(eff_ref))
     };
     resolve_pointer(doc, &ptr)
 }
@@ -279,7 +307,7 @@ pub fn check_relational_leaf(
     proj_then: &BTreeMap<String, String>,
     pred: &str,
 ) -> Result<(), String> {
-    let rel = desugar_03_rel(raw_rel);
+    let rel = normalize_constraint_03(raw_rel, doc.as_object(), pred)?;
     if let Some(eq_v) = rel.get("eq") {
         if !values_equal(actual, eq_v) {
             return Err(format!(
@@ -304,7 +332,7 @@ pub fn check_relational_leaf(
             let allowed: std::collections::BTreeSet<&str> =
                 arr.iter().filter_map(|v| v.as_str()).collect();
             for (act_k, act_v) in act_obj {
-                if act_k == "_frame" && act_v.as_object().is_some() {
+                if (act_k == "_frame" || act_k == "_when_env") && act_v.as_object().is_some() {
                     continue;
                 }
                 if !allowed.contains(act_k.as_str()) {
@@ -331,7 +359,6 @@ pub fn check_relational_leaf(
                 return Err(format!("{}: invalid forbid_keys", pred));
             }
         }
-        return Ok(());
     }
     if let Some(ni_v) = rel.get("not_in") {
         if matches!(actual, JsonValue::Null) {
@@ -384,6 +411,7 @@ pub fn check_relational_leaf(
         let al = match actual {
             JsonValue::Str(s) => s.chars().count(),
             JsonValue::Array(a) => a.len(),
+            JsonValue::Object(m) => m.len(),
             _ => return Err(format!("{}: expected string or array for min_len", pred)),
         };
         if al < ml {
@@ -397,6 +425,7 @@ pub fn check_relational_leaf(
         let al = match actual {
             JsonValue::Str(s) => s.chars().count(),
             JsonValue::Array(a) => a.len(),
+            JsonValue::Object(m) => m.len(),
             _ => return Err(format!("{}: expected string or array for max_len", pred)),
         };
         if al > xl {
@@ -404,16 +433,22 @@ pub fn check_relational_leaf(
         }
     }
     if let Some(ne_v) = rel.get("non_empty") {
-        if ne_v.as_bool() == Some(true) {
-            let empty = match actual {
-                JsonValue::Str(s) => s.is_empty(),
-                JsonValue::Array(a) => a.is_empty(),
-                JsonValue::Object(m) => m.is_empty(),
-                _ => true,
-            };
-            if empty {
-                return Err(format!("{}: expected non_empty value", pred));
+        let want = ne_v
+            .as_bool()
+            .ok_or_else(|| format!("{}: invalid non_empty", pred))?;
+        let empty = match actual {
+            JsonValue::Str(s) => s.is_empty(),
+            JsonValue::Array(a) => a.is_empty(),
+            JsonValue::Object(m) => m.is_empty(),
+            _ => {
+                return Err(format!(
+                    "{}: expected string, array or map for non_empty",
+                    pred
+                ));
             }
+        };
+        if empty == want {
+            return Err(format!("{}: non_empty={} violated", pred, want));
         }
     }
     if let Some(in_v) = rel.get("in") {
@@ -431,15 +466,19 @@ pub fn check_relational_leaf(
     if let Some(c_v) = rel.get("contains") {
         match actual {
             JsonValue::Str(s) => {
-                let needle = c_v
-                    .as_str()
-                    .ok_or_else(|| format!("{}: contains on string requires string", pred))?;
-                if !s.contains(needle) {
-                    return Err(format!("{}: '{}' does not contain '{}'", pred, s, needle));
+                let reqs = c_v.as_array().unwrap_or_else(|| std::slice::from_ref(c_v));
+                for req in reqs {
+                    if !req.as_str().is_some_and(|needle| s.contains(needle)) {
+                        return Err(format!("{}: string missing required substring", pred));
+                    }
                 }
             }
             JsonValue::Array(arr) => {
-                if !arr.iter().any(|item| values_equal(item, c_v)) {
+                let reqs = c_v.as_array().unwrap_or_else(|| std::slice::from_ref(c_v));
+                if !reqs
+                    .iter()
+                    .all(|req| arr.iter().any(|item| values_equal(item, req)))
+                {
                     return Err(format!("{}: array does not contain expected item", pred));
                 }
             }

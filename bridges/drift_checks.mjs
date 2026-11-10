@@ -7,13 +7,14 @@ import {
   observeUiSequence,
 } from './drift_ui.mjs';
 import { collectPlaywrightSequence, collectUiSequence } from './drift_ui_collector.mjs';
-import { CAPS_03, desugar03Rel, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain } from './drift_ui_recovery.mjs';
+import { buildWhenEnv, CAPS_03, desugar03Rel, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, resolvePeerValue, unwrap03Eq } from './drift_ui_recovery.mjs';
 import { captureSurfaceDom, checkSurfaceKey } from './drift_ui_surface.mjs';
 export {
   adaptComposeSemantics,
   adaptPlaywrightSurface,
   adaptUiaSnapshot,
   bindUiEnvironment,
+  buildWhenEnv,
   CAPS_03,
   collectPlaywrightSequence,
   collectUiSequence,
@@ -22,8 +23,10 @@ export {
   expandDomain,
   mergePriorInventory,
   observeUiSequence,
+  resolvePeerValue,
   resolveSelectedFiles,
   runDriftCli,
+  unwrap03Eq,
 };
 
 // Projection, relational domain, and UI view checks for the DRIFT JS bridge.
@@ -157,11 +160,12 @@ export function applyMutation(tbl, contractId, caseId, ptr, after, sec = 'then',
   return replace(tbl, 0);
 }
 
-export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payload, proj, mutationOverride) {
+export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payload, proj, mutationOverride, whenEnv = null, contract = null) {
   if (!isObj(rawExp)) return false;
   const ks = Object.keys(rawExp);
   if (!ks.length || !ks.every((rk) => REL_KEYS.has(rk))) return false;
-  const exp = desugar03Rel(rawExp);
+  const context = contract ?? payload;
+  const exp = desugar03Rel(rawExp, context?.units ?? {}, context?.schema?.then?.[key]?.unit);
   const pfx = `${contractId}.${caseId}`;
   if ('eq' in exp) {
     if (!valuesEqual(act, exp.eq)) {
@@ -169,13 +173,8 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
     }
     if (Object.keys(exp).length === 1) return true;
   }
-  const peerOf = (ref) => {
-    if (!isStr(ref) || !ref.trim()) return { found: false };
-    if (ref.startsWith('/')) return readPointer(payload, ref);
-    if (ref in proj) return readPointer(payload, proj[ref]);
-    return isObj(payload) && ref in payload ? { found: true, value: payload[ref] } : { found: false };
-  };
-  const actLen = (isStr(act) || Array.isArray(act)) ? act.length : (isObj(act) ? Object.keys(act).length : -1);
+  const peerOf = (ref) => resolvePeerValue(ref, payload, proj, whenEnv, readPointer);
+  const actLen = isStr(act) ? Array.from(act).length : (Array.isArray(act) ? act.length : (isObj(act) ? Object.keys(act).length : -1));
   const isSeqTuning = 'monotonic' in exp || 'step_max_delta' in exp || 'sum_total' in exp;
   const tol = ('abs_tol' in exp && isFinNum(Number(exp.abs_tol)) && Number(exp.abs_tol) >= 0) ? Number(exp.abs_tol) : 1e-9;
   if (!isSeqTuning) {
@@ -241,6 +240,13 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
       throwAssertionError(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in`);
     }
   }
+  if ('allowed_keys' in exp) {
+    if (!isObj(act) || !Array.isArray(exp.allowed_keys)) throwAssertionError(`${pfx}: expected object and allowed_keys list for then.${key}`);
+    for (const k of Object.keys(act)) {
+      if (act === payload && k === '_frame' && isObj(act[k])) continue;
+      if (!exp.allowed_keys.includes(k)) throwAssertionError(`${pfx}: unexpected key "${k}" on then.${key}`);
+    }
+  }
   if ('forbid_keys' in exp) {
     if (!isObj(act)) throwAssertionError(`${pfx}: expected object for then.${key}.forbid_keys`);
     const hasKeyRec = (v, fk, root = true) => Array.isArray(v)
@@ -271,7 +277,10 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
     }
   }
   if ('contains' in exp) {
-    if (!Array.isArray(act) || !Array.isArray(exp.contains) || !exp.contains.every((req) => act.some((x) => valuesEqual(x, req)))) {
+    const reqs = Array.isArray(exp.contains) ? exp.contains : [exp.contains];
+    const ok = isStr(act) ? reqs.every((req) => isStr(req) && act.includes(req))
+      : Array.isArray(act) && reqs.every((req) => act.some((x) => valuesEqual(x, req)));
+    if (!ok) {
       throwAssertionError(`${pfx}: expected then.${key} to contain ${JSON.stringify(exp.contains)}, got ${JSON.stringify(act)}`);
     }
   }
@@ -320,9 +329,10 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
   return true;
 }
 
-export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, mutationOverride, withAt, missMsg) {
+export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, mutationOverride, withAt, missMsg, whenEnv = null, contract = null) {
   const pfx = `${contractId}.${caseId}`;
   const isUiObs = isObj(payload) && (payload.schema === 'drift.ui-observation/1' || isObj(payload.evidence));
+  const tPay = isObj(payload) && isObj(payload.then) && !(key in payload) ? payload.then : payload;
   const bumpUnverifiable = () => {
     if (isObj(payload?.evidence) && typeof payload.evidence.unverifiable_checks === 'number') {
       payload.evidence.unverifiable_checks += 1;
@@ -333,7 +343,8 @@ export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, 
   };
   if (key in proj) {
     const ptr = proj[key];
-    const res = readPointer(payload, ptr);
+    let res = readPointer(tPay, ptr);
+    if (!res.found && tPay !== payload) res = readPointer(payload, ptr);
     if (!res.found) {
       bumpUnverifiable();
       throwAssertionError(`${pfx}: missing projected path "${ptr}" for then.${key}`);
@@ -342,20 +353,20 @@ export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, 
       bumpUnverifiable();
       throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value at "${ptr}"`);
     }
-    if (checkRelationalLeaf(contractId, caseId, key, exp, res.value, payload, proj, mutationOverride)) return;
+    if (checkRelationalLeaf(contractId, caseId, key, exp, res.value, payload, proj, mutationOverride, whenEnv, contract)) return;
     if (!valuesEqual(res.value, exp)) {
       throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}${withAt ? ` at "${ptr}"` : ''}, got ${JSON.stringify(res.value)}`);
     }
     return;
   }
-  if (isObj(payload) && key in payload) {
-    if (isUiObs && exp !== null && (payload[key] === null || payload[key] === undefined)) {
+  if (isObj(tPay) && key in tPay) {
+    if (isUiObs && exp !== null && (tPay[key] === null || tPay[key] === undefined)) {
       bumpUnverifiable();
       throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value`);
     }
-    if (checkRelationalLeaf(contractId, caseId, key, exp, payload[key], payload, proj, mutationOverride)) return;
-    if (!valuesEqual(payload[key], exp)) {
-      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(payload[key])}`);
+    if (checkRelationalLeaf(contractId, caseId, key, exp, tPay[key], payload, proj, mutationOverride, whenEnv, contract)) return;
+    if (!valuesEqual(tPay[key], exp)) {
+      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(tPay[key])}`);
     }
     return;
   }
@@ -390,7 +401,7 @@ export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, e
   }
 }
 
-export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj) {
+export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj, whenEnv = null) {
   const v = isObj(view) ? view : {};
   const pfx = `${contractId}.${caseId}`;
   if (
@@ -412,7 +423,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
   ];
   for (const [k, exp] of ordered) {
     if (checks && typeof checks[k] === 'function') {
-      await invokeVerifiedCallback(checks[k], contractId, caseId, k, exp, v);
+      await invokeVerifiedCallback(checks[k], contractId, caseId, k, unwrap03Eq(exp), v);
       seen.add(k);
       continue;
     }
@@ -473,7 +484,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
       }
     } else {
       if (proj === null) proj = getProj();
-      checkProjectedLeaf(contractId, caseId, k, exp, v, proj, mutationOverride, false, 'no check for');
+      checkProjectedLeaf(contractId, caseId, k, exp, v, proj, mutationOverride, false, 'no check for', whenEnv);
     }
     seen.add(k);
   }

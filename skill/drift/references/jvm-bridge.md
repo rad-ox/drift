@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `drift:drift-junit:0.5.0` and
-`drift:drift-maven-plugin:0.5.0` (from `maven/` in the release package) into
+The release installer puts `io.github.rad-ox:drift-junit:0.5.1` and
+`io.github.rad-ox:drift-maven-plugin:0.5.1` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -24,9 +24,9 @@ id, and reruns then collapse them.
 
 ```xml
 <dependency>
-  <groupId>drift</groupId>
+  <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -35,9 +35,9 @@ id, and reruns then collapse them.
 
 ```xml
 <plugin>
-  <groupId>drift</groupId>
+  <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <executions>
     <execution>
       <goals>
@@ -81,7 +81,7 @@ id, and reruns then collapse them.
   JVMs and local/remote runs never contend on one file and sort in chronological
   order. The inventory records tagged methods before the selection filter runs.
 - The plugin runs `<cli>` (`-Ddrift.cli=PATH`) when set, else the
-  `drift:drift-cli` artifact for the platform when it resolves, else `drift`
+  `io.github.rad-ox:drift-cli` artifact for the platform when it resolves, else `drift`
   on PATH, and stops when its version differs from the plugin's.
 - `-Ddrift.skip`, `-DskipTests` and `-Dmaven.test.skip` skip both goals;
   `<area>` and `<output>` move `.drift` and `target/drift`.
@@ -180,13 +180,13 @@ for its `*.jsonl` files.
 
 ### Scala 3 / MUnit and `sbt` (`build.sbt`)
 
-Resolve `drift:drift-junit` from the local Maven repository in `build.sbt` and
+Resolve `io.github.rad-ox:drift-junit` from the local Maven repository in `build.sbt` and
 pass `drift.resolved` and `drift.events` to the forked test JVM:
 
 ```scala
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.5.0" % Test
+libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.5.1" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -366,7 +366,7 @@ file digests in `.meta.json` `inputs` alongside optional `DRIFT_ENV` /
 
 ## Legacy Monolith Bridges (`bridges/legacy/junit4/DriftJUnit4.java`)
 
-Main JVM support (`drift:drift-junit`) targets LTS Java 25 (`--release 25`), Scala 3.9 LTS, and JUnit 5 Platform. For legacy Java 6–8 / JUnit 4 monoliths without JUnit 5 on the classpath, use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`bridges/legacy/junit4/DriftJUnit4.java` / `~/.local/share/drift/bridges/legacy/junit4/DriftJUnit4.java`):
+Main JVM support (`io.github.rad-ox:drift-junit`) targets LTS Java 25 (`--release 25`), Scala 3.9 LTS, and JUnit 5 Platform. For legacy Java 6–8 / JUnit 4 monoliths without JUnit 5 on the classpath, use the dedicated legacy bridge `drift.junit4.DriftJUnit4` (`bridges/legacy/junit4/DriftJUnit4.java` / `~/.local/share/drift/bridges/legacy/junit4/DriftJUnit4.java`):
 - `@DriftJUnit4.Case(contract = "<id>", value = {"<case>"}, level = "unit")` tags JUnit 4 methods.
 - `DriftJUnit4.Listener` records `.meta.json` inventories and `bound` proof events (`passed`, `failed`, `skipped` on assumption failure, `disabled` on `@Ignore`).
 - `DriftJUnit4.verify(contract, caseId, observations, frames)` checks projections, relational bounds, and forbidden write frames to promote a case to `verified`, and `DriftJUnit4.replayCounterexamples(...)` replays `*.cex.json` regression fixtures.

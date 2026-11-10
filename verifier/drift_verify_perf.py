@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 MAX_MEASUREMENT_BYTES = 4 * 1024 * 1024
-ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
+ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2r):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
 SNAPSHOT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 CONF_METHODS = frozenset(("bootstrap_bca", "student_t", "wilcoxon", "binomial_exact", "direct_observed"))

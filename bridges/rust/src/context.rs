@@ -476,9 +476,19 @@ impl DriftContext {
             .get("when")
             .and_then(|v| v.as_object())
             .ok_or_else(|| TestError::assertion(format!("case '{}' has no when table", case_id)))?;
-        w.get(key).ok_or_else(|| {
+        let val = w.get(key).ok_or_else(|| {
             TestError::assertion(format!("case '{}' has no when.'{}'", case_id, key))
-        })
+        })?;
+        if self.view.get("drift").and_then(|v| v.as_str()) == Some("0.3") {
+            if let Some(m) = val.as_object() {
+                if m.len() == 1 {
+                    if let Some(eq_v) = m.get("eq") {
+                        return Ok(eq_v);
+                    }
+                }
+            }
+        }
+        Ok(val)
     }
 
     pub fn when_str(&self, case_id: &str, key: &str) -> Result<String, TestError> {
@@ -501,14 +511,31 @@ impl DriftContext {
     }
 
     pub fn then_any(&mut self, case_id: &str, key: &str) -> Result<JsonValue, TestError> {
+        let is_03 = self.view.get("drift").and_then(|v| v.as_str()) == Some("0.3");
         let val = {
             let cm = self.case_map(case_id)?;
             let t = cm.get("then").and_then(|v| v.as_object()).ok_or_else(|| {
                 TestError::assertion(format!("case '{}' has no then table", case_id))
             })?;
-            t.get(key)
-                .cloned()
-                .ok_or_else(|| TestError::assertion(format!("case '{}' has no then.'{}'", case_id, key)))?
+            let raw = t.get(key)
+                .ok_or_else(|| TestError::assertion(format!("case '{}' has no then.'{}'", case_id, key)))?;
+            if is_03 {
+                if let Some(m) = raw.as_object() {
+                    if m.len() == 1 {
+                        if let Some(eq_v) = m.get("eq") {
+                            eq_v.clone()
+                        } else {
+                            raw.clone()
+                        }
+                    } else {
+                        raw.clone()
+                    }
+                } else {
+                    raw.clone()
+                }
+            } else {
+                raw.clone()
+            }
         };
         self.mark_read(case_id, key);
         Ok(val)

@@ -17,19 +17,23 @@ const relPeerRank = (v) => (!isRelationalMap(v) ? 0 : (Array.isArray(v.sum_field
 function buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections) {
   const thenMap = tightenThenMapBySumResiduals(whenMap, rawThenMap, whenProjections, thenProjections);
   const idx = new Map();
-  for (const [wk, wv] of Object.entries(whenMap || {})) {
+  for (const [wk, rawWv] of Object.entries(whenMap || {})) {
+    const wv = isObj(rawWv) && Object.keys(rawWv).length === 1 && 'eq' in rawWv ? rawWv.eq : rawWv;
     if (isRelationalMap(wv)) continue;
     idx.set(wk, wv);
+    idx.set(`when.${wk}`, wv);
     const wp = stripRes(whenProjections?.[wk] || '');
     if (wp.startsWith('/')) idx.set(wp, wv);
   }
   const relEntries = [];
-  for (const [tk, tv] of Object.entries(thenMap || {})) {
+  for (const [tk, rawTv] of Object.entries(thenMap || {})) {
+    const tv = isObj(rawTv) && Object.keys(rawTv).length === 1 && 'eq' in rawTv ? rawTv.eq : rawTv;
     if (isRelationalMap(tv)) {
       relEntries.push([tk, tv]);
       continue;
     }
     idx.set(tk, tv);
+    idx.set(`then.${tk}`, tv);
     const tp = stripRes(thenProjections?.[tk] || '');
     if (tp.startsWith('/')) idx.set(tp, tv);
   }
@@ -46,6 +50,7 @@ function buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections) {
           || (Array.isArray(tv.sum_fields) && tv.sum_fields.some((sf) => !peerFn(sf).found))) continue;
         const w = witnessValue(tv, peerFn);
         idx.set(tk, w);
+        idx.set(`then.${tk}`, w);
         const tp = stripRes(thenProjections?.[tk] || '');
         if (tp.startsWith('/')) idx.set(tp, w);
         progress = true;
@@ -82,6 +87,9 @@ function resolveStubPeer(ref, base, peerIdx, whenProjections, thenProjections) {
 }
 
 function resolveRelPeerBounds(val, peerFn) {
+  if (isObj(val) && 'eq' in val && !('balance_fields' in val) && !('sum_fields' in val) && !('peer' in val)) {
+    return { eqFound: true, eqVal: val.eq, min: undefined, max: undefined };
+  }
   if (!isRelationalMap(val) || !peerFn) return { eqFound: false, eqVal: undefined, min: val?.min, max: val?.max };
   if ('eq_field' in val) {
     const pr = peerFn(val.eq_field);

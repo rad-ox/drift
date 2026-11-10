@@ -15,6 +15,102 @@ def _is_fin(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
 
 
+def unwrap_03_eq(v: Any) -> Any:
+    return v['eq'] if isinstance(v, Mapping) and len(v) == 1 and 'eq' in v else v
+
+
+def build_when_env(when_table: Mapping[str, Any] | None, when_proj: Mapping[str, str] | None, then_table: Mapping[str, Any] | None, then_proj: Mapping[str, str] | None, payload: Any = None, explicit_when: Mapping[str, Any] | None = None, read_pointer: Any = None, check_rel_fn: Any = None, contract_id: str = '', case_id: str = '') -> dict[str, Any]:
+    env: dict[str, Any] = {}
+    has_exp = isinstance(explicit_when, Mapping) or (isinstance(payload, Mapping) and (isinstance(payload.get('when'), Mapping) or isinstance(payload.get('before'), Mapping)))
+    if not has_exp:
+        for wk, wv in (when_table or {}).items():
+            if not isinstance(wv, Mapping):
+                env[str(wk)] = wv
+            elif 'eq' in wv and 'peer' not in wv and 'eq_field' not in wv:
+                env[str(wk)] = wv['eq']
+    if isinstance(explicit_when, Mapping):
+        for wk, ov in explicit_when.items():
+            env[str(wk)] = ov
+    if isinstance(payload, Mapping):
+        for sub_k in ('when', 'before'):
+            sub = payload.get(sub_k)
+            if isinstance(sub, Mapping):
+                for wk, ov in sub.items():
+                    env[str(wk)] = ov
+        for pk, pv in payload.items():
+            if isinstance(pk, str) and pk.startswith('when.') and len(pk) > 5:
+                env[pk[5:]] = pv
+        if isinstance(when_proj, Mapping) and when_proj and read_pointer is not None:
+            t_ptrs = set((then_proj or {}).values()) | {f'/{tk}' for tk in (then_table or ())}
+            for wk, w_ptr in when_proj.items():
+                for src in (explicit_when, payload.get('when') if isinstance(payload.get('when'), Mapping) else None, payload.get('before') if isinstance(payload.get('before'), Mapping) else None):
+                    if isinstance(src, Mapping):
+                        ok, val = read_pointer(src, w_ptr)
+                        if ok:
+                            env[str(wk)] = val
+                            break
+                else:
+                    if not has_exp and w_ptr and w_ptr not in t_ptrs and wk not in (then_table or ()):
+                        ok, val = read_pointer(payload, w_ptr)
+                        if ok:
+                            env[str(wk)] = val
+    if has_exp and isinstance(when_table, Mapping) and check_rel_fn is not None:
+        for wk, wexp in when_table.items():
+            if wk in env:
+                act_w = env[wk]
+                if isinstance(wexp, Mapping):
+                    check_rel_fn(contract_id, case_id, f'when.{wk}', wexp, act_w, env, when_proj or {}, None, env)
+                elif act_w != wexp:
+                    raise AssertionError(f'{contract_id}.{case_id}: exp when.{wk}={wexp!r}, got {act_w!r}')
+    return env
+
+
+def resolve_peer_value(ref: Any, payload: Any, proj: Mapping[str, str], when_env: Mapping[str, Any] | None, read_pointer: Any) -> tuple[bool, Any]:
+    if not isinstance(ref, str) or not ref.strip():
+        return (False, None)
+    r = ref.strip()
+    if r.startswith('when.'):
+        wk = r[5:]
+        if not wk:
+            return (False, None)
+        if isinstance(when_env, Mapping):
+            if wk in when_env:
+                return (True, when_env[wk])
+            if r in when_env:
+                return (True, when_env[r])
+        if isinstance(payload, Mapping) and when_env is None:
+            if r in payload:
+                return (True, payload[r])
+            for sub_k in ('when', 'before'):
+                sub = payload.get(sub_k)
+                if isinstance(sub, Mapping) and wk in sub:
+                    return (True, sub[wk])
+        return (False, None)
+    if r.startswith('then.'):
+        tk = r[5:]
+        if not tk:
+            return (False, None)
+        t_src = payload.get('then') if isinstance(payload, Mapping) and isinstance(payload.get('then'), Mapping) and tk not in payload else payload
+        if tk in proj:
+            ok, pv = read_pointer(t_src, proj[tk])
+            if ok:
+                return (True, pv)
+        if isinstance(t_src, Mapping) and tk in t_src:
+            return (True, t_src[tk])
+        if isinstance(payload, Mapping) and r in payload:
+            return (True, payload[r])
+        return (False, None)
+    if r.startswith('/'):
+        return read_pointer(payload, r)
+    if r in proj:
+        return read_pointer(payload, proj[r])
+    if isinstance(payload, Mapping) and r in payload:
+        return (True, payload[r])
+    if isinstance(when_env, Mapping) and r in when_env:
+        return (True, when_env[r])
+    return (False, None)
+
+
 def check_surface_key(
     contract_id: str,
     case_id: str,

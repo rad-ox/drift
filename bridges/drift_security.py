@@ -123,14 +123,19 @@ def run_projection_checks(
   invoke_verified_callback: Callable[..., None],
   check_projected_leaf: Callable[..., None],
   read_pointer: Callable[[Any, str], tuple[bool, Any]] | None = None,
+  when_obs: Mapping[str, Any] | None = None,
 ) -> None:
   ctx._require_tagged(case_id)
   seen = ctx.reads[case_id]
   proj = ctx._proj_map('then')
+  when_env = ctx._when_env(case_id, payload, when_obs) if hasattr(ctx, '_when_env') else None
   for k, exp in ctx._then_table(case_id).items():
     if isinstance(checks, Mapping) and callable(checks.get(k)):
-      invoke_verified_callback(checks[k], ctx.contract_id, case_id, k, exp)
-    elif isinstance(exp, Mapping) and (isinstance(exp.get('allowed_keys'), (list, tuple)) or 'forbid_keys' in exp):
+      invoke_verified_callback(checks[k], ctx.contract_id, case_id, k, exp['eq'] if isinstance(exp, Mapping) and len(exp) == 1 and 'eq' in exp else exp)
+    elif isinstance(exp, Mapping) and (isinstance(exp.get('allowed_keys'), (list, tuple)) or 'forbid_keys' in exp or isinstance(exp.get('keys'), Mapping)):
+      ek = exp.get('keys') if isinstance(exp.get('keys'), Mapping) else {}
+      allow_l = exp.get('allowed_keys') if isinstance(exp.get('allowed_keys'), (list, tuple)) else (ek.get('allow') if isinstance(ek.get('allow'), (list, tuple)) else None)
+      forbid_v = exp['forbid_keys'] if 'forbid_keys' in exp else (ek['forbid'] if 'forbid' in ek else None)
       target_obj = payload
       if k in proj and read_pointer is not None:
         found, val = read_pointer(payload, proj[k])
@@ -141,23 +146,26 @@ def run_projection_checks(
         target_obj = payload[k]
       if not isinstance(target_obj, Mapping):
         raise AssertionError(f'{ctx.contract_id}.{case_id}: expected mapping for then.{k}')
-      if isinstance(exp.get('allowed_keys'), (list, tuple)):
-        allowed_set = {str(x) for x in exp['allowed_keys']}
+      if isinstance(allow_l, (list, tuple)):
+        allowed_set = {str(x) for x in allow_l}
         for act_key in target_obj:
           if target_obj is payload and str(act_key) == '_frame' and is_frame_metadata_envelope(target_obj.get('_frame')):
             continue
           if str(act_key) not in allowed_set:
-            raise AssertionError(f'{ctx.contract_id}.{case_id}: unexpected key "{act_key}" outside allowed_keys {list(exp["allowed_keys"])!r}')
-      if 'forbid_keys' in exp:
+            raise AssertionError(f'{ctx.contract_id}.{case_id}: unexpected key "{act_key}" outside allowed_keys {list(allow_l)!r}')
+      if forbid_v is not None:
         is_root_t = target_obj is payload
-        if isinstance(exp.get('forbid_keys'), (list, tuple)):
-          for fk in exp['forbid_keys']:
+        if isinstance(forbid_v, (list, tuple)):
+          for fk in forbid_v:
             if has_key_recursive(target_obj, str(fk), is_root_t):
               raise AssertionError(f'{ctx.contract_id}.{case_id}: forbidden key "{fk}" present on then.{k}')
-        elif not has_key_recursive(target_obj, str(exp['forbid_keys']), is_root_t):
+        elif not has_key_recursive(target_obj, str(forbid_v), is_root_t):
           raise AssertionError(f'{ctx.contract_id}.{case_id}: drop-forbid-key mutant killed on then.{k}.forbid_keys')
+      remaining = {ek: ev for ek, ev in exp.items() if ek not in ('allowed_keys', 'forbid_keys', 'keys')}
+      if remaining:
+        check_projected_leaf(ctx.contract_id, case_id, k, remaining, {**payload, k: target_obj}, {}, ctx.mutation_override, True, 'no check or projection for', when_env, ctx.view)
     else:
-      check_projected_leaf(ctx.contract_id, case_id, k, exp, payload, proj, ctx.mutation_override, True, 'no check or projection for')
+      check_projected_leaf(ctx.contract_id, case_id, k, exp, payload, proj, ctx.mutation_override, True, 'no check or projection for', when_env, ctx.view)
     seen.add(k)
   frame_obs = checks.get('frame') if isinstance(checks, Mapping) and isinstance(checks.get('frame'), Mapping) else (payload.get('_frame') if isinstance(payload, Mapping) and is_frame_metadata_envelope(payload.get('_frame')) else None)
   if frame_obs is not None:
@@ -187,12 +195,13 @@ def run_adverse_checks(
     if check_bola_variant_pair(pfx, variant):
       saw_cross_owner = True
     if isinstance(variant, Mapping):
-      for wk, wexp in when_tbl.items():
+      for wk, raw_wexp in when_tbl.items():
+        wexp = raw_wexp['eq'] if isinstance(raw_wexp, Mapping) and len(raw_wexp) == 1 and 'eq' in raw_wexp else raw_wexp
         ptr = when_proj.get(wk) or f'/{escape_pointer(wk)}'
         found, val = read_pointer(variant, ptr)
-        if found and values_mismatch(val, wexp):
+        if found and not isinstance(wexp, Mapping) and values_mismatch(val, wexp):
           raise AssertionError(f'{ctx.contract_id}.{case_id}.when.{wk} fixture mismatch: expected {wexp!r}, got {val!r}')
-    run_projection_checks(ctx, case_id, execute(variant), checks, invoke_verified_callback, check_projected_leaf, read_pointer)
+    run_projection_checks(ctx, case_id, execute(variant), checks, invoke_verified_callback, check_projected_leaf, read_pointer, variant if isinstance(variant, Mapping) else None)
   if (harness.get('requireCrossOwner') is True or harness.get('require_cross_owner') is True or harness.get('bola') is True) and not saw_cross_owner:
     ctx.reads[case_id].clear()
     if harness.get('strict') is not False:
@@ -216,7 +225,7 @@ def bridge_capabilities() -> dict[str, Any]:
     'capabilities': list(BRIDGE_CAPABILITIES),
     'runtime_baseline': 'python-3.14',
     'schema': 'drift.bridge-capabilities/1',
-    'version': '0.5.0',
+    'version': '0.5.1',
   }
 def require_capabilities(required: list[str] | tuple[str, ...]) -> None:
   if not isinstance(required, (list, tuple)):

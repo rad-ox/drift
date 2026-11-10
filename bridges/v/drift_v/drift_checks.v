@@ -39,11 +39,12 @@ const rel_keys = [
 	'convert_from',
 ]!
 
-fn strip_side_03(s string) string {
-	if s.starts_with('when.') || s.starts_with('then.') {
-		return s.all_after('.')
+fn qualify_peer_03(s string) string {
+	t := s.trim_space()
+	if t == '' || t.starts_with('when.') || t.starts_with('then.') || t.starts_with('/') {
+		return t
 	}
-	return s
+	return 'then.${t}'
 }
 
 fn desugar_03_rel(raw map[string]json2.Any) map[string]json2.Any {
@@ -74,13 +75,13 @@ fn desugar_03_rel(raw map[string]json2.Any) map[string]json2.Any {
 			for pk in ['le', 'ge', 'eq'] {
 				if pv := v[pk] {
 					if pv is string {
-						out['${pk}_field'] = json2.Any(strip_side_03(pv))
+						out['${pk}_field'] = json2.Any(qualify_peer_03(pv))
 					}
 				}
 			}
 			if sf := v['sum'] {
 				if sf is []json2.Any {
-					out['sum_fields'] = json2.Any(sf.map(json2.Any(strip_side_03(it.str()))))
+					out['sum_fields'] = json2.Any(sf.map(json2.Any(qualify_peer_03(it.str()))))
 				}
 			}
 			if bf := v['balance'] {
@@ -89,7 +90,7 @@ fn desugar_03_rel(raw map[string]json2.Any) map[string]json2.Any {
 					for side in ['add', 'sub'] {
 						if arr := bf[side] {
 							if arr is []json2.Any {
-								nb[side] = json2.Any(arr.map(json2.Any(strip_side_03(it.str()))))
+								nb[side] = json2.Any(arr.map(json2.Any(qualify_peer_03(it.str()))))
 							}
 						}
 					}
@@ -307,18 +308,45 @@ pub fn is_relational_table(v json2.Any) bool {
 }
 
 fn resolve_peer_target(doc json2.Any, proj_then map[string]string, ref string) ?json2.Any {
-	ptr := if ref.starts_with('/') {
-		ref
-	} else if mapped := proj_then[ref] {
+	if ref.starts_with('when.') {
+		wk := ref[5..]
+		if wk == '' || doc !is map[string]json2.Any {
+			return none
+		}
+		dm := doc.as_map()
+		if v := dm[ref] {
+			return v
+		}
+		for sub_k in ['when', 'before', '_when_env'] {
+			if sub := dm[sub_k] {
+				if sub is map[string]json2.Any {
+					return sub[wk] or { return none }
+				}
+			}
+		}
+		return none
+	}
+	eff_ref := if ref.starts_with('then.') { ref[5..] } else { ref }
+	if eff_ref == '' {
+		return none
+	}
+	ptr := if eff_ref.starts_with('/') {
+		eff_ref
+	} else if mapped := proj_then[eff_ref] {
 		mapped
 	} else {
-		'/' + escape_pointer(ref)
+		'/' + escape_pointer(eff_ref)
 	}
 	return resolve_pointer(doc, ptr)
 }
 
 pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string]json2.Any, proj_then map[string]string, pred string) ! {
-	rel := desugar_03_rel(raw_rel)
+	context := if doc is map[string]json2.Any {
+		doc
+	} else {
+		map[string]json2.Any{}
+	}
+	rel := normalize_constraint_03(raw_rel, context, pred)!
 	if 'eq' in rel {
 		if eq_v := rel['eq'] {
 			if !values_equal(actual, eq_v) {
@@ -343,7 +371,7 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 					}
 				}
 				for act_k, act_v in act_map {
-					if act_k == '_frame' && act_v is map[string]json2.Any {
+					if (act_k == '_frame' || act_k == '_when_env') && act_v is map[string]json2.Any {
 						continue
 					}
 					if act_k !in allowed {
@@ -372,7 +400,6 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 				return error('${pred}: invalid forbid_keys')
 			}
 		}
-		return
 	}
 	if ni_v := rel['not_in'] {
 		if actual is json2.Null {
@@ -490,8 +517,9 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 	if ml_v := rel['min_len'] {
 		ml := int(as_finite_f64(ml_v) or { return error('${pred}: invalid min_len') })
 		al := match actual {
-			string { actual.len }
+			string { actual.runes().len }
 			[]json2.Any { actual.len }
+			map[string]json2.Any { actual.len }
 			else { return error('${pred}: expected string or array for min_len') }
 		}
 
@@ -502,8 +530,9 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 	if xl_v := rel['max_len'] {
 		xl := int(as_finite_f64(xl_v) or { return error('${pred}: invalid max_len') })
 		al := match actual {
-			string { actual.len }
+			string { actual.runes().len }
 			[]json2.Any { actual.len }
+			map[string]json2.Any { actual.len }
 			else { return error('${pred}: expected string or array for max_len') }
 		}
 
@@ -514,8 +543,9 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 	if ne_v := rel['non_empty'] {
 		if ne_v is bool {
 			al := match actual {
-				string { actual.len }
+				string { actual.runes().len }
 				[]json2.Any { actual.len }
+				map[string]json2.Any { actual.len }
 				else { return error('${pred}: expected string or array for non_empty') }
 			}
 
@@ -564,26 +594,25 @@ pub fn check_relational_leaf(doc json2.Any, actual json2.Any, raw_rel map[string
 		}
 	}
 	if ct_v := rel['contains'] {
-		if ct_v is []json2.Any {
-			for needle in ct_v {
-				if actual is []json2.Any {
-					mut found := false
-					for item in actual {
-						if values_equal(item, needle) {
-							found = true
-							break
-						}
+		reqs := if ct_v is []json2.Any { ct_v } else { [ct_v] }
+		for needle in reqs {
+			if actual is []json2.Any {
+				mut found := false
+				for item in actual {
+					if values_equal(item, needle) {
+						found = true
+						break
 					}
-					if !found {
-						return error('${pred}: array missing required element')
-					}
-				} else if actual is string && needle is string {
-					if !actual.contains(needle) {
-						return error('${pred}: string missing "${needle}"')
-					}
-				} else {
-					return error('${pred}: invalid contains target')
 				}
+				if !found {
+					return error('${pred}: array missing required element')
+				}
+			} else if actual is string && needle is string {
+				if !actual.contains(needle) {
+					return error('${pred}: string missing "${needle}"')
+				}
+			} else {
+				return error('${pred}: invalid contains target')
 			}
 		}
 	}

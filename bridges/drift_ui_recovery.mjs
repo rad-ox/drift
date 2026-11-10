@@ -1,5 +1,6 @@
 // Task-completion recovery invariants (async-action-feedback@1, wizard-form@1) and curated UI scenario matrices.
 
+const isStr = (v) => typeof v === 'string';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const boolOrNull = (v, fb) => (typeof v === 'boolean' ? v : fb);
@@ -443,8 +444,9 @@ export async function evaluateScenarioMatrix(spec, checkViewTableFn) {
 }
 
 export const CAPS_03 = ['rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1'];
-const stripSide03 = (s) => (isStr(s) && (s.startsWith('when.') || s.startsWith('then.')) ? s.slice(s.indexOf('.') + 1) : s);
-export function desugar03Rel(raw) {
+export const unwrap03Eq = (v) => (isObj(v) && Object.keys(v).length === 1 && 'eq' in v ? v.eq : v);
+const qualifyPeer03 = (s) => (isStr(s) && s.trim() ? ((s.trim().startsWith('when.') || s.trim().startsWith('then.') || s.trim().startsWith('/')) ? s.trim() : `then.${s.trim()}`) : s);
+export function desugar03Rel(raw, units = {}, predUnit = null) {
   if (!isObj(raw)) return raw;
   const out = {};
   for (const [k, v] of Object.entries(raw)) {
@@ -458,14 +460,14 @@ export function desugar03Rel(raw) {
       if ('allow' in v) out.allowed_keys = v.allow;
       if ('forbid' in v) out.forbid_keys = v.forbid;
     } else if (k === 'peer' && isObj(v)) {
-      if ('le' in v) out.le_field = stripSide03(v.le);
-      if ('ge' in v) out.ge_field = stripSide03(v.ge);
-      if ('eq' in v) out.eq_field = stripSide03(v.eq);
-      if (Array.isArray(v.sum)) out.sum_fields = v.sum.map(stripSide03);
+      if ('le' in v) out.le_field = qualifyPeer03(v.le);
+      if ('ge' in v) out.ge_field = qualifyPeer03(v.ge);
+      if ('eq' in v) out.eq_field = qualifyPeer03(v.eq);
+      if (Array.isArray(v.sum)) out.sum_fields = v.sum.map(qualifyPeer03);
       if (isObj(v.balance)) {
         out.balance_fields = {
-          ...(Array.isArray(v.balance.add) ? { add: v.balance.add.map(stripSide03) } : {}),
-          ...(Array.isArray(v.balance.sub) ? { sub: v.balance.sub.map(stripSide03) } : {}),
+          ...(Array.isArray(v.balance.add) ? { add: v.balance.add.map(qualifyPeer03) } : {}),
+          ...(Array.isArray(v.balance.sub) ? { sub: v.balance.sub.map(qualifyPeer03) } : {}),
         };
       }
     } else if (k === 'series' && isObj(v)) {
@@ -477,11 +479,124 @@ export function desugar03Rel(raw) {
       out[k] = v;
     }
   }
+  if ('convert_from' in raw) {
+    const cf = raw.convert_from;
+    const matches = Object.keys(units).filter((k) => k.startsWith(`${cf}->`));
+    const target = predUnit ?? raw.unit;
+    const ratio = target === cf ? 1 : units[target ? `${cf}->${target}` : (matches.length === 1 ? matches[0] : '')];
+    if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) {
+      throw new Error(`missing unit conversion from ${cf}${target ? ` to ${target}` : ''}`);
+    }
+    const scale = (v) => typeof v === 'number' ? v * ratio : v;
+    for (const k of ['eq', 'min', 'max', 'approx', 'abs_tol', 'step_max_delta']) {
+      if (k in out) out[k] = scale(out[k]);
+    }
+    for (const k of ['in', 'not_in']) {
+      if (Array.isArray(out[k])) out[k] = out[k].map(scale);
+    }
+    if ('sum_total' in out) {
+      out.sum_total = isObj(out.sum_total)
+        ? Object.fromEntries(Object.entries(out.sum_total).map(([k, v]) => [k, scale(v)]))
+        : scale(out.sum_total);
+    }
+  }
   if ('eq' in out && ('abs_tol' in out || 'rel_tol' in out) && !('balance_fields' in out) && !('sum_fields' in out)) {
     out.approx = out.eq;
     delete out.eq;
   }
   return out;
+}
+
+export function buildWhenEnv(whenTable, whenProj, thenTable, thenProj, payload = null, explicitWhen = null, readPointer = null, checkRelFn = null, contractId = '', caseId = '') {
+  const env = {};
+  const hasExp = isObj(explicitWhen) || (isObj(payload) && (isObj(payload.when) || isObj(payload.before)));
+  if (!hasExp) {
+    for (const [wk, wv] of Object.entries(whenTable || {})) {
+      if (!isObj(wv)) env[wk] = wv;
+      else if ('eq' in wv && !('peer' in wv) && !('eq_field' in wv)) env[wk] = wv.eq;
+    }
+  }
+  if (isObj(explicitWhen)) {
+    for (const [wk, ov] of Object.entries(explicitWhen)) env[wk] = ov;
+  }
+  if (isObj(payload)) {
+    for (const subK of ['when', 'before']) {
+      if (isObj(payload[subK])) {
+        for (const [wk, ov] of Object.entries(payload[subK])) env[wk] = ov;
+      }
+    }
+    for (const [pk, pv] of Object.entries(payload)) {
+      if (pk.startsWith('when.') && pk.length > 5) env[pk.slice(5)] = pv;
+    }
+    if (isObj(whenProj) && typeof readPointer === 'function') {
+      const tPtrs = new Set([...Object.values(thenProj || {}), ...Object.keys(thenTable || {}).map((tk) => `/${tk}`)]);
+      for (const [wk, wPtr] of Object.entries(whenProj)) {
+        let hit = false;
+        for (const src of [explicitWhen, isObj(payload.when) ? payload.when : null, isObj(payload.before) ? payload.before : null]) {
+          if (isObj(src)) {
+            const r = readPointer(src, wPtr);
+            if (r.found) { env[wk] = r.value; hit = true; break; }
+          }
+        }
+        if (!hit && !hasExp && wPtr && !tPtrs.has(wPtr) && !(wk in (thenTable || {}))) {
+          const r = readPointer(payload, wPtr);
+          if (r.found) env[wk] = r.value;
+        }
+      }
+    }
+  }
+  if (hasExp && isObj(whenTable) && typeof checkRelFn === 'function') {
+    for (const [wk, wexp] of Object.entries(whenTable)) {
+      if (wk in env) {
+        const actW = env[wk];
+        if (isObj(wexp)) checkRelFn(contractId, caseId, `when.${wk}`, wexp, actW, env, whenProj || {}, null, env);
+        else if (JSON.stringify(actW) !== JSON.stringify(wexp)) {
+          const err = new Error(`${contractId}.${caseId}: expected when.${wk}=${JSON.stringify(wexp)}, got ${JSON.stringify(actW)}`);
+          err.name = 'AssertionError';
+          err.code = 'ERR_ASSERTION';
+          throw err;
+        }
+      }
+    }
+  }
+  return env;
+}
+
+export function resolvePeerValue(ref, payload, proj, whenEnv, readPointer) {
+  if (!isStr(ref) || !ref.trim()) return { found: false };
+  const r = ref.trim();
+  if (r.startsWith('when.')) {
+    const wk = r.slice(5);
+    if (!wk) return { found: false };
+    if (isObj(whenEnv)) {
+      if (wk in whenEnv) return { found: true, value: whenEnv[wk] };
+      if (r in whenEnv) return { found: true, value: whenEnv[r] };
+    }
+    if (isObj(payload) && !whenEnv) {
+      if (r in payload) return { found: true, value: payload[r] };
+      for (const subK of ['when', 'before']) {
+        if (isObj(payload[subK]) && wk in payload[subK]) return { found: true, value: payload[subK][wk] };
+      }
+    }
+    return { found: false };
+  }
+  if (r.startsWith('then.')) {
+    const tk = r.slice(5);
+    if (!tk) return { found: false };
+    const tSrc = isObj(payload) && isObj(payload.then) && !(tk in payload) ? payload.then : payload;
+    if (proj && tk in proj) {
+      const rd = readPointer(tSrc, proj[tk]);
+      if (rd.found) return rd;
+    }
+    if (isObj(tSrc) && tk in tSrc) return { found: true, value: tSrc[tk] };
+    if (isObj(payload) && r in payload) return { found: true, value: payload[r] };
+    return { found: false };
+  }
+  if (r.startsWith('/')) return readPointer(payload, r);
+  if (proj && r in proj) return readPointer(payload, proj[r]);
+  if (isObj(payload) && r in payload) return { found: true, value: payload[r] };
+  if (isObj(whenEnv) && r in whenEnv) return { found: true, value: whenEnv[r] };
+  return { found: false };
 }
 
 function expandSingleDomain(spec, first = false) {

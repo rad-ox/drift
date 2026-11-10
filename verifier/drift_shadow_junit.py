@@ -358,6 +358,7 @@ def cmd_finish(args) -> int:
   "level": args.level,
   "outcome": outcomes[tid],
   "digest": post_c_refs[cid],
+  **({"schema": "0.3"} if post_c_refs[cid].startswith("dr2b:") else {}),
    }
    event_lines.append(dv.canonical_json(ev))
  inputs_map = {tid: post_inputs for tid in sorted(disc_tests)}

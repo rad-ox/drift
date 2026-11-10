@@ -11,6 +11,21 @@ const throwError = (message) => {
 const isStr = (v) => typeof v === 'string';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+export function normalizeBytes(buf) {
+ let crlf = false;
+ for (let i = 0; i < buf.length; i += 1) {
+  if (buf[i] === 0) return buf;
+  if (buf[i] === 13 && buf[i + 1] === 10) crlf = true;
+ }
+ if (!crlf) return buf;
+ const out = Buffer.allocUnsafe(buf.length);
+ let pos = 0;
+ for (let i = 0; i < buf.length; i += 1) {
+  if (buf[i] === 13 && buf[i + 1] === 10) { out[pos++] = 10; i += 1; } else out[pos++] = buf[i];
+ }
+ return out.subarray(0, pos);
+}
+
 export function resolveSelectedFiles(raw, rootDir, fs, path) {
   if (!isObj(raw) || raw.all) return [];
   if (Array.isArray(raw.test_files)) return [...raw.test_files];

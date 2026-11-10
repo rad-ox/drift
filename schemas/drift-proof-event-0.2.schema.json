@@ -48,8 +48,22 @@
     },
     "digest": {
       "type": "string",
-      "pattern": "^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
-      "description": "Canonical contract digest (dr1:sha256:<64-hex>) or 12-hex reference (dr1:<12-hex>)."
+      "pattern": "^(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
+      "description": "Canonical contract digest (dr1:sha256:<64-hex> or dr2b:sha256:<64-hex>) or 12-hex reference (dr1:<12-hex> or dr2b:<12-hex>)."
+    },
+    "schema": {
+      "type": "string",
+      "enum": ["0.2", "0.3"],
+      "description": "Event schema version (mandatory \"0.3\" when proving 0.3 contracts)."
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Active bridge capabilities declared for 0.3 proof events."
     }
   },
   "$defs": {

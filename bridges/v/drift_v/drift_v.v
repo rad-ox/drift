@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.5.0'
-pub const bridge_version = '0.5.0'
+pub const adapter_id = 'drift_v.v@0.5.1'
+pub const bridge_version = '0.5.1'
 
 const env_keys = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']!
 
@@ -37,10 +37,8 @@ pub mut:
 }
 
 pub fn normalize_crlf_bytes(raw []u8) []u8 {
-	for b in raw {
-		if b == 0 {
-			return raw
-		}
+	if 0 in raw {
+		return raw
 	}
 	mut has_crlf := false
 	for i := 0; i + 1 < raw.len; i++ {
@@ -53,22 +51,19 @@ pub fn normalize_crlf_bytes(raw []u8) []u8 {
 		return raw
 	}
 	mut out := []u8{cap: raw.len}
-	mut i := 0
-	for i < raw.len {
+	for i := 0; i < raw.len; i++ {
 		if i + 1 < raw.len && raw[i] == 13 && raw[i + 1] == 10 {
 			out << 10
-			i += 2
+			i++
 		} else {
 			out << raw[i]
-			i++
 		}
 	}
 	return out
 }
 
 pub fn hash_fixture_bytes(raw []u8) string {
-	norm := normalize_crlf_bytes(raw)
-	return 'sha256:${sha256.hexhash(norm.bytestr())}'
+	return 'sha256:${sha256.hexhash(normalize_crlf_bytes(raw).bytestr())}'
 }
 
 pub fn canonical_test_id(test string) !(string, string, string) {
@@ -78,8 +73,7 @@ pub fn canonical_test_id(test string) !(string, string, string) {
 		return error('test id "${test}" must have form <class>#<method>')
 	}
 	cls := trimmed[..hash]
-	raw_mth := trimmed[hash + 1..]
-	mut mth := raw_mth
+	mut mth := trimmed[hash + 1..]
 	for ch in [`(`, `[`] {
 		idx := mth.index_u8(ch)
 		if idx >= 0 {
@@ -213,12 +207,22 @@ fn (mut ctx DriftContext) mark_read(case_id string, key string) {
 	ctx.read_keys[case_id][key] = true
 }
 
+fn (ctx &DriftContext) unwrap_if_03(val json2.Any) json2.Any {
+	if (ctx.view['drift'] or { json2.Any('') }).str() == '0.3' && val is map[string]json2.Any
+		&& val.len == 1 {
+		if eq_v := val['eq'] {
+			return eq_v
+		}
+	}
+	return val
+}
+
 pub fn (ctx &DriftContext) when_any(case_id string, key string) !json2.Any {
 	cm := ctx.case_map(case_id)!
 	w_any := cm['when'] or { return error('case "${case_id}" has no when table') }
 	if w_any is map[string]json2.Any {
 		if val := w_any[key] {
-			return val
+			return ctx.unwrap_if_03(val)
 		}
 	}
 	return error('case "${case_id}" has no when."${key}"')
@@ -226,15 +230,11 @@ pub fn (ctx &DriftContext) when_any(case_id string, key string) !json2.Any {
 
 pub fn (ctx &DriftContext) when_str(case_id string, key string) !string {
 	v := ctx.when_any(case_id, key)!
-	if v is string {
-		return v
-	}
-	return error('when."${key}" is not a string')
+	return if v is string { v } else { error('when."${key}" is not a string') }
 }
 
 pub fn (ctx &DriftContext) when_int(case_id string, key string) !i64 {
-	v := ctx.when_any(case_id, key)!
-	f := as_finite_f64(v) or { return error('when."${key}" is not a number') }
+	f := as_finite_f64(ctx.when_any(case_id, key)!) or { return error('when."${key}" is not a number') }
 	return i64(f)
 }
 
@@ -248,7 +248,7 @@ pub fn (mut ctx DriftContext) then_any(case_id string, key string) !json2.Any {
 	if t_any is map[string]json2.Any {
 		if val := t_any[key] {
 			ctx.mark_read(case_id, key)
-			return val
+			return ctx.unwrap_if_03(val)
 		}
 	}
 	return error('case "${case_id}" has no then."${key}"')
@@ -256,24 +256,17 @@ pub fn (mut ctx DriftContext) then_any(case_id string, key string) !json2.Any {
 
 pub fn (mut ctx DriftContext) then_str(case_id string, key string) !string {
 	v := ctx.then_any(case_id, key)!
-	if v is string {
-		return v
-	}
-	return error('then."${key}" is not a string')
+	return if v is string { v } else { error('then."${key}" is not a string') }
 }
 
 pub fn (mut ctx DriftContext) then_int(case_id string, key string) !i64 {
-	v := ctx.then_any(case_id, key)!
-	f := as_finite_f64(v) or { return error('then."${key}" is not a number') }
+	f := as_finite_f64(ctx.then_any(case_id, key)!) or { return error('then."${key}" is not a number') }
 	return i64(f)
 }
 
 pub fn (mut ctx DriftContext) then_bool(case_id string, key string) !bool {
 	v := ctx.then_any(case_id, key)!
-	if v is bool {
-		return v
-	}
-	return error('then."${key}" is not a bool')
+	return if v is bool { v } else { error('then."${key}" is not a bool') }
 }
 
 pub fn (mut ctx DriftContext) record_input(rel_path string, digest string) {
@@ -311,29 +304,6 @@ fn extract_then_projections(view map[string]json2.Any) map[string]string {
 			if t_any := proj_any['then'] {
 				if t_any is map[string]json2.Any {
 					for k, v in t_any {
-						if v is string {
-							out[k] = v
-						}
-					}
-				}
-			}
-		}
-	}
-	return out
-}
-
-fn extract_when_projections(view map[string]json2.Any) map[string]string {
-	mut out := map[string]string{}
-	if proj_any := view['projections'] {
-		if proj_any is map[string]json2.Any {
-			for k, v in proj_any {
-				if k !in ['when', 'then'] && v is string {
-					out[k] = v
-				}
-			}
-			if w_any := proj_any['when'] {
-				if w_any is map[string]json2.Any {
-					for k, v in w_any {
 						if v is string {
 							out[k] = v
 						}
@@ -467,10 +437,38 @@ pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json stri
 	if t_any !is map[string]json2.Any {
 		return error('case "${case_id}" then is not a table')
 	}
-	doc := json2.decode[json2.Any](payload_json) or { return error('payload is not valid JSON') }
+	mut doc := json2.decode[json2.Any](payload_json) or { return error('payload is not valid JSON') }
+	if doc is map[string]json2.Any {
+		mut dm := doc.clone()
+		if 'when' !in dm && 'before' !in dm {
+			mut w_env := map[string]json2.Any{}
+			if w_any := cm['when'] {
+				if w_any is map[string]json2.Any {
+					for wk, wv in w_any {
+						if wv is map[string]json2.Any {
+							if eq_v := wv['eq'] {
+								if 'peer' !in wv && 'eq_field' !in wv {
+									w_env[wk] = eq_v
+								}
+							}
+						} else {
+							w_env[wk] = wv
+						}
+					}
+				}
+			}
+			dm['_when_env'] = json2.Any(w_env)
+			doc = json2.Any(dm)
+		}
+	}
 	proj_then := extract_then_projections(ctx.view)
 	check_ui_projection_guards(ctx.contract_id, case_id, doc, proj_then, t_any.as_map())!
-	for pred, expected in t_any.as_map() {
+	for pred, raw_expected in t_any.as_map() {
+		expected := if is_relational_table(raw_expected) {
+			json2.Any(normalize_constraint_03(raw_expected.as_map(), ctx.view, pred)!)
+		} else {
+			raw_expected
+		}
 		ctx.mark_read(case_id, pred)
 		if is_relational_table(expected) && ('allowed_keys' in expected.as_map()
 			|| 'forbid_keys' in expected.as_map()) && pred !in proj_then {

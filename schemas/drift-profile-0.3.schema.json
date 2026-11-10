@@ -1,0 +1,1139 @@
+{
+  "$defs": {
+    "case": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "because": [
+          "status"
+        ],
+        "status": [
+          "because"
+        ]
+      },
+      "properties": {
+        "at": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "because": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "scenario": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "deferred",
+            "reviewed"
+          ]
+        },
+        "then": {
+          "additionalProperties": {
+            "$ref": "#/$defs/constraint-value"
+          },
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "when": {
+          "additionalProperties": {
+            "$ref": "#/$defs/constraint-value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "writes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "then"
+      ],
+      "type": "object"
+    },
+    "concept": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "means": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "predicates": {
+          "additionalProperties": false,
+          "properties": {
+            "then": {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "when": {
+              "items": {
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        },
+        "preferred": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "replaced_by": {
+          "pattern": "^(?:|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "means"
+      ],
+      "type": "object"
+    },
+    "constraint-expr": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "eq"
+          ]
+        },
+        {
+          "required": [
+            "min"
+          ]
+        },
+        {
+          "required": [
+            "max"
+          ]
+        },
+        {
+          "required": [
+            "len"
+          ]
+        },
+        {
+          "required": [
+            "in"
+          ]
+        },
+        {
+          "required": [
+            "not_in"
+          ]
+        },
+        {
+          "required": [
+            "contains"
+          ]
+        },
+        {
+          "required": [
+            "prefix"
+          ]
+        },
+        {
+          "required": [
+            "suffix"
+          ]
+        },
+        {
+          "required": [
+            "keys"
+          ]
+        },
+        {
+          "required": [
+            "peer"
+          ]
+        },
+        {
+          "required": [
+            "series"
+          ]
+        }
+      ],
+      "properties": {
+        "contains": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/toml-value"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "convert_from": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "eq": {
+          "$ref": "#/$defs/toml-value"
+        },
+        "in": {
+          "items": {
+            "$ref": "#/$defs/toml-value"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "keys": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "allow": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "forbid": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "type": "object"
+        },
+        "len": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "max": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "min": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "max": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "min": {
+          "type": [
+            "number",
+            "string"
+          ]
+        },
+        "not_in": {
+          "items": {
+            "$ref": "#/$defs/toml-value"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "peer": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "balance": {
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "add": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "sub": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "eq": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "ge": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "le": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sum": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "prefix": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "series": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "monotonic": {
+              "enum": [
+                "non_decreasing",
+                "increasing",
+                "non_increasing",
+                "decreasing"
+              ]
+            },
+            "step_max_delta": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "sum_total": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "suffix": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tol": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "abs": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "rel": {
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "constraint-value": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/toml-value"
+          },
+          "type": "array"
+        },
+        {
+          "$ref": "#/$defs/constraint-expr"
+        }
+      ]
+    },
+    "control": {
+      "additionalProperties": false,
+      "properties": {
+        "cases": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "context_ref": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "criteria_ref": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "effectiveness_evidence": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "enforce": {
+          "enum": [
+            "execution",
+            "release"
+          ]
+        },
+        "implementation_evidence": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "kind": {
+          "enum": [
+            "software",
+            "interface",
+            "procedure",
+            "hardware"
+          ]
+        },
+        "mitigates": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "mitigates"
+      ],
+      "type": "object"
+    },
+    "decision": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "assumption",
+                  "divergence"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "source"
+            ]
+          }
+        },
+        {
+          "else": {
+            "required": [
+              "revisit_if"
+            ]
+          },
+          "if": {
+            "properties": {
+              "evidence": {
+                "const": "observed"
+              }
+            }
+          },
+          "then": {}
+        }
+      ],
+      "properties": {
+        "ask": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "cases": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "decide_by": {
+          "enum": [
+            "approval",
+            "execution",
+            "release"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            "observed",
+            "inferred",
+            "assumed"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "choice",
+            "assumption",
+            "divergence"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "options": {
+          "additionalProperties": {
+            "$ref": "#/$defs/option"
+          },
+          "maxProperties": 4,
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "pick": {
+          "type": "string"
+        },
+        "revisit_if": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "why": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ask",
+        "pick",
+        "cases",
+        "evidence",
+        "options"
+      ],
+      "type": "object"
+    },
+    "option": {
+      "additionalProperties": false,
+      "properties": {
+        "complexity": {
+          "enum": [
+            "1/4",
+            "2/4",
+            "3/4",
+            "4/4"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "1/4",
+            "2/4",
+            "3/4",
+            "4/4"
+          ]
+        },
+        "deps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "does": {
+          "maxLength": 100,
+          "type": "string"
+        },
+        "effort_h": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "leverage": {
+          "enum": [
+            "1/4",
+            "2/4",
+            "3/4",
+            "4/4"
+          ]
+        },
+        "parity": {
+          "enum": [
+            "same",
+            "diverges",
+            "unknown"
+          ]
+        },
+        "risk": {
+          "enum": [
+            "1/4",
+            "2/4",
+            "3/4",
+            "4/4"
+          ]
+        },
+        "undo": {
+          "enum": [
+            "easy",
+            "costly",
+            "one-way"
+          ]
+        }
+      },
+      "required": [
+        "does",
+        "complexity",
+        "effort_h",
+        "risk",
+        "undo"
+      ],
+      "type": "object"
+    },
+    "risk": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "items": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "note": {
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "controls"
+      ],
+      "type": "object"
+    },
+    "schema-pred": {
+      "additionalProperties": false,
+      "properties": {
+        "compensating": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "enum": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "len": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "max": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "max": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "ptr": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "state",
+            "delivery_attempt",
+            "classification",
+            "encoding_context",
+            "principal_tenant",
+            "resource_tenant"
+          ]
+        },
+        "transient": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "type": {
+          "enum": [
+            "bool",
+            "int",
+            "num",
+            "string",
+            "array",
+            "map",
+            "any"
+          ]
+        },
+        "unit": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "schema-side": {
+      "additionalProperties": {
+        "$ref": "#/$defs/schema-pred"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "toml-value": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/toml-value"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/toml-value"
+          },
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "urn:drift:schemas:profile:0.3",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "assurance": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "additionalProperties": {
+            "$ref": "#/$defs/control"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
+        },
+        "risks": {
+          "additionalProperties": {
+            "$ref": "#/$defs/risk"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "cases": {
+      "additionalProperties": {
+        "$ref": "#/$defs/case"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
+    },
+    "concepts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/concept"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "decisions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/decision"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "type": "object"
+    },
+    "drift": {
+      "const": "0.3"
+    },
+    "extends": {
+      "items": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "invariants": {
+      "additionalProperties": {
+        "$ref": "#/$defs/constraint-value"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "kit": {
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "enum": [
+              "string",
+              "int",
+              "bool"
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "max": {
+                "type": "integer"
+              },
+              "min": {
+                "type": "integer"
+              },
+              "role": {
+                "const": "delivery_attempt"
+              },
+              "type": {
+                "const": "int"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "compensating": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "enum": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "role": {
+                "enum": [
+                  "state",
+                  "classification",
+                  "encoding_context",
+                  "principal_tenant",
+                  "resource_tenant"
+                ]
+              },
+              "transient": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "type": {
+                "const": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "role": {
+                "const": "delivery_attempt"
+              },
+              "type": {
+                "const": "bool"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "profile": {
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
+      "type": "string"
+    },
+    "requires": {
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string"
+        },
+        "guards": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "forbid_imports": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "max_lines": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "indirect": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "unknown",
+                "non-empty"
+              ]
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "out": {
+          "anyOf": [
+            {
+              "const": "non-empty"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "proof": {
+          "enum": [
+            "bound",
+            "verified",
+            "killed"
+          ]
+        },
+        "reads": {
+          "anyOf": [
+            {
+              "const": "non-empty"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "security": {
+          "items": {
+            "enum": [
+              "sast",
+              "fuzz",
+              "policy",
+              "deps"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "simulation": {
+          "type": "boolean"
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "writes": {
+          "anyOf": [
+            {
+              "const": "non-empty"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "schema": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "then": {
+          "$ref": "#/$defs/schema-side"
+        },
+        "when": {
+          "$ref": "#/$defs/schema-side"
+        }
+      },
+      "type": "object"
+    },
+    "units": {
+      "additionalProperties": {
+        "exclusiveMinimum": 0,
+        "type": "number"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[^\\s-]+->[^\\s-]+$"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "drift",
+    "profile",
+    "schema"
+  ],
+  "title": "DRIFT 0.3 profile",
+  "type": "object"
+}

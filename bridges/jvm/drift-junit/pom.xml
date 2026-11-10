@@ -3,11 +3,30 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>drift</groupId>
+  <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <name>DRIFT JUnit Platform bridge</name>
   <description>The JUnit Platform bridge of DRIFT: tagged tests read their expected values from the contract and write proof events.</description>
+  <url>https://github.com/rad-ox/drift</url>
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://github.com/rad-ox/drift/blob/main/LICENSE</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>rad-ox</id>
+      <name>Lukasz Radkiewicz</name>
+      <email>rad-ox@users.noreply.github.com</email>
+    </developer>
+  </developers>
+  <scm>
+    <url>https://github.com/rad-ox/drift</url>
+    <connection>scm:git:https://github.com/rad-ox/drift.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/rad-ox/drift.git</developerConnection>
+  </scm>
 
   <properties>
     <maven.compiler.release>25</maven.compiler.release>
@@ -99,6 +118,12 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-gpg-plugin</artifactId>
             <version>3.2.7</version>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
             <executions>
               <execution>
                 <id>sign</id>

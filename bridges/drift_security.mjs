@@ -2,6 +2,7 @@
 import {
   applyMutation,
   checkProjectedLeaf,
+  checkRelationalLeaf,
   escapePointer,
   invokeVerifiedCallback,
   isAssertErr,
@@ -10,6 +11,7 @@ import {
   readPointer,
   throwAssertionError,
   throwError,
+  unwrap03Eq,
   valuesEqual,
 } from './drift_checks.mjs';
 import {
@@ -175,14 +177,18 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
   }
 }
 
-export async function runProjectionChecks(ctx, caseId, payload, checks = {}) {
+export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whenObs = null) {
   ctx._tag(caseId);
   const seen = ctx.reads.get(caseId);
   const proj = ctx._projMap('then');
+  const whenEnv = typeof ctx._whenEnv === 'function' ? ctx._whenEnv(caseId, payload, whenObs) : null;
   for (const [k, exp] of Object.entries(ctx._tt(caseId))) {
     if (checks && typeof checks[k] === 'function') {
-      await invokeVerifiedCallback(checks[k], ctx.contractId, caseId, k, exp, payload);
-    } else if (isObj(exp) && (Array.isArray(exp.allowed_keys) || 'forbid_keys' in exp)) {
+      await invokeVerifiedCallback(checks[k], ctx.contractId, caseId, k, unwrap03Eq(exp), payload);
+    } else if (isObj(exp) && (Array.isArray(exp.allowed_keys) || 'forbid_keys' in exp || isObj(exp.keys))) {
+      const ek = isObj(exp.keys) ? exp.keys : {};
+      const allowList = Array.isArray(exp.allowed_keys) ? exp.allowed_keys : (Array.isArray(ek.allow) ? ek.allow : null);
+      const forbidVal = 'forbid_keys' in exp ? exp.forbid_keys : ('forbid' in ek ? ek.forbid : undefined);
       let targetObj = payload;
       if (k in proj) {
         const rd = readPointer(payload, proj[k]);
@@ -194,29 +200,30 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}) {
       if (!isObj(targetObj)) {
         throwAssertionError(`${ctx.contractId}.${caseId}: expected object for then.${k}`);
       }
-      if (Array.isArray(exp.allowed_keys)) {
-        const allowedSet = new Set(exp.allowed_keys.map(String));
+      if (Array.isArray(allowList)) {
+        const allowedSet = new Set(allowList.map(String));
         for (const actKey of Object.keys(targetObj)) {
           if (targetObj === payload && actKey === '_frame' && isFrameMetadataEnvelope(targetObj._frame)) continue;
           if (!allowedSet.has(actKey)) {
-            throwAssertionError(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(exp.allowed_keys)}`);
+            throwAssertionError(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(allowList)}`);
           }
         }
       }
-      if ('forbid_keys' in exp) {
+      if (forbidVal !== undefined) {
         const isRootTarget = targetObj === payload;
-        if (Array.isArray(exp.forbid_keys)) {
-          for (const fk of exp.forbid_keys.map(String)) {
+        if (Array.isArray(forbidVal)) {
+          for (const fk of forbidVal.map(String)) {
             if (hasKeyRecursive(targetObj, fk, isRootTarget)) {
               throwAssertionError(`${ctx.contractId}.${caseId}: forbidden key "${fk}" present on then.${k}`);
             }
           }
-        } else if (!hasKeyRecursive(targetObj, String(exp.forbid_keys), isRootTarget)) {
+        } else if (!hasKeyRecursive(targetObj, String(forbidVal), isRootTarget)) {
           throwAssertionError(`${ctx.contractId}.${caseId}: drop-forbid-key mutant killed on then.${k}.forbid_keys`);
         }
       }
+      checkRelationalLeaf(ctx.contractId, caseId, k, exp, targetObj, payload, proj, ctx.mutationOverride, whenEnv, ctx.view);
     } else {
-      checkProjectedLeaf(ctx.contractId, caseId, k, exp, payload, proj, ctx.mutationOverride, true, 'no check or projection for');
+      checkProjectedLeaf(ctx.contractId, caseId, k, exp, payload, proj, ctx.mutationOverride, true, 'no check or projection for', whenEnv, ctx.view);
     }
     seen.add(k);
   }
@@ -243,16 +250,17 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
       sawCrossOwner = true;
     }
     if (isObj(variant)) {
-      for (const [wk, wexp] of Object.entries(whenTbl)) {
+      for (const [wk, rawWexp] of Object.entries(whenTbl)) {
+        const wexp = unwrap03Eq(rawWexp);
         const ptr = whenProj[wk] || `/${escapePointer(wk)}`;
         const rd = readPointer(variant, ptr);
-        if (rd.found && !valuesEqual(rd.value, wexp)) {
+        if (rd.found && !isObj(wexp) && !valuesEqual(rd.value, wexp)) {
           throwAssertionError(`${ctx.contractId}.${caseId}.when.${wk} fixture mismatch: expected ${JSON.stringify(wexp)}, got ${JSON.stringify(rd.value)}`);
         }
       }
     }
     const observed = await execute(variant);
-    await runProjectionChecks(ctx, caseId, observed, checks);
+    await runProjectionChecks(ctx, caseId, observed, checks, isObj(variant) ? variant : null);
   }
   if ((harness?.requireCrossOwner === true || harness?.bola === true) && !sawCrossOwner) {
     ctx.reads.get(caseId)?.clear();
@@ -336,7 +344,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.5.0',
+    version: '0.5.1',
   };
 }
 

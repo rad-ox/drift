@@ -12,7 +12,7 @@ the four impacts with the approval request.
 - Tests: a tagged test reads its expected values through `Drift.expect` and
   needs the resolved view exported before it runs, or it fails; the DRIFT
   Maven plugin exports it. Untagged tests run as before.
-- Build: `drift:drift-junit` and `drift:drift-maven-plugin` live only in
+- Build: `io.github.rad-ox:drift-junit` and `io.github.rad-ox:drift-maven-plugin` live only in
   local Maven repositories ([jvm-bridge.md](jvm-bridge.md)). A build that
   resolves from a remote repository, such as CI or a mirror, cannot compile
   tagged tests until both are published there; when that is not possible,

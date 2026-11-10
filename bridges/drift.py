@@ -63,21 +63,10 @@ _BAD_MTH = frozenset(('#', '[', ']'))
 _ENV_KEYS = ('adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain')
 
 
-def _strip_bom(text: str) -> str:
-    return text[1:] if text.startswith('\ufeff') else text
-
-
-def _read_json(path: Path) -> Any:
-    return json.loads(_strip_bom(path.read_text(encoding='utf-8')))
-
-
-def _dump_json(obj: Any) -> str:
-    return json.dumps(obj, separators=(',', ':'))
-
-
-def _hash_bytes(raw: bytes) -> str:
-    normalized = raw if b'\x00' in raw else raw.replace(b'\r\n', b'\n')
-    return f'sha256:{hashlib.sha256(normalized).hexdigest()}'
+_strip_bom = _checks._ce.strip_bom
+_read_json = _checks._ce.read_json
+_dump_json = _checks._ce.dump_json
+_hash_bytes = _checks._ce.hash_bytes
 
 
 def _input_digest(abs_p: Path, pre: bytes | None = None) -> str:
@@ -94,44 +83,35 @@ def _input_digest(abs_p: Path, pre: bytes | None = None) -> str:
 def _resolve_env() -> dict[str, str] | None:
     global _env_cache
     raw, pk = os.environ.get('DRIFT_ENV', '').strip(), os.environ.get('DRIFT_PROOF_KEY', '').strip()
-    if not raw and pk not in ('1', 'true'):
-        return None
+    if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
-    if _env_cache is not None and _env_cache[0] == cache_key:
-        return _env_cache[1]
-    base = {'adapter': 'drift.py@0.5.0', 'config': 'default', 'deps': 'none', 'drift': '0.5.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
+    base = {'adapter': 'drift.py@0.5.1', 'config': 'default', 'deps': 'none', 'drift': '0.5.1', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
-        if not isinstance(parsed, dict):
-            raise ValueError('DRIFT_ENV must be a JSON object')
+        if not isinstance(parsed, dict): raise ValueError('DRIFT_ENV must be a JSON object')
         for k, v in parsed.items():
-            if k not in _ENV_KEYS or not isinstance(v, str) or not v.strip():
-                raise ValueError(f'invalid DRIFT_ENV key "{k}"')
+            if k not in _ENV_KEYS or not isinstance(v, str) or not v.strip(): raise ValueError(f'invalid DRIFT_ENV key "{k}"')
             base[k] = v.strip()
     _env_cache = (cache_key, base)
     return base
 
 
 def _flush_inventory(out: str, inv: dict[str, Any]) -> None:
-    if not inv.get('dirty'):
-        return
-    inv['dirty'] = False
-    inv['flushed'] = True
+    if not inv.get('dirty'): return
+    inv['dirty'], inv['flushed'] = False, True
     _checks.merge_prior_inventory(out, inv, _shard_path is not None and out == str(_shard_path), Path.cwd())
     sidecar = _checks.sidecar_head(os.environ, inv['classes'], inv['tests'])
     raw_in = inv.get('inputs') or {}
-    if raw_in:
-        sidecar['inputs'] = {t: {fp: raw_in[t][fp] for fp in sorted(raw_in[t])} for t in sorted(raw_in) if raw_in[t]}
+    if raw_in: sidecar['inputs'] = {t: {fp: raw_in[t][fp] for fp in sorted(raw_in[t])} for t in sorted(raw_in) if raw_in[t]}
     env_obj = _resolve_env()
-    if env_obj is not None:
-        sidecar['env'] = env_obj
+    if env_obj is not None: sidecar['env'] = env_obj
     Path(out[:-6] + '.meta.json').write_text(_dump_json(sidecar) + '\n', encoding='utf-8')
 
 
 def flush_all_inventories() -> None:
     with _IO_LOCK:
-        for out, inv in list(_INVS.items()):
-            _flush_inventory(out, inv)
+        for out, inv in list(_INVS.items()): _flush_inventory(out, inv)
 
 
 _CLI_STATE = ['', '']
@@ -175,15 +155,12 @@ def verify_stub(id_or_res: str, case_id: str | Mapping[str, Any], payload: Any) 
 
 
 def _load_view(contract_id: str) -> dict[str, Any]:
-    if contract_id in _VIEWS:
-        return _VIEWS[contract_id]
+    if contract_id in _VIEWS: return _VIEWS[contract_id]
     res = os.environ.get('DRIFT_RESOLVED', '').strip()
     if not res:
         doc = _auto_resolve(contract_id)
-        if doc is None:
-            raise RuntimeError(f'DRIFT_RESOLVED is not set and contract "{contract_id}" could not be auto-resolved from .drift/')
-        if doc.get('id') != contract_id:
-            raise ValueError(f'resolved view for "{contract_id}" has id "{doc.get("id")}"')
+        if doc is None: raise RuntimeError(f'DRIFT_RESOLVED is not set and contract "{contract_id}" could not be auto-resolved from .drift/')
+        if doc.get('id') != contract_id: raise ValueError(f'resolved view for "{contract_id}" has id "{doc.get("id")}"')
         _VIEWS[contract_id] = doc
         return doc
     fp = Path(res) if res.endswith('.json') else Path(res) / f'{contract_id}.json'
@@ -192,19 +169,16 @@ def _load_view(contract_id: str) -> dict[str, Any]:
         if isinstance(synced, dict) and synced.get('id') == contract_id:
             _VIEWS[contract_id] = synced
             return synced
-    if not fp.is_file():
-        raise FileNotFoundError(f'contract "{contract_id}" was not found at {fp}')
+    if not fp.is_file(): raise FileNotFoundError(f'contract "{contract_id}" was not found at {fp}')
     doc = _read_json(fp)
-    if doc.get('id') != contract_id:
-        raise ValueError(f'resolved view {fp} has id "{doc.get("id")}", exp "{contract_id}"')
+    if doc.get('id') != contract_id: raise ValueError(f'resolved view {fp} has id "{doc.get("id")}", exp "{contract_id}"')
     _VIEWS[contract_id] = doc
     return doc
 
 
 def _load_selection() -> dict[str, Any]:
     global _sel_cache
-    if _sel_cache is not None:
-        return _sel_cache
+    if _sel_cache is not None: return _sel_cache
     sel = os.environ.get('DRIFT_SELECT', '').strip()
     if not sel or not Path(sel).is_file():
         _sel_cache = {'all': True, 'tests': set(), 'by_c': {}, 'tagged': set()}
@@ -220,11 +194,9 @@ def should_run(contract_id: str, test_id: str, cases: tuple[str, ...] | list[str
     if fc:
         if _fc_cache is None or _fc_cache[0] != fc:
             _fc_cache = (fc, {x.strip() for x in fc.split(',') if x.strip()})
-        if contract_id not in _fc_cache[1]:
-            return False
+        if contract_id not in _fc_cache[1]: return False
     sel = _load_selection()
-    if sel['all'] or test_id in sel['tests'] or contract_id in sel['tagged']:
-        return True
+    if sel['all'] or test_id in sel['tests'] or contract_id in sel['tagged']: return True
     ch = sel['by_c'].get(contract_id)
     return bool(ch and any(c in ch for c in cases))
 
@@ -391,66 +363,68 @@ class DriftContext:
 
     def _when_table(self, c: str) -> dict[str, Any]:
         if self._mutated_when is not None and self.mutation_override is not None and self.mutation_override['case'] == c:
-            return self._mutated_when
-        return self.view['cases'][c].get('when') or {}
+            return self._converted_table('when', self._mutated_when)
+        return self._converted_table('when', self.view['cases'][c].get('when') or {})
 
     def _then_table(self, c: str) -> dict[str, Any]:
         if self._mutated_then is not None and self.mutation_override is not None and self.mutation_override['case'] == c:
-            return self._mutated_then
-        return self.view['cases'][c].get('then') or {}
+            return self._converted_table('then', self._mutated_then)
+        return self._converted_table('then', self.view['cases'][c].get('then') or {})
+
+    def _converted_table(self, side: str, table: dict[str, Any]) -> dict[str, Any]:
+        return _checks._ce.converted_table(self.view, side, table)
+
+    def _when_env(self, c: str, payload: Any = None, explicit_when: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return _checks._uis.build_when_env(self._when_table(c), self._proj_map('when'), self._then_table(c), self._proj_map('then'), payload, explicit_when, _checks.read_pointer, _checks.check_relational_leaf, self.contract_id, c)
+
+    def _u03(self, v: Any) -> Any:
+        return _checks._uis.unwrap_03_eq(v) if self.view.get('drift') == '0.3' else v
 
     def when(self, c: str, k: str) -> Any:
         self._require_tagged(c)
         w = self._when_table(c)
-        if k not in w:
-            raise KeyError(f'case "{c}" has no when.{k}')
-        return w[k]
+        if k not in w: raise KeyError(f'case "{c}" has no when.{k}')
+        return self._u03(w[k])
 
     def find_when(self, c: str, k: str, fb: Any = None) -> Any:
         self._require_tagged(c)
         w = self._when_table(c)
-        return w[k] if k in w else fb
+        return self._u03(w[k]) if k in w else fb
 
     def when_table(self, c: str) -> dict[str, Any]:
         self._require_tagged(c)
-        return dict(_checks.clone_json(self._when_table(c)))
+        return {k: self._u03(v) for k, v in _checks.clone_json(self._when_table(c)).items()}
 
     def for_each_case(self, fn: Callable[[str, dict[str, Any]], Any]) -> None:
-        for c in self.cases:
-            fn(c, self.when_table(c))
+        for c in self.cases: fn(c, self.when_table(c))
 
     def expect(self, c: str, k: str) -> Any:
         self._require_tagged(c)
         t = self._then_table(c)
-        if k not in t:
-            raise KeyError(f'case "{c}" has no then.{k}')
+        if k not in t: raise KeyError(f'case "{c}" has no then.{k}')
         self.reads[c].add(k)
-        return t[k]
+        return self._u03(t[k])
 
     def find_then(self, c: str, k: str, fb: Any = None) -> Any:
         self._require_tagged(c)
         t = self._then_table(c)
-        if k in t:
-            self.reads[c].add(k)
-            return t[k]
-        return fb
+        if k not in t: return fb
+        self.reads[c].add(k)
+        return self._u03(t[k])
 
     def then(self, c: str) -> ThenView:
         self._require_tagged(c)
-        return ThenView(self._then_table(c), self.reads[c])
+        return ThenView({k: self._u03(v) for k, v in self._then_table(c).items()}, self.reads[c])
 
     def record_input(self, fp: str | Path, pre: bytes | str | None = None) -> str:
         is_self = isinstance(pre, str)
         cwd = Path(os.path.normpath(os.getcwd()))
         abs_p = Path(fp) if is_self else Path(os.path.normpath(cwd / fp))
-        try:
-            rel = str(fp) if is_self else abs_p.relative_to(cwd).as_posix()
-        except ValueError:
-            rel = Path(fp).as_posix()
+        try: rel = str(fp) if is_self else abs_p.relative_to(cwd).as_posix()
+        except ValueError: rel = Path(fp).as_posix()
         dig = pre if is_self else _input_digest(abs_p, pre)
         if self.mutation_override is None:
-            if not is_self:
-                self._input_files[abs_p] = (rel, dig)
+            if not is_self: self._input_files[abs_p] = (rel, dig)
             out = _resolve_events_file()
             if out:
                 _record_discovery(self.test_id, out)
@@ -472,9 +446,9 @@ class DriftContext:
     def bind_ui_environment(self, p: str | Path, o: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return _checks._ui.bind_ui_environment(self, p, o)
 
-    def check(self, case_id: str, checks: Mapping[str, Callable[[Any], Any]]) -> None:
+    def check(self, case_id: str, checks: Mapping[str, Any], when: Mapping[str, Any] | None = None) -> None:
         self._require_tagged(case_id)
-        _checks.run_simple_checks(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], checks)
+        _checks.run_simple_checks(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], checks, self._when_env(case_id, checks, when))
 
     def check_bounds(self, case_id: str, domain: Any, checks: Mapping[str, Callable[[Any, Any], Any]]) -> None:
         self._require_tagged(case_id)
@@ -501,8 +475,8 @@ class DriftContext:
         self.record_input(f'.drift/self-stub/{self.contract_id}', 'sha256:self-stub')
         return _checks.build_projected_output(self.view, case_id, base, self._then_table(case_id))
 
-    def check_projection(self, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
-        _checks.run_projection_checks(self, case_id, payload, checks)
+    def check_projection(self, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None, when: Mapping[str, Any] | None = None) -> None:
+        _checks.run_projection_checks(self, case_id, payload, checks, when)
 
     def check_adverse(self, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         _checks.run_adverse_checks(self, case_id, harness, checks)
@@ -525,20 +499,17 @@ class DriftContext:
     def check_log_sink(self, case_id: str, obs: Mapping[str, Any]) -> dict[str, Any]:
         return _checks._sec.run_log_sink_probe(self, case_id, obs)
 
-    def check_view(self, case_id: str, view: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
+    def check_view(self, case_id: str, view: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None, when: Mapping[str, Any] | None = None) -> None:
         self._require_tagged(case_id)
-        _checks.check_view_table(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], view, checks, self.mutation_override, _METRICS, lambda: self._proj_map('then'))
+        _checks.check_view_table(self.contract_id, case_id, self._then_table(case_id), self.reads[case_id], view, checks, self.mutation_override, _METRICS, lambda: self._proj_map('then'), self._when_env(case_id, view, when))
 
     def fully_read_cases(self) -> list[str]:
         out: list[str] = []
         unobs = getattr(self, 'unobserved_cases', set())
         for c in self.cases:
-            if c in unobs:
-                continue
+            if c in unobs: continue
             t_keys = list((self.view['cases'][c].get('then') or {}).keys())
-            f_res = _checks._sec.forbidden_writes_of(self.view, c)
-            r_probes = _checks._sec.required_probes_of(self.view, c)
-            seen = self.reads[c]
+            f_res, r_probes, seen = _checks._sec.forbidden_writes_of(self.view, c), _checks._sec.required_probes_of(self.view, c), self.reads[c]
             if t_keys and all(k in seen for k in t_keys) and all(f'@frame:{r}' in seen for r in f_res) and all(f'@probe:{p}' in seen for p in r_probes):
                 out.append(c)
         return out
@@ -554,69 +525,43 @@ def reset_drift_cache() -> None:
     global _env_cache, _sel_cache, _fc_cache, _mut_cache, _ev_dir_cache, _shard_path, _mut_shard_path
     flush_all_inventories()
     _checks.clear_upstream_cache()
-    for cache_coll in (_VIEWS, _TOML_DIRS, _WARMED, _BATCH, _METRICS, _DIGESTS, _DISC_CLASSES, _DISC_TESTS):
-        cache_coll.clear()
+    for cache_coll in (_VIEWS, _TOML_DIRS, _WARMED, _BATCH, _METRICS, _DIGESTS, _DISC_CLASSES, _DISC_TESTS): cache_coll.clear()
     _MUT_VAR.set(())
     _env_cache = _sel_cache = _fc_cache = _mut_cache = _ev_dir_cache = _shard_path = _mut_shard_path = None
 
 
 def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...], fn: Callable[[DriftContext], Any], level: str = 'unit') -> str:
-    if not should_run(contract, test, cases):
-        return 'skipped-by-select'
+    if not should_run(contract, test, cases): return 'skipped-by-select'
     if sys.flags.optimize > 0:
         _write_event({'test': test, 'contract': contract, 'cases': list(cases), 'level': level, 'outcome': 'failed', 'read': []})
         raise AssertionError('DRIFT proof runs require Python assertions to be enabled (do not run with -O or PYTHONOPTIMIZE)')
-    try:
-        ctx = DriftContext(contract, test, cases, level)
+    try: ctx = DriftContext(contract, test, cases, level)
     except Exception:
         _write_event({'test': test, 'contract': contract, 'cases': list(cases), 'level': level, 'outcome': 'failed', 'read': []})
         raise
-    version = ctx.view.get('ref') or ctx.view.get('digest') or ''
-    mut_cfg = _load_mutants()
-    start = time.perf_counter()
-    passed = False
-    control_err: BaseException | None = None
+    version, mut_cfg, start, passed, control_err = (ctx.view.get('ref') or ctx.view.get('digest') or ''), _load_mutants(), time.perf_counter(), False, None
     tok = _CTX_VAR.set(ctx)
     try:
         fn(ctx)
         for abs_p, (rel, dig) in ctx._input_files.items():
-            if not abs_p.is_file():
-                raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
+            if not abs_p.is_file(): raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
             st = abs_p.stat()
-            if st.st_size > 65536:
-                ok = _DIGESTS.get(str(abs_p), (None, '')) == ((st.st_mtime_ns, st.st_size), dig)
-            else:
-                ok = _hash_bytes(abs_p.read_bytes()) == dig
-            if not ok:
-                raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
+            ok = (_DIGESTS.get(str(abs_p), (None, '')) == ((st.st_mtime_ns, st.st_size), dig)) if st.st_size > 65536 else (_hash_bytes(abs_p.read_bytes()) == dig)
+            if not ok: raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
         passed = True
-    except BaseException as err:
-        control_err = err
-    finally:
-        _CTX_VAR.reset(tok)
-    ev: dict[str, Any] = {
-        'test': test,
-        'contract': contract,
-        'cases': ctx.cases,
-        'level': ctx.level,
-        'outcome': 'passed' if passed else 'failed',
-        'read': ctx.fully_read_cases(),
-    }
-    if version:
-        ev['digest'] = version
+    except BaseException as err: control_err = err
+    finally: _CTX_VAR.reset(tok)
+    ev: dict[str, Any] = {'test': test, 'contract': contract, 'cases': ctx.cases, 'level': ctx.level, 'outcome': 'passed' if passed else 'failed', 'read': ctx.fully_read_cases()}
+    if version: ev['digest'] = version
     if ctx.view.get('drift') == '0.3':
-        req_caps = list(ctx.view.get('required_capabilities') or [])
-        for rc in req_caps:
-            if rc not in _checks.CAPS_03:
-                raise AssertionError(f'bridge.capability_unsupported:{rc}')
-        ev['schema'] = '0.3'
-        ev['capabilities'] = list(_checks.CAPS_03)
+        for rc in (ctx.view.get('required_capabilities') or ()):
+            if rc not in _checks.CAPS_03: raise AssertionError(f'bridge.capability_unsupported:{rc}')
+        ev['schema'], ev['capabilities'] = '0.3', list(_checks.CAPS_03)
     _write_event(ev)
     elapsed = max(0.001, time.perf_counter() - start)
     if mut_cfg is not None:
         _checks._up.run_case_mutants(mut_cfg, _resolve_mutation_file(mut_cfg['out_t']), ctx, contract, passed, elapsed, time, with_mutation, lambda t: DriftContext(contract, test, cases, level, t), fn, _dump_json)
-    if not passed and control_err is not None:
-        raise control_err
+    if not passed and control_err is not None: raise control_err
     return 'passed'
 
 

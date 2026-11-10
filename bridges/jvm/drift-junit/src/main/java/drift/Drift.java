@@ -132,23 +132,33 @@ public final class Drift {
         }
     }
 
+    static boolean isExplicitSchema02(String contract) {
+        try {
+            return "0.2".equals(view(contract).get("drift"));
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     static List<String> requiredCapabilities(String contract) {
         List<String> supported03 = List.of(
                 "rel-keys-guard/1", "rel-linear-balance/1", "rel-peer-sum/1",
                 "rel-series/1", "rel-tol/1", "unit-conversion/1");
+        final Map<String, Object> v;
         try {
-            Object raw = view(contract).get("required_capabilities");
-            if (raw instanceof List<?> list) {
-                for (Object item : list) {
-                    if (item instanceof String s && !supported03.contains(s)) {
-                        throw new IllegalStateException("bridge.capability_unsupported:" + s);
-                    }
-                }
-            }
-            return supported03;
+            v = view(contract);
         } catch (RuntimeException e) {
             return supported03;
         }
+        Object raw = v.get("required_capabilities");
+        if (raw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof String s && !supported03.contains(s)) {
+                    throw new IllegalStateException("bridge.capability_unsupported:" + s);
+                }
+            }
+        }
+        return supported03;
     }
 
     /** True when the running test read every {@code then} value and required frame of the case. */
@@ -411,14 +421,20 @@ public final class Drift {
      * the values of {@link #then()}, counts as reading it; keys alone do not.
      */
     public record Case(String contract, String id, Map<String, Object> when, Map<String, Object> then) {
+        private Object unwrap03(Object v) {
+            return (!Drift.isExplicitSchema02(contract) && v instanceof Map<?, ?> m && m.size() == 1 && m.containsKey("eq"))
+                    ? m.get("eq")
+                    : v;
+        }
+
         public Object when(String key) {
-            return need(when, "when", key);
+            return unwrap03(need(when, "when", key));
         }
 
         public Object then(String key) {
             Object value = need(then, "then", key);
             Drift.mark(contract, id, key);
-            return value;
+            return unwrap03(value);
         }
 
         /** The then table; reading its values counts as reading them, its keys do not. */
@@ -429,7 +445,7 @@ public final class Drift {
 
         /** The when value, or empty when the case has no such predicate. */
         public Optional<Object> findWhen(String key) {
-            return Optional.ofNullable(when.get(key));
+            return Optional.ofNullable(unwrap03(when.get(key)));
         }
 
         /** Returns a defensive copy of the case's {@code when} table (including any active {@code --when} mutation). */
@@ -445,7 +461,7 @@ public final class Drift {
             if (value != null) {
                 Drift.mark(contract, id, key);
             }
-            return Optional.ofNullable(value);
+            return Optional.ofNullable(unwrap03(value));
         }
 
         public String whenString(String key) {

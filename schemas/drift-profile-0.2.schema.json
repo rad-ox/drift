@@ -717,6 +717,9 @@
           "type": "array",
           "uniqueItems": true
         },
+        "simulation": {
+          "type": "boolean"
+        },
         "sources": {
           "anyOf": [
             {

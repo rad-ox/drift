@@ -3,7 +3,7 @@
 class_name DriftBridge
 extends RefCounted
 
-const VERSION: String = "drift.gdscript@0.5.0"
+const VERSION: String = "drift.gdscript@0.5.1"
 const BRIDGE_RUNTIME_BASELINE: String = "gdscript-4.3"
 const CAPABILITIES: Array[String] = [
 	"predicates",

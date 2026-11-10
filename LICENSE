@@ -12,7 +12,11 @@ DRIFT is distributed under a dual-surface license model:
    commercial repositories.
 2. **DRIFT Free CLI Engine (`drift` / `drift.exe`)** — The precompiled `drift`
    command-line executable is proprietary software provided under the **DRIFT
-   Free Edition License** below.
+   Free Edition License** in Part II below.
+3. **DRIFT Pro & Enterprise Editions (`drift-pro`, `drift-enterprise`)** — The
+   `drift-pro` (`drift-pro.exe`) and `drift-enterprise` (`drift-enterprise.exe`)
+   executables and the companion Pro, Enterprise, and `drift-recall` agent
+   skills are proprietary commercial software governed by Part III below.
 
 ---
 
@@ -60,3 +64,38 @@ Copyright (c) 2026 Lukasz Radkiewicz (rad-ox). All rights reserved.
    boundaries (`DRIFT Pro` / `DRIFT Enterprise`).
 4. **Disclaimer of Warranty.** THE DRIFT CLI BINARY IS PROVIDED "AS IS",
    WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+
+---
+
+## Part III — DRIFT Pro & Enterprise Commercial Editions
+
+Copyright (c) 2026 Lukasz Radkiewicz (rad-ox). All rights reserved.
+
+1. **Commercial License Required.** The `drift-pro` (`drift-pro.exe`) and
+   `drift-enterprise` (`drift-enterprise.exe`) executables, together with the
+   `drift-pro`, `drift-enterprise`, and `drift-recall` agent skill packages,
+   are proprietary commercial software. Copying, installing, or executing them
+   in local development or CI/CD environments requires an active DRIFT Pro or
+   DRIFT Enterprise commercial license, an Open-Source Maintainer Grant under
+   Section 2 below, or an authorized evaluation agreement with the copyright
+   holder (`rad-ox@users.noreply.github.com`).
+2. **Open-Source Maintainer Grant (Complimentary Upon Request).** Maintainers
+   and owners of public open-source repositories distributed under an
+   OSI-approved open-source license may request a complimentary,
+   non-transferable **DRIFT Enterprise** license for their open-source
+   repositories by contacting `rad-ox@users.noreply.github.com` with the
+   repository URL. Complimentary grants are issued at the copyright holder's
+   discretion, are restricted to the named public open-source repository (not
+   private repositories or internal commercial workloads), prohibit committing
+   or publicly mirroring the `drift-pro` / `drift-enterprise` binaries or
+   exposing them as downloadable CI artifacts, and are provided "AS IS" without
+   commercial SLA obligations. The grant terminates automatically if the
+   covered repository becomes proprietary or closed-source.
+3. **Open Surface Unchanged.** Even inside a DRIFT Pro or DRIFT Enterprise
+   distribution archive, all Open Integration Surface files listed in Part I
+   (`bridges/`, `verifier/`, `hooks/`, `schemas/`, `example/`, installers, and
+   documentation) remain licensed under the **MIT License** in Part I.
+4. **Restrictions & Disclaimer.** The restrictions on reverse-engineering,
+   modification, and tier circumvention in Part II, Section 3, and the
+   warranty disclaimer in Part II, Section 4, apply equally to the DRIFT Pro
+   and DRIFT Enterprise executables.

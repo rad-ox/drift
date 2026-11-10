@@ -90,17 +90,19 @@ def read_pointer(target: Any, raw_ptr: str) -> tuple[bool, Any]:
 def _build_peer_index(when_map: Mapping[str, Any], raw_then_map: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> dict[str, Any]:
     then_map = _tighten_then_by_sum_residuals(when_map, raw_then_map, wp, tp, rk)
     idx: dict[str, Any] = {}
-    for wk, wv in when_map.items():
+    for wk, raw_wv in when_map.items():
+        wv = raw_wv['eq'] if isinstance(raw_wv, Mapping) and len(raw_wv) == 1 and 'eq' in raw_wv else raw_wv
         if not _is_relational_map(wv, rk):
-            idx[wk] = wv
+            idx[wk] = idx[f'when.{wk}'] = wv
             p = split_resource_pointer(wp.get(wk, ''))[1]
             if p.startswith('/'): idx[p] = wv
     rel_entries: list[tuple[str, Mapping[str, Any]]] = []
-    for tk, tv in then_map.items():
+    for tk, raw_tv in then_map.items():
+        tv = raw_tv['eq'] if isinstance(raw_tv, Mapping) and len(raw_tv) == 1 and 'eq' in raw_tv else raw_tv
         if _is_relational_map(tv, rk):
             rel_entries.append((tk, tv))
         else:
-            idx[tk] = tv
+            idx[tk] = idx[f'then.{tk}'] = tv
             p = split_resource_pointer(tp.get(tk, ''))[1]
             if p.startswith('/'): idx[p] = tv
     if rel_entries:
@@ -111,7 +113,7 @@ def _build_peer_index(when_map: Mapping[str, Any], raw_then_map: Mapping[str, An
             for tk, tv in rel_entries:
                 if tk not in idx and not any(k in tv and not peer_fn(tv[k])[0] for k in ('eq_field', 'ge_field', 'le_field')) and not (isinstance(tv.get('sum_fields'), (list, tuple)) and any(not peer_fn(sf)[0] for sf in tv['sum_fields'])):
                     w = witness_value(tv, rk, lambda x: x, peer_fn)
-                    idx[tk] = w
+                    idx[tk] = idx[f'then.{tk}'] = w
                     p = split_resource_pointer(tp.get(tk, ''))[1]
                     if p.startswith('/'): idx[p] = w
                     progress = True
@@ -140,6 +142,8 @@ def _resolve_stub_peer(ref: Any, base: Any, peer_idx: Mapping[str, Any], wp: Map
 
 
 def _resolve_rel_bounds(val: Mapping[str, Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None) -> tuple[bool, Any, int | float | None, int | float | None]:
+    if 'eq' in val and 'balance_fields' not in val and 'sum_fields' not in val and 'peer' not in val:
+        return (True, val['eq'], None, None)
     if peer_fn is not None and 'eq_field' in val:
         ok, eq_v = peer_fn(val['eq_field'])
         if ok: return (True, eq_v, None, None)

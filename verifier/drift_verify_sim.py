@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-DIGEST_RE = re.compile(r"^dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
+DIGEST_RE = re.compile(r"^(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$")
 SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SIM_OPT_KEYS = frozenset(("observed_convergence","trajectory_stability"))
 SIM_KEYS = frozenset((

@@ -13,6 +13,100 @@ import java.util.TreeMap;
 
 /** The JSON subset DRIFT exchanges: objects, arrays, strings, numbers, booleans, null. */
 final class Json {
+    private static String qualifyPeer03(Object raw) {
+        if (raw instanceof String s) {
+            String t = s.trim();
+            return (t.isEmpty() || t.startsWith("when.") || t.startsWith("then.") || t.startsWith("/")) ? t : ("then." + t);
+        }
+        return "";
+    }
+
+    static Map<String, Object> desugar03Rel(Map<?, ?> raw) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : raw.entrySet()) {
+            String k = String.valueOf(e.getKey());
+            Object v = e.getValue();
+            if ("tol".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("abs")) out.put("abs_tol", m.get("abs"));
+                if (m.containsKey("rel")) out.put("rel_tol", m.get("rel"));
+            } else if ("len".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("min")) out.put("min_len", m.get("min"));
+                if (m.containsKey("max")) out.put("max_len", m.get("max"));
+            } else if ("keys".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("allow")) out.put("allowed_keys", m.get("allow"));
+                if (m.containsKey("forbid")) out.put("forbid_keys", m.get("forbid"));
+            } else if ("peer".equals(k) && v instanceof Map<?, ?> m) {
+                if (m.containsKey("le")) out.put("le_field", qualifyPeer03(m.get("le")));
+                if (m.containsKey("ge")) out.put("ge_field", qualifyPeer03(m.get("ge")));
+                if (m.containsKey("eq")) out.put("eq_field", qualifyPeer03(m.get("eq")));
+                if (m.get("sum") instanceof List<?> sumList) {
+                    out.put("sum_fields", sumList.stream().map(Json::qualifyPeer03).toList());
+                }
+                if (m.get("balance") instanceof Map<?, ?> bm) {
+                    Map<String, Object> nb = new java.util.LinkedHashMap<>();
+                    if (bm.get("add") instanceof List<?> addList) {
+                        nb.put("add", addList.stream().map(Json::qualifyPeer03).toList());
+                    }
+                    if (bm.get("sub") instanceof List<?> subList) {
+                        nb.put("sub", subList.stream().map(Json::qualifyPeer03).toList());
+                    }
+                    out.put("balance_fields", nb);
+                }
+            } else if ("series".equals(k) && v instanceof Map<?, ?> m) {
+                for (Map.Entry<?, ?> se : m.entrySet()) {
+                    String sk = String.valueOf(se.getKey());
+                    Object sv = se.getValue();
+                    if ("monotonic".equals(sk) && ("increasing".equals(sv) || "decreasing".equals(sv))) {
+                        sv = "strictly_" + sv;
+                    }
+                    out.put(sk, sv);
+                }
+            } else if (!"convert_from".equals(k)) {
+                out.put(k, v);
+            }
+        }
+        if (out.containsKey("eq") && (out.containsKey("abs_tol") || out.containsKey("rel_tol"))
+                && !out.containsKey("balance_fields") && !out.containsKey("sum_fields")) {
+            out.put("approx", out.remove("eq"));
+        }
+        return out;
+    }
+
+    static void scaleConstraint03(Map<String, Object> out, Object from, Map<?, ?> contract, String key) {
+        Map<?, ?> units = contract.get("units") instanceof Map<?, ?> m ? m : Map.of();
+        Object target = out.get("unit");
+        if (contract.get("schema") instanceof Map<?, ?> schema
+                && schema.get("then") instanceof Map<?, ?> then
+                && then.get(key) instanceof Map<?, ?> pred && pred.containsKey("unit")) {
+            target = pred.get("unit");
+        }
+        Object ratio = null;
+        if (from.equals(target)) ratio = 1.0;
+        else if (target != null) ratio = units.get(from + "->" + target);
+        else {
+            List<?> matches = units.keySet().stream().filter(k -> String.valueOf(k).startsWith(from + "->")).toList();
+            if (matches.size() == 1) ratio = units.get(matches.get(0));
+        }
+        if (!isFiniteNumber(ratio) || ((Number) ratio).doubleValue() <= 0) {
+            throw new AssertionError("missing unit conversion from " + from + " to " + target);
+        }
+        double scale = ((Number) ratio).doubleValue();
+        for (String k : List.of("eq", "approx", "min", "max", "abs_tol", "step_max_delta")) {
+            if (out.get(k) instanceof Number n) out.put(k, n.doubleValue() * scale);
+        }
+        for (String k : List.of("in", "not_in")) {
+            if (out.get(k) instanceof List<?> l) {
+                out.put(k, l.stream().map(v -> v instanceof Number n ? n.doubleValue() * scale : v).toList());
+            }
+        }
+        if (out.get("sum_total") instanceof Number n) out.put("sum_total", n.doubleValue() * scale);
+        else if (out.get("sum_total") instanceof Map<?, ?> m) {
+            Map<String, Object> scaled = new LinkedHashMap<>();
+            m.forEach((k, v) -> scaled.put(String.valueOf(k), v instanceof Number n ? n.doubleValue() * scale : v));
+            out.put("sum_total", scaled);
+        }
+    }
+
     private final String s;
     private int i;
 
@@ -367,7 +461,7 @@ final class Json {
     }
 
     static void checkNumericAndTuningClauses(
-            String pfx, String key, Map<?, ?> exp, Object actual, Object payload, Map<String, String> proj, java.util.Set<String> relKeys) {
+            Drift.Case c, String pfx, String key, Map<?, ?> exp, Object actual, Object payload, Map<String, String> proj, java.util.Set<String> relKeys) {
         double tol = (isFiniteNumber(exp.get("abs_tol")) && ((Number) exp.get("abs_tol")).doubleValue() >= 0.0)
                 ? ((Number) exp.get("abs_tol")).doubleValue() : 1e-9;
         if (exp.containsKey("approx")) {
@@ -392,7 +486,7 @@ final class Json {
                 double sgn = "add".equals(side) ? 1.0 : -1.0;
                 if (bf.get(side) instanceof List<?> refs) {
                     for (Object ref : refs) {
-                        PointerLookup pr = DriftViewChecks.resolvePeer(payload, proj, ref);
+                        PointerLookup pr = DriftViewChecks.resolvePeer(c, payload, proj, ref);
                         if (!pr.found() || !isFiniteNumber(pr.value())) {
                             throw new AssertionError(pfx + ": missing numeric peer \"" + ref + "\" for then." + key + ".balance_fields");
                         }

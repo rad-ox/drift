@@ -88,7 +88,10 @@
             "frame_time",
             "cold_start",
             "artifact_bytes",
-            "work_units"
+            "work_units",
+            "tick_alloc_bytes",
+            "tick_alloc_count",
+            "frame_hitch_ns"
           ]
         },
         "min_confidence": {

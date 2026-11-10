@@ -193,6 +193,29 @@ enforce = "release"
 - **Domain `[concepts]`, Migration `[cutover]` & UI Surface Sequences**: define context-qualified domain `[concepts]` in `.drift/config.toml` (`[use].concepts`, `drift new --concept`, `@concept` recall), enforce legacy cutover parity (`[cutover]`, `*.parity.json` `drift.parity-receipt/1`, and `*.migration.json` `drift.migration-receipt/1`) or triage production signals (`drift case add --from-signal`), and verify multi-step UI surfaces (`drift.ui-observation/1` via `collectPlaywrightSequence` / `observeUiSequence`, reusable `async-action-feedback@1` and `wizard-form@1` recovery profiles, `evaluateScenarioMatrix`, and Web, Compose, or Windows UIA adapters).
 - **Canonical Observation Protocol (`drift.observation/1`), Supervisor Sessions (`drift.bridge-session/1`), Perimeter Seams, Shadow Mode & Federated Composition**: evaluate lossless `ObsValue` records (`int64`, `decimal`, `bytes`, and kernel-side COBOL copybook decoding) and supervisor sessions (`drift.bridge-session/1`) directly in the kernel, enforce `L0–L3` causal execution coupling (`sweep --flow`) and ambient world-frame traps (`_frame` with `allowed_keys` and `checkFrame`), track `.drift/seam-stub/` producer provenance in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), probe 2-skeleton neighbor extremes (`checkSeamBounds` / `check_seam_bounds`), behavioral probes (idempotency, seam retry/query, rollback, BOLA), and incoming-seam faults (`prove.seam_mutants`), run DRIFT in external **Shadow Mode** (`--state-dir` / `DRIFT_STATE_DIR`, `shadow.toml`, read-only subject tree with `GIT_OPTIONAL_LOCKS=0`, and the 2-phase JUnit XML adapter `verifier/drift_shadow_junit.py`), and compose multi-repository rollouts via `drift.composition-manifest/1` and bidirectional `drift.boundary-bundle/1` (`offers`/`requires`).
 
+<details>
+<summary><kbd>FREE</kbd> <strong>Spotlight: Zero-Footprint Adoption with Shadow Mode &amp; 2-Phase JUnit XML</strong></summary>
+
+<br />
+
+When adopting DRIFT on a legacy or third-party repository where you cannot immediately commit `.drift/` in-tree (or where the source tree is mounted read-only), initialize an external **Shadow Area**:
+
+```bash
+# 1. Create a shadow area outside the target repository (registered in ~/.config/drift/shadows.toml)
+drift init catalog-team /path/to/service-repo --state-dir ~/.drift-shadows/service
+drift approve ~/.drift-shadows/service/.drift/config.toml --by alice
+
+# 2. Credit existing JUnit XML runs with pre/post snapshot provenance (caps at 'bound')
+python3 verifier/drift_shadow_junit.py begin  --state-dir ~/.drift-shadows/service --run-id run-01
+mvn -f /path/to/service-repo/pom.xml test
+cp /path/to/service-repo/target/surefire-reports/*.xml ~/.drift-shadows/service/.drift-work/runs/run-01/reports/
+python3 verifier/drift_shadow_junit.py finish --state-dir ~/.drift-shadows/service --run-id run-01
+
+# 3. Promote the shadow area into the repository when ready (preserving all approval digests)
+drift init --unshadow /path/to/service-repo --state-dir ~/.drift-shadows/service
+```
+</details>
+
 ---
 
 ## Level 1: Binding Tests & Enforcing the Gate
@@ -210,9 +233,9 @@ Add the dependency and plugin to `pom.xml`:
 ```xml
 <dependencies>
   <dependency>
-    <groupId>drift</groupId>
+    <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.5.0</version>
+    <version>0.5.1</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -220,9 +243,9 @@ Add the dependency and plugin to `pom.xml`:
 <build>
   <plugins>
     <plugin>
-      <groupId>drift</groupId>
+      <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.5.0</version>
+      <version>0.5.1</version>
       <executions>
         <execution>
           <goals>
@@ -261,7 +284,7 @@ In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` from 
 // build.sbt
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "drift" % "drift-junit" % "0.5.0" % Test
+libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.5.1" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -479,12 +502,13 @@ Add the following to `.vscode/settings.json` (with the **Even Better TOML** / Ta
 ```json
 {
   "evenBetterToml.schema.associations": {
-    ".*\\.drift/contracts/.*\\.toml$": "./schemas/drift-contract-0.2.schema.json",
-    ".*\\.drift/profiles/.*\\.toml$": "./schemas/drift-profile-0.2.schema.json",
-    ".*\\.drift/config\\.toml$": "./schemas/drift-config-0.2.schema.json"
+    ".*\\.drift/contracts/.*\\.toml$": "./schemas/drift-contract-0.3.schema.json",
+    ".*\\.drift/profiles/.*\\.toml$": "./schemas/drift-profile-0.3.schema.json",
+    ".*\\.drift/config\\.toml$": "./schemas/drift-config-0.3.schema.json"
   }
 }
 ```
+*(Use `drift-contract-0.2.schema.json`, `drift-profile-0.2.schema.json`, and `drift-config-0.2.schema.json` for `drift = "0.2"` areas.)*
 
 ---
 

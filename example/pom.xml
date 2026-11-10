@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>drift.examples</groupId>
   <artifactId>items</artifactId>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <name>DRIFT synthetic items service</name>
 
   <properties>
@@ -17,9 +17,9 @@
 
   <dependencies>
     <dependency>
-      <groupId>drift</groupId>
+      <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-junit</artifactId>
-      <version>0.5.0</version>
+      <version>0.5.1</version>
       <scope>test</scope>
     </dependency>
     <dependency>

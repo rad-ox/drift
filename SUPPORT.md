@@ -31,3 +31,4 @@ python3 verifier/drift_verify.py --self-test
 - **Bugs & Technical Questions**: Open an issue on [`rad-ox/drift`](https://github.com/rad-ox/drift/issues) including your `drift version` output, operating system, and a minimal contract or test snippet.
 - **Security Vulnerabilities**: Do not open a public issue; follow the private reporting instructions in [`SECURITY.md`](SECURITY.md).
 - **DRIFT Pro & Enterprise Inquiries**: Contact `rad-ox@users.noreply.github.com`.
+- **Complimentary Open-Source Maintainer Grant**: Owners of public OSI-licensed open-source repositories may request a free **DRIFT Enterprise** license for their public repositories by emailing `rad-ox@users.noreply.github.com` with the repository URL (subject to Part III, Section 2 of [`LICENSE`](LICENSE)).
