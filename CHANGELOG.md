@@ -4,6 +4,7 @@ User-visible changes and capabilities by release.
 
 ## 0.5.1
 
+- Upgrade `central-publishing-maven-plugin` to `0.12.0` to strip `maven-metadata-local.xml` and `_remote.repositories` from Maven Central bundles.
 - Release `0.5.1`.
 - Harden `0.3` constraint algebra (unit-aware meet/refinement, `not_in`/UTF-8 codepoint lengths, `assurance_ref` simulation, `fmt --upgrade`, `mutants`, bridges, and small-model/ASan/fuzz checks).
 - Fix `0.3` guard target globs, `ObsValue` `series`/`contains`, transitive `peer`/unit closures, exempt-case isolation, `extends`/invariant refinement, and upstream owner keys (DR-E105).
