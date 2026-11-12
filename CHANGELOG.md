@@ -4,6 +4,7 @@ User-visible changes and capabilities by release.
 
 ## 0.6.0
 
+- Replace `crates-io-auth-action@v1` in `publish.yml` with annotation-clean OIDC exchange, `CARGO_REGISTRY_TOKEN` fallback, token revocation, and `setup-java@v6`.
 - Fix public `verify.yml` Free-tier `gate --explain` self-stub check, `[requires]` profile append, and Node 24 `setup-java@v6`/`setup-node@v7`/`setup-python@v7` actions.
 - Release `0.6.0`.
 - Package `drift-notify-wsl.sh` and `notification` hook entries in release archives, sync `0.6` CLI docs, and harden public changelog sanitization.

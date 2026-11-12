@@ -32,33 +32,85 @@ jobs:
           git fetch -q --depth=1 origin "${GITHUB_SHA}"
           git checkout -q FETCH_HEAD
 
-      - name: Authenticate with crates.io (OIDC Trusted Publishing)
-        id: crates-oidc
-        if: ${{ github.event_name == 'release' || inputs.target == 'all' || inputs.target == 'crates' }}
-        uses: rust-lang/crates-io-auth-action@v1
-        continue-on-error: true
-
       - name: Publish drift_rust to crates.io
         if: ${{ github.event_name == 'release' || inputs.target == 'all' || inputs.target == 'crates' }}
         working-directory: bridges/rust
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-oidc.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          FALLBACK_CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
-            echo "crates.io: neither OIDC Trusted Publishing nor CARGO_REGISTRY_TOKEN is configured" >&2
-            exit 1
-          fi
-          ver=$(sed -n '1p' ../../VERSION | tr -d '\r\n')
-          if curl -fsSL -A "drift-release-workflow/1.0" "https://crates.io/api/v1/crates/drift_rust/${ver}" 2>/dev/null | grep -q '"version"'; then
-            echo "crates.io: drift_rust ${ver} already published, skipping"
-            exit 0
-          fi
-          cp ../../README.md ../../LICENSE .
-          cargo publish --allow-dirty
+          python3 - <<'PY'
+          import json, os, shutil, subprocess, sys, urllib.error, urllib.request
+          from pathlib import Path
+
+          ua = {'User-Agent': 'drift-release-workflow/1.0'}
+          reg = os.environ.get('CRATES_REGISTRY_URL', 'https://crates.io').rstrip('/')
+          ver = Path('../../VERSION').read_text(encoding='utf-8').splitlines()[0].strip()
+
+          try:
+              req = urllib.request.Request(f'{reg}/api/v1/crates/drift_rust/{ver}', headers=ua)
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  if 'version' in json.loads(resp.read().decode('utf-8')):
+                      print(f'crates.io: drift_rust {ver} already published, skipping')
+                      sys.exit(0)
+          except (urllib.error.URLError, ValueError):
+              pass
+
+          oidc_token = ''
+          id_url = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL', '').strip()
+          id_tok = os.environ.get('ACTIONS_ID_TOKEN_REQUEST_TOKEN', '').strip()
+          if id_url and id_tok:
+              try:
+                  aud = reg.split('://', 1)[-1]
+                  sep = '&' if '?' in id_url else '?'
+                  jreq = urllib.request.Request(f'{id_url}{sep}audience={aud}', headers={**ua, 'Authorization': f'bearer {id_tok}'})
+                  with urllib.request.urlopen(jreq, timeout=15) as jresp:
+                      jwt = json.loads(jresp.read().decode('utf-8')).get('value', '')
+                  if jwt:
+                      treq = urllib.request.Request(
+                          f'{reg}/api/v1/trusted_publishing/tokens',
+                          data=json.dumps({'jwt': jwt}).encode('utf-8'),
+                          headers={**ua, 'Content-Type': 'application/json'},
+                          method='POST',
+                      )
+                      with urllib.request.urlopen(treq, timeout=15) as tresp:
+                          oidc_token = json.loads(tresp.read().decode('utf-8')).get('token', '').strip()
+              except (urllib.error.URLError, ValueError):
+                  oidc_token = ''
+
+          if oidc_token:
+              print(f'::add-mask::{oidc_token}', flush=True)
+              print('crates.io: authenticated via OIDC Trusted Publishing', flush=True)
+              token = oidc_token
+          else:
+              token = os.environ.get('FALLBACK_CARGO_TOKEN', '').strip()
+              if not token:
+                  print('crates.io: neither OIDC Trusted Publishing nor CARGO_REGISTRY_TOKEN is configured', file=sys.stderr)
+                  sys.exit(1)
+              print('crates.io: OIDC Trusted Publishing not active, using CARGO_REGISTRY_TOKEN', flush=True)
+
+          try:
+              shutil.copy2('../../README.md', 'README.md')
+              shutil.copy2('../../LICENSE', 'LICENSE')
+              env = {k: v for k, v in os.environ.items() if k != 'FALLBACK_CARGO_TOKEN'}
+              env['CARGO_REGISTRY_TOKEN'] = token
+              subprocess.run([os.environ.get('CARGO_BIN', 'cargo'), 'publish', '--allow-dirty'], env=env, check=True)
+          finally:
+              if oidc_token:
+                  try:
+                      dreq = urllib.request.Request(
+                          f'{reg}/api/v1/trusted_publishing/tokens',
+                          headers={**ua, 'Authorization': f'Bearer {oidc_token}'},
+                          method='DELETE',
+                      )
+                      with urllib.request.urlopen(dreq, timeout=15):
+                          pass
+                  except urllib.error.URLError:
+                      pass
+          PY
 
       - name: Setup Java 25 for Maven Central
         if: ${{ github.event_name == 'release' || inputs.target == 'all' || inputs.target == 'maven' }}
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
