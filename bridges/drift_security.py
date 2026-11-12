@@ -225,7 +225,7 @@ def bridge_capabilities() -> dict[str, Any]:
     'capabilities': list(BRIDGE_CAPABILITIES),
     'runtime_baseline': 'python-3.14',
     'schema': 'drift.bridge-capabilities/1',
-    'version': '0.5.1',
+    'version': '0.6.0',
   }
 def require_capabilities(required: list[str] | tuple[str, ...]) -> None:
   if not isinstance(required, (list, tuple)):

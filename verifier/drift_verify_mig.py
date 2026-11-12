@@ -189,7 +189,7 @@ def run_sec_self_test_core(ck: dict[str, Any], digest_matches_fn: Any, eval_sec_
     for fn_n, u_c in (("c1.toml", 'concepts = ["orders.c"]\n'), ("c2.toml", "")):
       (tp / fn_n).write_text(f'drift = "0.2"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
     assert _dv.verify_contract_toml(tp / "c1.toml", tp)["digest"] == _dv.verify_contract_toml(tp / "c2.toml", tp)["digest"]
-  from drift_verify_03 import run_03_self_test; run_03_self_test(_dv)
+  from drift_verify_ssh import run_03_self_test; run_03_self_test(_dv)
 def parse_security_lock_core(text: str, decode_fn: Any, canon_fn: Any, sec_str_fn: Any, sec_cats: Any) -> dict[str, Any]:
   import hashlib
   doc = decode_fn(text)

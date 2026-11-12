@@ -299,48 +299,20 @@ def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
     )
 
     return {
-        'schema': 'drift.ui-observation/1',
-        'surface_found': surface_found,
-        'surfaceFound': surface_found,
+        'schema': 'drift.ui-observation/1', 'surface_found': surface_found, 'surfaceFound': surface_found,
         'adapter': {'name': adapter_name, 'capabilities': capabilities},
         **({'environment_ref': s['environment_ref']} if s.get('environment_ref') else {}),
         'roles': roles,
         'sequence': {
-            'before': {
-                **before,
-                **({'input_focus_role': before_focus} if before_focus else {}),
-                **({'selected_entity_id': sel_before} if sel_before is not None else {}),
-                **({'scroll_anchor_id': anchor_before} if anchor_before is not None else {}),
-                **({'dirty_inputs': dirty_before} if isinstance(dirty_before, Mapping) else {}),
-            },
+            'before': {**before, **({'input_focus_role': before_focus} if before_focus else {}), **({'selected_entity_id': sel_before} if sel_before is not None else {}), **({'scroll_anchor_id': anchor_before} if anchor_before is not None else {}), **({'dirty_inputs': dirty_before} if isinstance(dirty_before, Mapping) else {})},
             'action': action,
-            'transition': {
-                'configured_duration_ms': configured_ms,
-                'observed_duration_ms': observed_ms,
-                'unexpected_focus_steals': unexpected_steals,
-            },
-            'after': {
-                **after_raw,
-                'input_focus_role': after_focus,
-                'selection_preserved': sel_preserved,
-                'dirty_inputs_preserved': dirty_preserved,
-                'scroll_context_preserved': scroll_preserved,
-                'trigger_restored': trigger_restored,
-                'notice_precedes_detail': notice_precedes,
-                'detail_matches_selection': detail_matches,
-                **recovery,
-            },
+            'transition': {'configured_duration_ms': configured_ms, 'observed_duration_ms': observed_ms, 'unexpected_focus_steals': unexpected_steals},
+            'after': {**after_raw, 'input_focus_role': after_focus, 'selection_preserved': sel_preserved, 'dirty_inputs_preserved': dirty_preserved, 'scroll_context_preserved': scroll_preserved, 'trigger_restored': trigger_restored, 'notice_precedes_detail': notice_precedes, 'detail_matches_selection': detail_matches, **recovery},
         },
         'presentation': {
             'horizontal_overflow_px': horiz_ov,
-            'clipping': {
-                'unintentional_clipped_count': unintentional_clipped,
-                'scrollable_containers_count': scrollable_containers,
-            },
-            'focus_visibility': {
-                'fully_obscured_count': fully_obscured,
-                'partially_obscured_count': partially_obscured,
-            },
+            'clipping': {'unintentional_clipped_count': unintentional_clipped, 'scrollable_containers_count': scrollable_containers},
+            'focus_visibility': {'fully_obscured_count': fully_obscured, 'partially_obscured_count': partially_obscured},
             'contrast_wcag22': {
                 'text_normal_min': float(cw_in['text_normal_min']) if _is_fin_num(cw_in.get('text_normal_min')) else c_sum['textNormalMin'],
                 'text_large_min': float(cw_in['text_large_min']) if _is_fin_num(cw_in.get('text_large_min')) else c_sum['textLargeMin'],
@@ -349,12 +321,7 @@ def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
                 'unverifiable_count': contrast_unverifiable,
             },
         },
-        'evidence': {
-            'measured_checks': measured_checks,
-            'not_applicable_checks': not_applicable_checks,
-            'unverifiable_checks': unverifiable_checks,
-            'unverifiable_reasons': unverifiable_reasons,
-        },
+        'evidence': {'measured_checks': measured_checks, 'not_applicable_checks': not_applicable_checks, 'unverifiable_checks': unverifiable_checks, 'unverifiable_reasons': unverifiable_reasons},
         **({'elements': elements} if elements else {}),
     }
 

@@ -101,6 +101,10 @@
             "type": "array",
             "uniqueItems": true
           },
+          "grant_lock": {
+            "pattern": "^dr2g:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
+            "type": "string"
+          },
           "ignore": {
             "items": {
               "minLength": 1,

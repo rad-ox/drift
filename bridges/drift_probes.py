@@ -356,10 +356,11 @@ def ensure_export_generation(area: Any, cli: str, ids: list[str], tomls: list[st
       tmp_dir.rename(gen_dir)
     except Exception:
       shutil.rmtree(tmp_dir, ignore_errors=True)
+  (res_p / '.plans').mkdir(parents=True, exist_ok=True)
   for cid in ids:
-    gf = gen_dir / f'{cid}.json'
-    if gf.is_file():
-      shutil.copyfile(gf, res_p / f'{cid}.json')
+    gf, pf = gen_dir / f'{cid}.json', gen_dir / '.plans' / f'{cid}.plan.json'
+    if gf.is_file(): shutil.copyfile(gf, res_p / f'{cid}.json')
+    if pf.is_file(): shutil.copyfile(pf, res_p / '.plans' / f'{cid}.plan.json')
   return gen_dir
 
 

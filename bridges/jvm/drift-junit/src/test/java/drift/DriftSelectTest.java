@@ -136,4 +136,29 @@ class DriftSelectTest {
             Drift.end();
         }
     }
+
+    @Test
+    void sessionSelectRequiresMatchingNonceOrAncestorProcessAuthority() throws Exception {
+        Path sel = dir.resolve("sel.json");
+        java.nio.file.Files.writeString(sel, "{\"all\": false, \"contract\": \"c\", \"cases\": [], \"tests\": []}\n");
+        Path sess = dir.resolve("session.json");
+        String sessJson = "{\"schema\":\"drift.jvm-session/1\",\"resolved\":\""
+                + dir.toString().replace("\\", "\\\\") + "\",\"events\":\""
+                + dir.resolve("ev").toString().replace("\\", "\\\\") + "\",\"select\":\""
+                + sel.toString().replace("\\", "\\\\") + "\",\"nonce\":\"n-good\",\"maven_pid\":999999999,\"maven_start_ms\":1}\n";
+        java.nio.file.Files.writeString(sess, sessJson);
+        System.clearProperty(DriftSelect.SELECT);
+        System.setProperty("drift.session", sess.toString());
+        try {
+            System.clearProperty("drift.nonce");
+            DriftSelect stale = new DriftSelect();
+            assertTrue(stale.apply(method("otherContract")).included());
+            System.setProperty("drift.nonce", "n-good");
+            DriftSelect live = new DriftSelect();
+            assertTrue(live.apply(method("otherContract")).excluded());
+        } finally {
+            System.clearProperty("drift.session");
+            System.clearProperty("drift.nonce");
+        }
+    }
 }

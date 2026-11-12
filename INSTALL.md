@@ -8,20 +8,22 @@ bridges for JavaScript (`drift.mjs`), Python (`drift.py`), Rust (`drift_rust`),
 V (`drift_v`), C++20 (`drift_cpp.hpp`), C# (`Drift.cs`), GDScript (`drift.gd`),
 PHP (`Drift.php`), COBOL (`drift_cobol.py`), and legacy JUnit 4 (`DriftJUnit4.java`).
 The installer puts all of them in your user account. It
-needs no administrator rights and no network, and one command removes
-everything it installed.
+needs no administrator rights, installs offline from an extracted release
+archive, and one command removes everything it installed. Installation from
+a clone without local binaries downloads the matching release archive.
 
 ## In short
 
 | | Ubuntu and other Linux | macOS (Apple Silicon & Intel) | Windows 10 and 11 |
 |---|---|---|---|
-| You receive | `drift-0.5.1-linux-x64.tar.gz` | `drift-0.5.1-macos-arm64.tar.gz` or `drift-0.5.1-macos-x64.tar.gz` | `drift-0.5.1-windows-x64.zip` |
-| Install | `tar -xzf drift-0.5.1-linux-x64.tar.gz`<br>`./drift-0.5.1-linux-x64/install.sh` | `tar -xzf drift-0.5.1-macos-arm64.tar.gz`<br>`./drift-0.5.1-macos-arm64/install.sh` | Extract the zip, double-click `install.cmd` |
+| You receive | `drift-0.6.0-linux-x64.tar.gz` | `drift-0.6.0-macos-arm64.tar.gz` or `drift-0.6.0-macos-x64.tar.gz` | `drift-0.6.0-windows-x64.zip` |
+| Install | `tar -xzf drift-0.6.0-linux-x64.tar.gz`<br>`./drift-0.6.0-linux-x64/install.sh` | `tar -xzf drift-0.6.0-macos-arm64.tar.gz`<br>`./drift-0.6.0-macos-arm64/install.sh` | Extract the zip, double-click `install.cmd` |
 | Check | `drift version` | `drift version` | `drift version` in a new terminal |
 | Remove | `~/.local/share/drift/install.sh --uninstall` | `~/.local/share/drift/install.sh --uninstall` | Settings › Apps › DRIFT › Uninstall |
 
-> **Installing directly from the public GitHub repository (`rad-ox/drift`):**
-> Run `./install.sh` on Linux or macOS, or `.\install.cmd` on Windows, directly from the repository root.
+> **Installing directly from the public GitHub repository (`rad-ox/drift`) or `skills.sh`:**
+> - **Repository clone**: run `./install.sh` on Linux or macOS, or `.\install.cmd` on Windows, directly from the repository root (the installer downloads and SHA-256-verifies the matching platform archive from GitHub Releases).
+> - **`skills.sh` (`npx skills add rad-ox/drift`)**: the installed skill bundles `scripts/install-cli.sh` (Linux/macOS) and `scripts/install-cli.ps1` (Windows), which download, SHA-256-verify, and install the matching OS binary and bridges on first use.
 
 Obtain the archive (and `SHA256SUMS`, when distributed alongside it) through a
 trusted channel; each archive also carries an internal `SHA256SUMS` covering
@@ -34,7 +36,7 @@ channel.
 - **Linux**: Ubuntu 20.04 or later, or any 64-bit x86 Linux (the binary is static and needs no libraries).
 - **macOS**: macOS 12+ on Apple Silicon (`macos-arm64`) or Intel (`macos-x64`).
 - **Windows**: Windows 10 or 11, 64-bit (`windows-x64`).
-- Only for the JUnit 5 bridge (`drift-junit`): JDK 25 LTS and Maven 3.6.3 or later (for legacy Java 6–8 / JUnit 4 monoliths, use `bridges/legacy/junit4/DriftJUnit4.java`).
+- Only for the JUnit 5 bridge (`drift-junit`) and Maven plugin (`drift-maven-plugin`): JDK 25 LTS (17+ supported) and Maven 3.6.3 or later (for legacy Java 6–8 / JUnit 4 monoliths, use `bridges/legacy/junit4/DriftJUnit4.java`).
 - Only for the JavaScript or Python bridge: Node.js 24 LTS (18+ supported) or Python 3.14 (3.11+ supported).
   `drift` itself needs nothing else.
 - Only for the skill: an agent that reads skills from `~/.copilot/skills` or
@@ -49,22 +51,25 @@ channel.
    sha256sum --ignore-missing -c SHA256SUMS
    ```
 
-   You should see `drift-0.5.1-linux-x64.tar.gz: OK`. Anything else means a
+   You should see `drift-0.6.0-linux-x64.tar.gz: OK`. Anything else means a
    damaged or different file: ask for it again. (If you received only the
    `.tar.gz`, step 2 verifies the internal `SHA256SUMS` inside the archive.)
 2. Extract and install:
 
    ```bash
-   tar -xzf drift-0.5.1-linux-x64.tar.gz
-   (cd drift-0.5.1-linux-x64 && sha256sum -c SHA256SUMS)
-   ./drift-0.5.1-linux-x64/install.sh
+   tar -xzf drift-0.6.0-linux-x64.tar.gz
+   (cd drift-0.6.0-linux-x64 && sha256sum -c SHA256SUMS)
+   ./drift-0.6.0-linux-x64/install.sh
    ```
 
    Every step prints `✓`. A line with `!` tells you what to do next, for
    example `~/.local/bin enters PATH at your next login; in this terminal
    run: . ~/.profile`.
-3. Check: `drift version` prints `drift 0.5.1 (schema 0.2, digest dr1, build <id>)`,
-   where `<id>` names the source the package was built from.
+3. Check: `drift version` prints `drift 0.6.0 (schema 0.2, digest dr1, build <id>)`,
+   where `<id>` names the source the package was built from (the build field
+   is omitted when unknown). The banner names the legacy baseline, not the
+   newest supported schema: contracts and profiles also support **`0.3`**
+   with `dr2b` / `dr2a` seals; see the [guide](GUIDE.md).
 
 You can delete the extracted folder afterwards.
 
@@ -74,7 +79,7 @@ You can delete the extracted folder afterwards.
    PowerShell there and check the download:
 
    ```powershell
-   (Get-FileHash .\drift-0.5.1-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
+   (Get-FileHash .\drift-0.6.0-windows-x64.zip).Hash -eq (-split (Select-String windows-x64 .\SHA256SUMS).Line)[0]
    ```
 
    You should see `True`. (The extracted folder also includes an internal
@@ -91,15 +96,15 @@ Apps. You can delete the extracted folder afterwards.
 
 ## What goes where
 
-| | Linux | Windows |
+| | Linux & macOS | Windows |
 |---|---|---|
 | Command | `~/.local/bin/drift` | `%LOCALAPPDATA%\Programs\drift\bin\drift.exe` |
 | Guide, example, schemas, uninstaller | `~/.local/share/drift/` | `%LOCALAPPDATA%\Programs\drift\` |
 | JS and Python bridges | `~/.local/share/drift/bridges/drift.mjs`, `drift.py` | `%LOCALAPPDATA%\Programs\drift\bridges\drift.mjs`, `drift.py` |
 | Agent skill | `~/.copilot/skills/drift/` (and `~/.agents/skills/` when present or with `--hooks`) | `%USERPROFILE%\.copilot\skills\drift\` (and `%USERPROFILE%\.agents\skills\`) |
 | Agent hooks (opt-in) | `~/.pi/agent/extensions/drift.ts`, `~/.copilot/hooks/drift.json`, `~/.codex/hooks.json`, `~/.claude/settings.json` | `%USERPROFILE%\.pi\agent\extensions\drift.ts`, `%USERPROFILE%\.copilot\hooks\drift.json` |
-| JUnit bridge | `~/.m2/repository/io/github/rad-ox/drift-junit/0.5.1/` | `%USERPROFILE%\.m2\repository\io\github\rad-ox\drift-junit\0.5.1\` |
-| Maven plugin | `~/.m2/repository/io/github/rad-ox/drift-maven-plugin/0.5.1/` | `%USERPROFILE%\.m2\repository\io\github\rad-ox\drift-maven-plugin\0.5.1\` |
+| JUnit bridge | `~/.m2/repository/io/github/rad-ox/drift-junit/0.6.0/` | `%USERPROFILE%\.m2\repository\io\github\rad-ox\drift-junit\0.6.0\` |
+| Maven plugin | `~/.m2/repository/io/github/rad-ox/drift-maven-plugin/0.6.0/` | `%USERPROFILE%\.m2\repository\io\github\rad-ox\drift-maven-plugin\0.6.0\` |
 | Settings changed | none: the installer only prints a PATH hint | user PATH and an entry in Settings › Apps |
 
 If `~/.m2/settings.xml` sets `<localRepository>`, the bridge and the plugin
@@ -108,9 +113,9 @@ Shell profiles are never edited.
 
 ## Options
 
-| Linux: `install.sh` | Windows: `install.cmd` | Effect |
+| Linux & macOS: `install.sh` | Windows: `install.cmd` | Effect |
 |---|---|---|
-| `--prefix DIR` | `-Prefix DIR` | install elsewhere; on Linux into `DIR/bin` and `DIR/share/drift` |
+| `--prefix DIR` | `-Prefix DIR` | install elsewhere; on Linux & macOS into `DIR/bin` and `DIR/share/drift` |
 | `--skills-dir DIR` | `-SkillsDir DIR` | use another agent skills folder |
 | `--no-skill` | `-NoSkill` | skip the agent skill |
 | `--hooks` | `-Hooks` | install automatic hooks/extensions for detected agents (Pi, Copilot, Claude, Codex, Cursor, Gemini) |
@@ -131,7 +136,8 @@ Shell profiles are never edited.
 With hooks enabled, interactive installation asks separately whether to install
 release checks (default **Yes**). Unattended installation without a choice
 keeps an existing selection; a fresh unattended installation omits the component.
-The installer itself stays offline. A selected component checks `rad-ox/drift`
+Installation from an extracted archive stays offline; a clone may bootstrap
+its binary from GitHub Releases. A selected component checks `rad-ox/drift`
 at session start/resume in DRIFT areas and only reports newer stable releases:
 it never downloads or installs an update. Failures do not block the session.
 Use `DRIFT_UPDATE_CHECK=0` to disable requests temporarily. The installed
@@ -166,7 +172,7 @@ installed skill explains how to tag tests, in `references/jvm-bridge.md`.
 <dependency>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -175,7 +181,7 @@ installed skill explains how to tag tests, in `references/jvm-bridge.md`.
 <plugin>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <executions>
     <execution>
       <goals>
@@ -200,7 +206,7 @@ from the local Maven repository in `build.sbt`:
 ```scala
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.5.1" % Test
+libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.6.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -320,7 +326,7 @@ projects may still use them.
 
 ## Uninstall
 
-- Linux: `~/.local/share/drift/install.sh --uninstall`. If you installed with
+- Linux & macOS: `~/.local/share/drift/install.sh --uninstall`. If you installed with
   `--prefix DIR`, run `DIR/share/drift/install.sh --uninstall`.
 - Windows: Settings › Apps › Installed apps › DRIFT › Uninstall, or run
   `%LOCALAPPDATA%\Programs\drift\uninstall.cmd`.
@@ -347,11 +353,11 @@ and `skill\drift` to `%USERPROFILE%\.copilot\skills\drift` by hand.
 **Windows asks whether to run `install.cmd`, or blocks `drift.exe`.** The
 files are not signed and came from another computer. Choose **Run**; to avoid
 the question, unblock the zip before extracting it: right-click › Properties ›
-Unblock, or `Unblock-File .\drift-0.5.1-windows-x64.zip`. If company rules
+Unblock, or `Unblock-File .\drift-0.6.0-windows-x64.zip`. If company rules
 block programs in `%LOCALAPPDATA%`, install with `-Prefix` into an allowed
 folder or ask IT.
 
-**Maven: `Could not find artifact io.github.rad-ox:drift-junit:jar:0.5.1`** (or
+**Maven: `Could not find artifact io.github.rad-ox:drift-junit:jar:0.6.0`** (or
 `drift-maven-plugin`). Maven uses a different local repository than the
 installer did, for example through `-Dmaven.repo.local` or a settings file in
 another place. Run the installer again with `--maven-repo DIR` or
@@ -370,9 +376,11 @@ files, with or without a byte order mark.
 **Line endings.** Contracts with Windows line endings (CRLF) check, format
 and approve the same as with LF; `drift fmt` writes LF.
 
-**Proxy.** When run from an extracted release archive, the installer never uses the network (when run from a `git clone` without local binaries, `install.sh` downloads and SHA-256-verifies the matching platform archive from GitHub Releases). For Maven, configure
+**Proxy.** Installation from an extracted release archive is offline. Clone
+bootstrap downloads use HTTPS; configure your proxy for `curl` or `wget`.
+Maven dependency downloads use Maven's own proxy settings; configure
 its proxy in `~/.m2/settings.xml`.
 
 **macOS Gatekeeper quarantine.** If macOS blocks the unsigned binary downloaded
 from a browser, clear the quarantine attribute on the extracted folder before
-running `install.sh`: `xattr -dr com.apple.quarantine ./drift-0.5.1-macos-*`.
+running `install.sh`: `xattr -dr com.apple.quarantine ./drift-0.6.0-macos-*`.

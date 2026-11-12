@@ -145,7 +145,7 @@ fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonVal
 
 #[path = "constraint_units.rs"]
 mod constraint_units;
-pub(crate) use constraint_units::normalize_constraint_03;
+pub(crate) use constraint_units::{load_contract_plan_case, load_contract_plan_stub, normalize_constraint_03};
 
 pub fn escape_pointer(seg: &str) -> String {
     seg.replace('~', "~0").replace('/', "~1")
@@ -730,4 +730,13 @@ pub fn synthesize_leaf_witness(
         return JsonValue::Array(vec![JsonValue::Number(a), JsonValue::Number(b)]);
     }
     JsonValue::Null
+}
+
+pub fn eval_compiled_plan_case(
+    contract_id: &str,
+    case_id: &str,
+    plan_case: &BTreeMap<String, JsonValue>,
+    doc: &JsonValue,
+) -> Result<(bool, Vec<String>), String> {
+    constraint_units::eval_compiled_plan_case_impl(contract_id, case_id, plan_case, doc)
 }

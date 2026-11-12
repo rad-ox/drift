@@ -13,7 +13,7 @@ Community pull requests are welcome across the entire **Open Integration Surface
 
 - Bug fixes, diagnostics, and runtime hardening for language bridges (JVM/JUnit 5, Legacy JUnit 4, Scala/MUnit, JavaScript/TypeScript, Python, Rust, V, PHP, COBOL, C++20, C#/.NET, and GDScript).
 - Improvements and parity tests for the independent reference verifier (`verifier/drift_verify*.py`).
-- Agent hook compatibility (`hooks/drift-hook.sh`, `hooks/drift-hook.ps1`, `hooks/drift-pi.ts`) across coding assistants.
+- Agent hook compatibility (`hooks/drift-hook.sh`, `hooks/drift-notify-wsl.sh`, `hooks/drift-hook.ps1`, `hooks/drift-pi.ts`) across coding assistants.
 - JSON Schema refinements (`schemas/*.schema.json`) and documentation improvements in English (`GUIDE.md`, `INSTALL.md`) and Italian (`GUIDE.it.md`, `INSTALL.it.md`).
 
 ## Engineering Standards

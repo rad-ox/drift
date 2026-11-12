@@ -5,7 +5,7 @@
 Before opening a support issue, check the reference documentation included in every DRIFT repository and release archive:
 
 - **[`README.md`](README.md)** — Quickstart, core lifecycle, polyglot bridge examples, and architecture overview.
-- **[`GUIDE.md`](GUIDE.md)** / **[`GUIDE.it.md`](GUIDE.it.md)** — Comprehensive manual covering adoption levels, TOML contract authoring, decision cards, proof states (`untested`, `bound`, `verified`, `killed`), and CI gates (English and Italian).
+- **[`GUIDE.md`](GUIDE.md)** / **[`GUIDE.it.md`](GUIDE.it.md)** — Comprehensive manual covering adoption levels, schema `0.3` contracts, decision cards, proof states (`missing`, `red`, `bound`, `verified`, `killed`), and CI gates (English and Italian).
 - **[`INSTALL.md`](INSTALL.md)** / **[`INSTALL.it.md`](INSTALL.it.md)** — Installation, update, offline Maven setup, agent hook configuration, and uninstallation on Linux, macOS, and Windows (English and Italian).
 - **[`EDITIONS.md`](EDITIONS.md)** — Feature matrix and capability boundaries across **DRIFT Free**, **DRIFT Pro**, and **DRIFT Enterprise**.
 - **[`GUARANTEES.md`](GUARANTEES.md)** — Formal guarantees, non-guarantees, threat model, and independent verification with `verifier/drift_verify.py`.

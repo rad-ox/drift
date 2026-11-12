@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rad-ox/drift/schemas/drift-grant-lock-0.3.schema.json",
+  "title": "DRIFT Clean-Room Grant Lock Schema",
+  "description": "Normative schema for .drift/grant.lock.json (drift.grant-lock/1) emitted by `drift export grant` and verified by `drift check`, `drift status`, `drift review`, `drift gate`, and `verifier/drift_verify.py`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contracts", "digest", "grant_id", "revision", "schema", "sources"],
+  "properties": {
+    "contracts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/contractLock" }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^dr2g:sha256:[0-9a-f]{64}$",
+      "description": "Domain-separated SHA-256 over drift.grant-lock/2 and the canonical JSON of the lock without digest."
+    },
+    "grant_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "schema": {
+      "const": "drift.grant-lock/1"
+    },
+    "sources": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(?!\\.{1,2}(?:/|$))(?!.*/\\.{1,2}(?:/|$))[^/\\\\:]+(?:/[^/\\\\:]+)*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "supersedes": {
+      "type": "string",
+      "pattern": "^dr2g:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "revision": { "const": 1 } }
+      },
+      "then": {
+        "not": { "required": ["supersedes"] }
+      },
+      "else": {
+        "required": ["supersedes"]
+      }
+    }
+  ],
+  "$defs": {
+    "contractLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["behavior_digest", "obligations", "requires"],
+      "properties": {
+        "behavior_digest": {
+          "type": "string",
+          "pattern": "^dr2b:sha256:[0-9a-f]{64}$"
+        },
+        "obligations": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^dr2r:sha256:[0-9a-f]{64}$"
+          }
+        },
+        "requires": { "$ref": "#/$defs/requiresPosture" }
+      }
+    },
+    "requiresPosture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "proof": {
+          "enum": ["bound", "verified", "killed"]
+        },
+        "security": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["sast", "fuzz", "policy", "deps"]
+          }
+        },
+        "simulation": {
+          "const": "required"
+        }
+      }
+    }
+  }
+}

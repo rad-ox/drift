@@ -6,7 +6,9 @@ from drift_verify_perf import evaluate_contract_budgets,evaluate_contract_mutati
 from drift_verify_sec import evaluate_contract_formal_impl,evaluate_contract_migration_impl,evaluate_contract_security_impl,extract_contract_formal,load_formal_receipts_impl,load_migration_receipts_impl,load_security_receipts_impl,parse_security_lock_impl,parse_subject_manifest_impl,run_sec_self_test,validate_mutation_manifest_impl
 from drift_verify_sim import evaluate_contract_simulation_impl,load_simulation_receipts_impl
 from drift_verify_ssh import _has_approval_blocker,_is_unanchored_prose_source,apply_openssh_trust_verdicts,evaluate_contract_parity_impl,extract_contract_cutover,load_merged_profile_impl,load_parity_receipts_impl,verify_contract_03_toml
+from drift_verify_03 import obs03,red03
 from drift_verify_ra import evaluate_contract_ra_bundle,evaluate_detached_signatures_core,extract_contract_risks_and_controls,load_ra_receipts_core,run_ra_self_test
+from drift_verify_grant import evaluate_grant_verdicts_py,strip_outside_digest_impl,verify_config_toml_impl
 SAFE_INT = (1 << 53) - 1
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 WORD_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -15,13 +17,11 @@ PACK_REF_RE = re.compile(r"^dr1:[0-9a-f]{12}$")
 SNAPSHOT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 CLASS_TOKEN_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
 METHOD_TOKEN_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
-OUTCOMES = frozenset(("passed","failed","skipped","disabled","interrupted","timeout"))
-EVENT_KEYS = frozenset(("test","contract","cases","level","outcome","read","digest","schema","capabilities"))
-META_KEYS = frozenset(("version","classes","tests","snapshot","pack_ref","touched","self_stubbed","inputs","env","execution_ref","subject_ref","shadow_run"))
+OUTCOMES = {"passed","failed","skipped","disabled","interrupted","timeout"}
+EVENT_KEYS = {"test","contract","cases","level","outcome","read","digest","schema","capabilities","observations"}
+META_KEYS = {"version","classes","tests","snapshot","pack_ref","touched","self_stubbed","inputs","env","execution_ref","subject_ref","shadow_run"}
 ENV_KEYS = frozenset(("toolchain","deps","config","runner","drift","adapter","policy"))
-_ESC_MAP = {0x22:'\\"',0x5C:"\\\\",0x08:"\\b",0x0C:"\\f",0x0A:"\\n",0x0D:"\\r",0x09:"\\t"}
-def jcs_string(s):
- return '"' + "".join(_ESC_MAP.get(cp := ord(c),f"\\u{cp:04x}" if cp < 0x20 else c) for c in s) + '"'
+jcs_string = json.encoder.encode_basestring
 def jcs_number(val):
  if isinstance(val,int) and not isinstance(val,bool):
   if not (-SAFE_INT <= val <= SAFE_INT):raise ValueError("int")
@@ -29,7 +29,7 @@ def jcs_number(val):
  f = float(val)
  if not math.isfinite(f):raise ValueError("nan")
  if f == 0.0:return "0"
- neg,f,s = f < 0.0,abs(f),repr(abs(float(val)))
+ neg,f = f < 0.0,abs(f); s = repr(f)
  if "e" in s or "E" in s:m,e = s.lower().split("e",1); d,n = m.replace(".","").rstrip("0") or "0",int(e) + 1
  elif "." in s:ip,fp = s.split(".",1); d,n = (ip + fp).lstrip("0").rstrip("0") or "0",(len(ip) if ip != "0" else -(len(fp) - len(fp.lstrip("0"))))
  else:d,n = s.rstrip("0") or "0",len(s)
@@ -46,7 +46,7 @@ def canonical_json(obj):
 def dr1_digest(obj): return "dr1:sha256:" + hashlib.sha256(canonical_json(obj).encode("utf-8")).hexdigest()
 def dr1_ref(d):
  if d.startswith("dr1:sha256:"): return "dr1:" + d[11:23]
- for p in ("dr2b:sha256:","dr2a:sha256:","dr2r:sha256:","dr2x:sha256:"):
+ for p in ("dr2b:sha256:","dr2a:sha256:","dr2r:sha256:","dr2x:sha256:","dr2g:sha256:"):
   if d.startswith(p): return p[:5] + d[len(p):len(p)+12]
  return ""
 def digest_matches(ed, fd): return bool(fd) and (ed == fd or ed == dr1_ref(fd))
@@ -73,7 +73,7 @@ def validate_event_line(line):
  if not isinstance(doc,dict) or any(k not in EVENT_KEYS for k in doc) or any(r not in doc for r in ("test","contract","cases","level","outcome")):raise ValueError("event")
  cs,rd,dig,sch,caps = doc["cases"],doc.get("read",[]),doc.get("digest",""),doc.get("schema",""),doc.get("capabilities",[])
  if not isinstance(doc["test"],str) or not doc["test"].strip() or not isinstance(doc["contract"],str) or not ID_RE.match(doc["contract"]) or not isinstance(cs,list) or not cs or len(set(cs)) != len(cs) or not all(isinstance(c,str) and ID_RE.match(c) for c in cs) or not isinstance(doc["level"],str) or not WORD_RE.match(doc["level"]) or doc["outcome"] not in OUTCOMES or not isinstance(rd,list) or len(set(rd)) != len(rd) or not all(isinstance(r,str) and r in cs for r in rd) or (dig != "" and (not isinstance(dig,str) or not DIGEST_RE.match(dig))) or (sch != "" and sch not in ("0.2","0.3")) or not isinstance(caps,list) or not all(isinstance(cp,str) and cp.strip() for cp in caps):raise ValueError("event")
- return {"test":doc["test"],"contract":doc["contract"],"cases":cs,"level":doc["level"],"outcome":doc["outcome"],"read":rd,"digest":dig,"schema":sch,"capabilities":caps}
+ return {"test":doc["test"],"contract":doc["contract"],"cases":cs,"level":doc["level"],"outcome":doc["outcome"],"read":rd,"digest":dig,"schema":sch,"capabilities":caps,**obs03(doc,cs,sch)}
 def validate_inventory_text(text):
  doc = _decode_no_dup_keys(text)
  if not isinstance(doc,dict) or any(k not in META_KEYS for k in doc) or doc.get("version") not in (1,2) or isinstance(doc.get("version"),bool):raise ValueError("inv")
@@ -91,21 +91,9 @@ def validate_inventory_text(text):
 def validate_inventory_sidecar(path): return validate_inventory_text(path.read_text("utf-8"))
 def resolve_shadow_roots(path, state_dir=""):
  from drift_shadow_junit import resolve_shadow_roots_impl; return resolve_shadow_roots_impl(path,state_dir)
-def verify_config_toml(path):
- if not path.is_file():return "missing","",{}
- raw = tomllib.loads(path.read_text("utf-8"))
- appr,dig,pol = raw.pop("approval",None),dr1_digest(raw),(raw.get("policy") if isinstance(raw.get("policy"),dict) else {})
- if not isinstance(appr,dict) or not appr.get("ref"):return "absent",dig,pol
- st = "current" if appr["ref"] == dr1_ref(dig) else "stale"
- return st,dig,(pol if st == "current" else {})
+def verify_config_toml(path): return verify_config_toml_impl(path, dr1_digest, dr1_ref)
 def _load_merged_profile(prof_ref, profiles_dir): return load_merged_profile_impl(prof_ref, profiles_dir, _proof_rank)
-def _strip_outside_digest(cases, decs):
- for cm in (cases or {}).values():
-  if isinstance(cm,dict):cm.pop("note",None)
- for dm in (decs or {}).values() if isinstance(decs,dict) else ():
-  if isinstance(dm,dict):
-   dm.pop("owner",None); dm.pop("note",None)
-   if dm.get("evidence") == "observed" and _is_unanchored_prose_source(str(dm.get("source",""))):dm.pop("source",None)
+def _strip_outside_digest(cases, decs): strip_outside_digest_impl(cases, decs, _is_unanchored_prose_source)
 def verify_contract_toml(path, profiles_dir):
  raw = tomllib.loads(path.read_text("utf-8"))
  if raw.get("drift") == "0.3":return verify_contract_03_toml(raw,path,profiles_dir,canonical_json,dr1_ref,_proof_rank,resolve_shadow_roots)
@@ -166,7 +154,7 @@ def verify_contract_toml(path, profiles_dir):
 def load_proof_events(events_paths, area_root=None, target_run_id=""):
  from drift_shadow_junit import order_shadow_shards_py,shadow_inputs_fresh
  shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".jsonl") else []))]
- events,gone,inc,errs,snaps,shard_subs,all_snap,sh_hashes,parsed_shards,class_latest = [],{},0,[],set(),set(),bool(shards),[],[],{}
+ events,gone,inc,errs,snaps,ssub,all_snap,sh_hashes,pshs,cl_l = [],{},0,[],set(),set(),bool(shards),[],[],{}
  for sf in shards:
   raw,mp = sf.read_bytes(),sf.with_suffix(".meta.json")
   sh_hashes.append("sha256:" + hashlib.sha256(raw).hexdigest())
@@ -176,29 +164,35 @@ def load_proof_events(events_paths, area_root=None, target_run_id=""):
    except Exception as exc: errs.append(f"{mp.name}: {exc}"); all_snap = False; continue
   else:all_snap = False
   if sr and not shadow_inputs_fresh(sr,sf,area_root):continue
-  parsed_shards.append((sf,raw,has_inv,c_set,t_set,snap,sr,sref))
- ordered_shards,sh_errs = order_shadow_shards_py(parsed_shards,target_run_id)
+  pshs.append((sf,raw,has_inv,c_set,t_set,snap,sr,sref))
+ ordered_shards,sh_errs = order_shadow_shards_py(pshs,target_run_id)
  errs.extend(sh_errs)
  for sf,raw,has_inv,c_set,t_set,snap,sr,sref in ordered_shards:
   if snap:snaps.add(snap)
   else:all_snap = False
-  if sref:shard_subs.add(sref)
+  if sref:ssub.add(sref)
   sel_t = set(sr.get("selected_tests") or ()) if isinstance(sr,dict) else set()
+  by_cl = {}
+  for t in t_set:
+   if "#" in t:by_cl.setdefault(t.split("#",1)[0],set()).add(t)
   for cls in c_set:
-   if sel_t and (prev_t := class_latest.get(cls,set())):t_set |= {pt for pt in prev_t if pt.startswith(f"{cls}#") and pt not in sel_t}
-   class_latest[cls] = {t for t in t_set if t.startswith(f"{cls}#")}
+   cur_t = by_cl.get(cls,set())
+   if sel_t and (prev_t := cl_l.get(cls)):
+    keep = {pt for pt in prev_t if pt not in sel_t}
+    t_set |= keep; cur_t = cur_t | keep
+   cl_l[cls] = cur_t
   cnt = 0
   for idx,line in enumerate(raw.decode("utf-8").splitlines(),1):
    if not line.strip():continue
    try:ev = validate_event_line(line)
    except Exception as exc: errs.append(f"events:{sf.name}:{idx}: DR-E701 {exc}"); continue
    cnt += 1; tid = ev["test"].split("[",1)[0]; cls = tid.split("#",1)[0] if "#" in tid else ""
-   if not has_inv or cls not in c_set or tid not in t_set or tid not in class_latest.get(cls,t_set):gone[ev["contract"]] = gone.get(ev["contract"],0) + 1
+   if not has_inv or cls not in c_set or tid not in t_set or tid not in cl_l.get(cls,t_set):gone[ev["contract"]] = gone.get(ev["contract"],0) + 1
    else:events.append(ev)
   if has_inv and snap and t_set and cnt == 0:inc += 1
  (sec_recs,sec_errs),(form_recs,form_errs),(par_recs,par_errs),(mig_recs,mig_errs),(sim_recs,sim_errs) = (fn(events_paths,_decode_no_dup_keys) for fn in (load_security_receipts_impl,load_formal_receipts_impl,load_parity_receipts_impl,load_migration_receipts_impl,load_simulation_receipts_impl))
  errs.extend(sec_errs + form_errs + par_errs + mig_errs + sim_errs)
- return events,gone,inc,errs,sec_recs,form_recs,par_recs,mig_recs,shard_subs,(next(iter(snaps)) if all_snap and inc == 0 and events and len(snaps) == 1 else ""),sh_hashes,sorted(snaps),bool(all_snap and shards)
+ return events,gone,inc,errs,sec_recs,form_recs,par_recs,mig_recs,ssub,(next(iter(snaps)) if all_snap and inc == 0 and events and len(snaps) == 1 else ""),sh_hashes,sorted(snaps),bool(all_snap and shards)
 def _proof_rank(floor): return {"killed": 3, "verified": 2, "bound": 1}.get(floor, 0)
 def validate_mutation_manifest(text): return validate_mutation_manifest_impl(text, _decode_no_dup_keys)
 def load_mutation_events(paths, manifest): return load_mutation_events_impl(paths, manifest, _decode_no_dup_keys)
@@ -214,14 +208,17 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
     if is_03 and (ev.get("schema") != "0.3" or not req_caps.issubset(set(ev.get("capabilities") or ()))):hs_bad = True; continue
     matching.append(ev)
    else:ignored += 1
- for ev in matching:sup += 1 if ev["test"] in latest else 0; latest[ev["test"]] = ev
- active,res,rsn = list(latest.values()),[],[]
+ for ev in matching:sup += 1 if ev["test"] in latest else 0; latest[ev["test"]] = red03(contract,ev)
+ active,res,rsn,by_case = list(latest.values()),[],[],{}
+ for ev in active:
+  for kc in ev["cases"]:by_case.setdefault(kc,[]).append(ev)
  for case_id in sorted(contract["cases"]):
   cm = contract["cases"][case_id]
   if isinstance(cm,dict) and "status" in cm:continue
+  c_evs = by_case.get(case_id,())
   for lv in (cm.get("at") or ["*"]):
-   cov = [ev for ev in active if case_id in ev["cases"] and (lv == "*" or ev["level"] == lv)]
-   res.append({"case":case_id,"level":lv,"state":"missing" if not cov else ("red" if any(ev["outcome"] != "passed" for ev in cov) else ("verified" if any(case_id in ev["read"] for ev in cov) else "bound"))})
+   cov = c_evs if lv == "*" else [ev for ev in c_evs if ev["level"] == lv]
+   res.append({"case":case_id,"level":lv,"state":"missing" if not cov else ("red" if any(ev["outcome"] != "passed" or case_id in ev["red"] for ev in cov) else ("verified" if any(case_id in ev["read"] for ev in cov) else "bound"))})
  if cfg_state == "missing":rsn.append("config.missing")
  elif cfg_state != "current":rsn.extend((["config.findings"] if cfg_state == "stale" else []) + [f"config.approval.{cfg_state}"])
  if contract["approval"] != "current":rsn.extend((["contract.findings"] if contract["approval"] == "stale" else []) + [f"contract.approval.{contract['approval']}"])
@@ -252,16 +249,17 @@ def evaluate_contract(contract, cfg_state, events, gone, incomplete_shards, ev_e
 def main(argv):
  if "--self-test" in argv:
   from drift_shadow_junit import run_verifier_self_test; return run_verifier_self_test()
+ from drift_shadow_junit import lookup_registered_shadow_py
+ from drift_verify_mig import load_composition_manifests_core,resolve_verifier_subject_cli
  ap = argparse.ArgumentParser(prog="drift_verify.py")
  ap.add_argument("targets",nargs="*",type=Path)
- for fl in ("--state-dir","--config","--profiles","--mutants","--measurements","--subject","--security-lock","--base","--attest","--attest-sig","--trust-root","--signatures","--signature-policy"):ap.add_argument(fl,type=Path)
+ for fl in ("--state-dir","--config","--profiles","--mutants","--measurements","--subject","--security-lock","--base","--attest","--attest-sig","--trust-root","--signatures","--signature-policy","--grant-lock"):ap.add_argument(fl,type=Path)
  for fl in ("--events","--mutation-events"):ap.add_argument(fl,type=Path,action="append")
  ap.add_argument("--changed",action="append",default=[])
  for fl in ("--changed-none","--json"):ap.add_argument(fl,action="store_true")
  for fl in ("--subject-artifact","--subject-tree","--run-id","--verify-time","--phase"):ap.add_argument(fl,default="")
  ap.add_argument("--min-proof",choices=("bound","verified","killed"),default="")
  a = ap.parse_args(argv)
- from drift_shadow_junit import lookup_registered_shadow_py
  ex_sd = str(a.state_dir) if a.state_dir else ""
  sd_p = Path(sd_e) if (sd_e := ex_sd or os.environ.get("DRIFT_STATE_DIR","").strip() or lookup_registered_shadow_py(Path.cwd())) else None
  tgts,cfg_p,ev_p = a.targets or ([sd_p / ".drift" / "contracts"] if sd_p else []),a.config or ((sd_p / ".drift" / "config.toml") if sd_p else None),a.events or ([sd_p / ".drift-work" / "events"] if sd_p and (sd_p / ".drift-work" / "events").is_dir() else [])
@@ -271,24 +269,23 @@ def main(argv):
  except Exception as exc: print(f"drift_verify.py: {exc}", file=sys.stderr); return 2
  cfg_st,cfg_dig,pol = verify_config_toml(cfg_p)
  p_dir,c_files = a.profiles or (cfg_p.parent / "profiles"),[cf for t in tgts for cf in (sorted(t.glob("*.toml")) if t.is_dir() else [t])]
- evs,gone,inc,ev_errs,sec_recs,form_recs,par_recs,mig_recs,shard_subs,exp_snap,sh_h,sn_l,sn_ok = load_proof_events(ev_p,roots["area_root"],"" if a.measurements else a.run_id)
- from drift_verify_mig import load_composition_manifests_core,resolve_verifier_subject_cli
+ evs,gone,inc,ev_errs,sec_recs,form_recs,par_recs,mig_recs,ssub,exp_snap,sh_h,sn_l,sn_ok = load_proof_events(ev_p,roots["area_root"],"" if a.measurements else a.run_id)
  ra_recs,ra_errs = load_ra_receipts_core(ev_p,_decode_no_dup_keys)
  comp_mans,comp_errs = load_composition_manifests_core(ev_p,_decode_no_dup_keys)
- ev_errs.extend(ra_errs + comp_errs)
- sim_recs,_ = load_simulation_receipts_impl(ev_p,_decode_no_dup_keys)
- m_man,lat_m,m_errs = None,{},[]
+ ev_errs.extend(ra_errs + comp_errs); sim_recs,_ = load_simulation_receipts_impl(ev_p,_decode_no_dup_keys); m_man,lat_m,m_errs = None,{},[]
  if a.mutants and a.mutation_events:
   try:m_man = validate_mutation_manifest(a.mutants.read_text("utf-8")); lat_m,m_errs = load_mutation_events(a.mutation_events,m_man)
   except Exception as exc:m_errs.append(str(exc))
  exp_sub,man_srcs = resolve_verifier_subject_cli(a,_decode_no_dup_keys,canonical_json,parse_subject_manifest_impl,parse_security_lock_impl)
  perf_b,by_c = load_measurement_bundle(a.measurements,_decode_no_dup_keys,digest_matches),{}
  for ev in evs:by_c.setdefault(ev["contract"],[]).append(ev)
- parsed = [verify_contract_toml(cf,p_dir) for cf in c_files]
+ parsed = [{**verify_contract_toml(cf,p_dir),"file_stem":cf.stem} for cf in c_files]
  base_by_id = {bc["id"]:bc for bf in ((sorted(a.base.glob("*.toml")) if a.base.is_dir() else [a.base]) if a.base else ()) for bc in (verify_contract_toml(bf,p_dir),)}
  tot_open,reuse_ok = sum(c.get("open_cnt",0) for c in parsed),bool(a.base and (a.changed_none or not a.changed))
- raw_v = [evaluate_contract(c,cfg_st,by_c.get(c["id"],[]),gone.get(c["id"],0),inc,ev_errs,pol,a.min_proof,a.phase,tot_open,evaluate_contract_mutations(c,m_man,lat_m,m_errs),perf_b,exp_sub,sec_recs,exp_snap,form_recs,shard_subs,man_srcs,par_recs,mig_recs,reuse_ok,base_by_id.get(c["id"]),bool(a.attest),sim_recs,ra_recs,comp_mans) for c in parsed]
- verdicts = raw_v if ((a.signatures or a.signature_policy) and not a.attest and not a.attest_sig) else apply_openssh_trust_verdicts(raw_v,a,cfg_st,cfg_dig,sh_h,sn_l,sn_ok,inc,m_man,perf_b,_decode_no_dup_keys,exp_sub)
+ raw_v = [evaluate_contract(c,cfg_st,by_c.get(c["id"],[]),gone.get(c["id"],0),inc,ev_errs,pol,a.min_proof,a.phase,tot_open,evaluate_contract_mutations(c,m_man,lat_m,m_errs),perf_b,exp_sub,sec_recs,exp_snap,form_recs,ssub,man_srcs,par_recs,mig_recs,reuse_ok,base_by_id.get(c["id"]),bool(a.attest),sim_recs,ra_recs,comp_mans) for c in parsed]
+ single_f = len(tgts) == 1 and tgts[0].is_file()
+ raw_v,has_gsig = evaluate_grant_verdicts_py(raw_v,parsed,a,cfg_p,pol,roots["source_root"],_decode_no_dup_keys,canonical_json,digest_matches,_proof_rank,single_f)
+ verdicts = raw_v if ((a.signatures or a.signature_policy or has_gsig) and not a.attest and not a.attest_sig) else apply_openssh_trust_verdicts(raw_v,a,cfg_st,cfg_dig,sh_h,sn_l,sn_ok,inc,m_man,perf_b,_decode_no_dup_keys,exp_sub)
  verdicts = evaluate_detached_signatures_core(verdicts,parsed,a,cfg_dig,_decode_no_dup_keys,canonical_json,digest_matches)
  ok = bool(verdicts) and all(v["ok"] for v in verdicts)
  if a.json:print(json.dumps({"ok":ok,"contracts":verdicts},indent=2,sort_keys=True))

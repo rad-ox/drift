@@ -15,5 +15,11 @@ feedback forward; they add no owner stop.
   full campaign after a passing probe) proceeds when the condition holds,
   without a new stop.
 - Keep full command logs in files and report targeted excerpts.
+- Incremental `--base` reuse trusts recorded `.meta.json` `inputs`: record
+  external test fixtures in `inputs` or `scope.code`/`scope.sources`, else
+  rerun affected tests.
+- Inspect `unverified_surface` and `oracle_discrimination` via
+  `drift gate ... --explain` before claiming full/release coverage (`deferred`
+  and `waived` cases stay unverified).
 - Client interaction, protocol negotiation and recovery:
   [native-flow.md](native-flow.md).

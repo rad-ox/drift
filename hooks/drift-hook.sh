@@ -146,14 +146,18 @@ if [ -z "$event" ]; then
 	case $mode in
 	session | start | SessionStart | sessionStart) event=SessionStart ;;
 	prompt | userPromptSubmit | UserPromptSubmit | userPromptSubmitted | before_agent_start | beforeAgentStart) event=UserPromptSubmit ;;
-	stop | Stop | agentStop) event=Stop ;;
-	*)
+	stop | Stop | agentStop | stopFailure | StopFailure) event=Stop ;;
+	notify | notification | Notification) event=Notification ;;
+	"")
 		case $meta_flat in
 		*'"stop_hook_active"'* | *'"stopReason"'* | *'"stop_reason"'*) event=Stop ;;
+		*'"notification_type"'* | *'"notificationType"'*) event=Notification ;;
+		*'"tool_name"'* | *'"toolName"'*) exit 0 ;;
 		*'"prompt"'*:*) event=UserPromptSubmit ;;
 		*) event=SessionStart ;;
 		esac
 		;;
+	*) exit 0 ;;
 	esac
 fi
 case $event in
@@ -161,7 +165,9 @@ SessionStart | sessionStart | session | start | startup | resume) norm_event=ses
 before_agent_start | beforeAgentStart) norm_event=beforeagentstart ;;
 UserPromptSubmit | userPromptSubmit | userPromptSubmitted | prompt) norm_event=userpromptsubmit ;;
 Stop | stop | agentStop | agent_stop | afterAgent | after_agent) norm_event=stop ;;
-*) norm_event=$(printf '%s' "$event" | tr '[:upper:]' '[:lower:]' | tr -d '_-') ;;
+StopFailure | stopFailure | stop_failure) norm_event=stopfailure ;;
+Notification | notification | notify) norm_event=notification ;;
+*) exit 0 ;;
 esac
 
 extract_session() {
@@ -174,6 +180,57 @@ extract_session() {
 
 json_escape() {
 	printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+is_subagent_payload() {
+	sub_p=$(extract_str parentAgentId)
+	[ -n "$sub_p" ] || sub_p=$(extract_str parent_agent_id)
+	[ -n "$sub_p" ] || sub_p=$(extract_str agentId)
+	[ -n "$sub_p" ] || sub_p=$(extract_str agent_id)
+	[ -n "$sub_p" ]
+}
+
+resolve_attention_config() {
+	cfg_base=${XDG_CONFIG_HOME:-${HOME:-}/.config}
+	local_cfg="$cfg_base/drift/local.toml"
+	[ -f "$local_cfg" ] && [ ! -L "$local_cfg" ] || return 1
+	awk '
+		/^[[:space:]]*\[/ { sec = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", sec); next }
+		sec == "attention" && /^[[:space:]]*command[[:space:]]*=/ {
+			v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]*(#.*)?$/, "", v); gsub(/^"|"$/, "", v); cmd = v
+		}
+		sec == "attention" && /^[[:space:]]*min_turn_seconds[[:space:]]*=/ {
+			v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*$/, "", v); min_s = v
+		}
+		END {
+			if (cmd == "" || cmd == "off" || cmd == "none") exit 1
+			printf "%s\037%s", cmd, (min_s != "" ? min_s : "15")
+		}
+	' "$local_cfg" 2>/dev/null
+}
+
+dispatch_attention_sink() { # sink_cmd event_kind headline detail dedup_key
+	sink_cmd=$1
+	ev_kind=$2
+	ev_head=$3
+	ev_det=$4
+	dedup_k=$5
+	notify_stamp="${TMPDIR:-/tmp}/drift-stop-notify-${base_key}"
+	last_n=""
+	[ ! -f "$notify_stamp" ] || IFS= read -r last_n <"$notify_stamp" || true
+	[ "$last_n" != "$dedup_k" ] || return 0
+	printf '%s\n' "$dedup_k" >"$notify_stamp" 2>/dev/null || true
+	a_name=${area##*/}
+	[ -n "$a_name" ] || a_name="drift"
+	line=$(printf '{"schema":"drift.attention/1","event":"%s","area":"%s","area_name":"%s","headline":"%s","detail":"%s"}' \
+		"$(json_escape "$ev_kind")" "$(json_escape "$area")" "$(json_escape "$a_name")" "$(json_escape "$ev_head")" "$(json_escape "$ev_det")")
+	if [ "$sink_cmd" = "wsl-toast" ]; then
+		[ -x "$here/drift-notify-wsl.sh" ] && printf '%s\n' "$line" | "$here/drift-notify-wsl.sh" || true
+	elif [ -x "$sink_cmd" ]; then
+		(printf '%s\n' "$line" | "$sink_cmd" >/dev/null 2>&1 &) || true
+	elif command -v "$sink_cmd" >/dev/null 2>&1; then
+		(printf '%s\n' "$line" | "$sink_cmd" >/dev/null 2>&1 &) || true
+	fi
 }
 
 contracts_dir=$area/.drift/contracts
@@ -199,7 +256,32 @@ userpromptsubmit | userpromptsubmitted)
 	esac
 	session=$(extract_session)
 	base_key=$(printf '%s:%s' "$area" "$session" | cksum | awk '{print $1}')
-	rm -f "${TMPDIR:-/tmp}/drift-stop-check-${base_key}"* "${TMPDIR:-/tmp}/drift-stop-unowned-${base_key}"* 2>/dev/null || true
+	rm -f "${TMPDIR:-/tmp}/drift-stop-check-${base_key}"* "${TMPDIR:-/tmp}/drift-stop-unowned-${base_key}"* "${TMPDIR:-/tmp}/drift-stop-notify-${base_key}"* 2>/dev/null || true
+	if resolve_attention_config >/dev/null 2>&1; then
+		date +%s >"${TMPDIR:-/tmp}/drift-stop-turn-${base_key}" 2>/dev/null || true
+	fi
+	exit 0
+	;;
+notification)
+	is_subagent_payload && exit 0
+	att_raw=$(resolve_attention_config || true)
+	[ -n "$att_raw" ] || exit 0
+	IFS=$(printf '\037') read -r att_cmd _att_min <<EOF_ATT || true
+$att_raw
+EOF_ATT
+	[ -n "${att_cmd:-}" ] || exit 0
+	session=$(extract_session)
+	base_key=$(printf '%s:%s' "$area" "$session" | cksum | awk '{print $1}')
+	n_type=$(extract_str notification_type)
+	[ -n "$n_type" ] || n_type=$(extract_str notificationType)
+	[ -n "$n_type" ] || n_type=$(extract_str type)
+	[ -n "$n_type" ] || n_type="attention"
+	n_title=$(extract_str title)
+	n_msg=$(extract_str_from "$payload_flat" message)
+	[ -n "$n_msg" ] || n_msg=$(extract_str summary)
+	head_txt=${n_title:-Input requested ($n_type)}
+	dedup=$(printf 'notify:%s:%s:%s' "$n_type" "$head_txt" "$n_msg" | cksum | awk '{print $1}')
+	dispatch_attention_sink "$att_cmd" "$n_type" "$head_txt" "$n_msg" "$dedup"
 	exit 0
 	;;
 sessionstart | startup | resume | beforeagentstart)
@@ -229,9 +311,21 @@ sessionstart | startup | resume | beforeagentstart)
 		elif [ -d "${HOME:-}/.copilot/skills/drift-pro" ] || [ -d "${HOME:-}/.agents/skills/drift-pro" ]; then
 			drift_skill="drift-pro"
 		fi
-		msg="$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $drift_skill skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = \"execution\" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+		msg="$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $drift_skill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = \"execution\" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
 	fi
 	printf '{"additionalContext":"%s"}\n' "$(json_escape "$msg")"
+	exit 0
+	;;
+stopfailure)
+	! is_subagent_payload || exit 0
+	att_raw=$(resolve_attention_config || true)
+	[ -n "$att_raw" ] || exit 0
+	IFS=$(printf '\037') read -r att_cmd _att_min <<EOF_SF || true
+$att_raw
+EOF_SF
+	session=$(extract_session)
+	base_key=$(printf '%s:%s' "$area" "$session" | cksum | awk '{print $1}')
+	dispatch_attention_sink "$att_cmd" "stop_failure" "Agent turn failed" "Inspect terminal session" "stopfail:$session"
 	exit 0
 	;;
 stop | agentstop | afteragent)
@@ -289,7 +383,7 @@ EOF_FIRST
 		exit 0
 	fi
 	if [ "${DRIFT_EDITION:-}" != "free" ] && command -v git >/dev/null 2>&1 && git -C "$area" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		changed=$(git -C "$area" -c core.quotepath=false status --porcelain --untracked-files=normal 2>/dev/null | awk '
+		changed=$(git -C "$area" -c core.quotepath=false status --porcelain --untracked-files=all 2>/dev/null | awk '
 			length($0) >= 4 && substr($0, 1, 1) != "D" && substr($0, 2, 1) != "D" {
 				p = substr($0, 4)
 				if (substr($0, 1, 1) ~ /[RC]/ || substr($0, 2, 1) ~ /[RC]/) {
@@ -298,7 +392,7 @@ EOF_FIRST
 				gsub(/^"|"$|\r$/, "", p)
 				if (p != "") print p
 			}
-		' | grep -v '^\.drift/' | grep -E '\.(v|java|kt|js|mjs|ts|tsx|py|go|rs)$' | head -n 25 || true)
+		' | grep -v '^\.drift/' | grep -E '\.(v|java|kt|scala|js|mjs|cjs|ts|tsx|mts|cts|jsx|py|php|phtml|cob|cbl|cpy|go|rs|c|cc|cpp|cxx|h|hpp|cs|gd)$' | head -n 25 || true)
 		if [ -n "$changed" ]; then
 			contracts_dirty=$(git -C "$area" status --porcelain --untracked-files=normal -- .drift/contracts 2>/dev/null || true)
 			set --
@@ -327,7 +421,7 @@ EOF_FIRST
 							unowned_file=${TMPDIR:-/tmp}/drift-stop-unowned-${base_key}${turn_key:+-$turn_key}-${stamp_id}
 							if [ ! -f "$unowned_file" ]; then
 								: >"$unowned_file" 2>/dev/null || true
-								printf '{"decision":"block","reason":"Changed source files in %s are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root %s --sync-scope; otherwise report them and leave them unchanged."}\n' "$(json_escape "$area")" "$(json_escape "$area")"
+								printf '{"decision":"block","reason":"Changed source files in %s are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep sync-scope --root %s --apply; otherwise report them and leave them unchanged."}\n' "$(json_escape "$area")" "$(json_escape "$area")"
 								exit 0
 							fi
 						fi
@@ -338,6 +432,31 @@ EOF_FIRST
 			fi
 		else
 			rm -f "${TMPDIR:-/tmp}/drift-stop-unowned-${base_key}"* 2>/dev/null || true
+		fi
+	fi
+	if ! is_subagent_payload; then
+		att_raw=$(resolve_attention_config || true)
+		if [ -n "$att_raw" ] && [ -d "$contracts_dir" ]; then
+			IFS=$(printf '\037') read -r att_cmd att_min <<EOF_ATT2 || true
+$att_raw
+EOF_ATT2
+			g_out=$("$drift_bin" status "$contracts_dir" --detail guided --json 2>/dev/null || true)
+			g_flat=$(printf '%s' "$g_out" | tr -d '\r\n')
+			next_act=$(extract_str_from "$g_flat" next_actor)
+			wf_stage=$(extract_str_from "$g_flat" stage)
+			next_cmd=$(extract_str_from "$g_flat" next_command)
+			now_s=$(date +%s 2>/dev/null || printf '0')
+			start_s=0
+			turn_f="${TMPDIR:-/tmp}/drift-stop-turn-${base_key}"
+			[ ! -f "$turn_f" ] || IFS= read -r start_s <"$turn_f" || true
+			elapsed=0
+			case "${start_s:-0}" in *[!0-9]* | "") start_s=0 ;; esac
+			[ "$start_s" -le 0 ] || elapsed=$((now_s - start_s))
+			if [ "$next_act" = "user" ]; then
+				dispatch_attention_sink "$att_cmd" "user_handoff" "Owner decision or approval ready [$wf_stage]" "${next_cmd:-Review options in terminal}" "user:${turn_key:-0}:$wf_stage:$next_cmd"
+			elif [ "$elapsed" -ge "${att_min:-15}" ]; then
+				dispatch_attention_sink "$att_cmd" "turn_complete" "Turn completed [${wf_stage:-idle}] (${elapsed}s)" "${next_cmd:-Ready in terminal}" "done:${turn_key:-0}:$wf_stage"
+			fi
 		fi
 	fi
 	exit 0

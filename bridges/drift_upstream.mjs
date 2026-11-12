@@ -253,6 +253,10 @@ function isHomologousKey(a, b) {
 }
 
 export function synthesizeViewOutput(view, caseId, base = {}, thenMap = null) {
+  const pc = view?.__plan?.cases?.[caseId];
+  if (pc?.stub_output && (!isObj(base) || !Object.keys(base).length) && (!thenMap || thenMap === view?.cases?.[caseId]?.then)) {
+    return cloneJson(pc.stub_output);
+  }
   const whenProjections = extractProjectionMap(view, 'when');
   const thenProjections = extractProjectionMap(view, 'then');
   const whenMap = view?.cases?.[caseId]?.when || {};
@@ -364,6 +368,10 @@ export function resolveStubCaseId(view, idOrRes, caseIdOrWhen, base, errFn) {
 }
 
 export function synthesizeViewVariants(view, caseId, base = {}) {
+  const pc = view?.__plan?.cases?.[caseId];
+  if (Array.isArray(pc?.stub_variants) && pc.stub_variants.length && (!isObj(base) || !Object.keys(base).length)) {
+    return pc.stub_variants.map(cloneJson);
+  }
   const whenProjections = extractProjectionMap(view, 'when');
   const thenProjections = extractProjectionMap(view, 'then');
   const whenMap = view?.cases?.[caseId]?.when || {};
@@ -554,7 +562,14 @@ export function autoResolveView(id, state, fs, path, execFileSync, readJson, par
             tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'drift-resolved-'));
             execFileSync(cli, ['show', cDir, '--out', tmp], { cwd: cur, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
             for (const fn of fs.readdirSync(tmp)) {
-              if (fn.endsWith('.json')) state.batch.set(fn.slice(0, -5), readJson(path.join(tmp, fn)));
+              if (fn.endsWith('.json')) {
+                const d = readJson(path.join(tmp, fn));
+                const pf = path.join(tmp, '.plans', `${fn.slice(0, -5)}.plan.json`);
+                if (fs.existsSync(pf)) {
+                  try { Object.defineProperty(d, '__plan', { value: readJson(pf), enumerable: false, configurable: true }); } catch {}
+                }
+                state.batch.set(fn.slice(0, -5), d);
+              }
             }
             if (state.batch.has(id)) {
               state.cachedCliKey = ck;

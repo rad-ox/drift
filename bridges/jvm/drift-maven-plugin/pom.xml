@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.5.1</version>
+  <version>0.6.0</version>
   <packaging>maven-plugin</packaging>
   <name>DRIFT Maven plugin</name>
   <description>Exports the DRIFT contracts before the tests and gates them after, in one Maven build.</description>
@@ -30,7 +30,7 @@
   </scm>
 
   <properties>
-    <maven.compiler.release>25</maven.compiler.release>
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.version>3.9.9</maven.version>
     <plugin.tools.version>3.15.1</plugin.tools.version>

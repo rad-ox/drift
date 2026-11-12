@@ -9,7 +9,7 @@ namespace Drift
 {
     public static class DriftBridge
     {
-        public const string VERSION = "drift.csharp@0.5.1";
+        public const string VERSION = "drift.csharp@0.6.0";
         public const string BRIDGE_RUNTIME_BASELINE = "dotnet-8.0";
 
         public static readonly IReadOnlyList<string> CAPABILITIES = new[]
@@ -257,6 +257,22 @@ namespace Drift
                 count++;
             }
             return count;
+        }
+        public static void CheckPlanBalance(string key, double actual, IEnumerable<double> adds, IEnumerable<double> subs, double absTol = 1e-9)
+        {
+            double total = (adds?.Sum() ?? 0.0) - (subs?.Sum() ?? 0.0);
+            if (absTol < 0.0 || Math.Abs(actual - total) > absTol)
+            {
+                throw new InvalidOperationException($"then.{key}: balance {actual} != {total}");
+            }
+        }
+
+        public static void CheckPlanScaledBounds(string key, double actual, double conv, double? minVal, double? maxVal)
+        {
+            if (minVal.HasValue && actual + 1e-9 < minVal.Value * conv)
+                throw new InvalidOperationException($"then.{key}: {actual} < scaled min {minVal.Value * conv}");
+            if (maxVal.HasValue && actual - 1e-9 > maxVal.Value * conv)
+                throw new InvalidOperationException($"then.{key}: {actual} > scaled max {maxVal.Value * conv}");
         }
     }
 }

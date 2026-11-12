@@ -180,3 +180,62 @@ def collect_playwright_sequence(options: Mapping[str, Any] | None) -> dict[str, 
 
 
 collect_ui_sequence = collect_playwright_sequence
+
+_VIEW_PLANS: dict[int, dict[str, Any]] = {}
+
+
+def register_bridge_plan(view: Mapping[str, Any], plan: Mapping[str, Any]) -> None:
+    if isinstance(plan, Mapping) and plan.get('schema') == 'drift.bridge-plan/1':
+        _VIEW_PLANS[id(view)] = dict(plan)
+
+
+def get_bridge_plan(view: Mapping[str, Any]) -> dict[str, Any] | None:
+    return _VIEW_PLANS.get(id(view))
+
+
+def clear_bridge_plans() -> None:
+    _VIEW_PLANS.clear()
+
+
+def attach_bridge_plan_file(doc: dict[str, Any], fp: Path | None, read_json_fn: Callable[[Path], Any]) -> dict[str, Any]:
+    if fp is not None and isinstance(doc, dict):
+        pf = fp.parent / '.plans' / f"{doc.get('id') or fp.stem}.plan.json"
+        if pf.is_file():
+            try:
+                pl = read_json_fn(pf)
+                if isinstance(pl, dict) and pl.get('digest') and pl['digest'] in (doc.get('digest'), doc.get('ref')):
+                    register_bridge_plan(doc, pl)
+            except Exception:
+                pass
+    return doc
+
+
+def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None, escape_pointer: Callable[[str], str], read_pointer: Callable[[Any, str], tuple[bool, Any]], check_relational_leaf: Callable[..., bool]) -> bool:
+    clauses = plan_case.get('clauses') if isinstance(plan_case, Mapping) else None
+    if not isinstance(clauses, (list, tuple)):
+        return False
+    pfx = f'{contract_id}.{case_id}'
+    for cl in clauses:
+        if not isinstance(cl, Mapping) or not isinstance(cl.get('constraint'), Mapping):
+            continue
+        pred, ptr, conv = str(cl.get('pred') or ''), str(cl.get('pointer') or f"/{escape_pointer(str(cl.get('pred') or ''))}"), float(cl.get('conv', 1.0))
+        peer_ptrs = {str(k): str(v) for k, v in (cl.get('peer_pointers') or {}).items()}
+        for pk, pv in list(peer_ptrs.items()):
+            if pk.startswith('then.'): peer_ptrs[pk[5:]] = pv
+        when_env = {**(plan_case.get('when') or {}), **(cl.get('when_peers') or {})}
+        for wk, wv in list(when_env.items()):
+            if str(wk).startswith('when.'): when_env[str(wk)[5:]] = wv
+        raw_c = dict(cl['constraint'])
+        fake_c = {'units': {'__u->target': conv}, 'schema': {'then': {pred: {'unit': 'target'}}}} if conv != 1.0 else {}
+        exp = {**raw_c, 'convert_from': '__u'} if conv != 1.0 else raw_c
+        if (isinstance(raw_c.get('keys'), Mapping) or 'allowed_keys' in raw_c or 'forbid_keys' in raw_c) and ptr == f'/{escape_pointer(pred)}':
+            act = payload[pred] if isinstance(payload, Mapping) and isinstance(payload.get(pred), Mapping) else payload
+        else:
+            found, act = read_pointer(payload, ptr)
+            if not found:
+                raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{pred}')
+        check_relational_leaf(contract_id, case_id, pred, exp, act, payload, peer_ptrs, None, when_env, fake_c)
+        if seen is not None and str(cl.get('clause') or '').startswith('then.'):
+            seen.add(pred)
+    return True
+

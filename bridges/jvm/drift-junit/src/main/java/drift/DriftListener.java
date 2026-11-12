@@ -138,9 +138,11 @@ public final class DriftListener implements TestExecutionListener {
         String methodName;
         var src = id.getSource().get();
         if (src instanceof MethodSource ms) {
+            if (isVintageJUnit4Handled(ms.getJavaClass(), id.getUniqueId())) return;
             className = ms.getClassName();
             methodName = ms.getMethodName();
         } else if (src instanceof ClassSource cs) {
+            if (isVintageJUnit4Handled(cs.getJavaClass(), id.getUniqueId())) return;
             className = cs.getClassName();
             methodName = id.getDisplayName();
         } else {
@@ -198,11 +200,20 @@ public final class DriftListener implements TestExecutionListener {
 
     private static String eventsTarget() {
         String prop = System.getProperty(EVENTS);
-        if (prop != null && !prop.isBlank()) {
-            return prop;
-        }
+        if (prop != null && !prop.isBlank()) return prop;
         String env = System.getenv("DRIFT_EVENTS");
-        return env != null && !env.isBlank() ? env : null;
+        if (env != null && !env.isBlank()) return env;
+        return DriftInternal.sessionProperty("events", true);
+    }
+
+    private static boolean isVintageJUnit4Handled(Class<?> cls, String uniqueId) {
+        if (cls == null || uniqueId == null || !uniqueId.startsWith("[engine:junit-vintage]")) return false;
+        for (var ann : cls.getAnnotations()) {
+            if ("org.junit.runner.RunWith".equals(ann.annotationType().getName()) && ann.toString().contains("DriftJUnit4")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static synchronized void recordStandaloneEvent(
@@ -300,10 +311,8 @@ public final class DriftListener implements TestExecutionListener {
         if (Drift.mutationRun()) {
             return;
         }
-        if (System.getProperty(EVENTS) == null || System.getProperty(EVENTS).isBlank()) {
-            return;
-        }
-        if (descriptor.getSource().isEmpty()) {
+        String evTarget = eventsTarget();
+        if (evTarget == null || evTarget.isBlank() || descriptor.getSource().isEmpty()) {
             return;
         }
         var source = descriptor.getSource().get();
@@ -311,6 +320,7 @@ public final class DriftListener implements TestExecutionListener {
         DriftCase tag = null;
         String methodName = null;
         if (source instanceof MethodSource ms) {
+            if (isVintageJUnit4Handled(ms.getJavaClass(), descriptor.getUniqueId().toString())) return;
             className = ms.getClassName();
             methodName = ms.getMethodName();
             DISCOVERED_CLASSES.add(className);
@@ -442,6 +452,9 @@ public final class DriftListener implements TestExecutionListener {
         }
         String snapshot = System.getProperty(SNAPSHOT);
         if (snapshot == null || snapshot.isBlank()) {
+            snapshot = DriftInternal.sessionProperty("snapshot", true);
+        }
+        if (snapshot == null || snapshot.isBlank()) {
             snapshot = existingSnapshot;
         } else {
             snapshot = snapshot.trim();
@@ -542,10 +555,10 @@ public final class DriftListener implements TestExecutionListener {
             return null;
         }
         Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.5.1");
+        base.put("adapter", "drift-junit@0.6.0");
         base.put("config", "default");
         base.put("deps", "none");
-        base.put("drift", "0.5.1");
+        base.put("drift", "0.6.0");
         base.put("policy", "core@1");
         base.put("runner", "junit-platform");
         base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));

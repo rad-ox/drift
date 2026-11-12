@@ -504,7 +504,9 @@ fi
 if [ -d "$here/hooks" ]; then
 	run mkdir -p "$data/hooks"
 	run cp "$here/hooks/drift-hook.sh" "$here/hooks/drift-hook.ps1" "$here/hooks/drift-pi.ts" "$data/hooks/"
+	[ ! -f "$here/hooks/drift-notify-wsl.sh" ] || run cp "$here/hooks/drift-notify-wsl.sh" "$data/hooks/"
 	run chmod 0755 "$data/hooks/drift-hook.sh"
+	[ ! -f "$data/hooks/drift-notify-wsl.sh" ] || run chmod 0755 "$data/hooks/drift-notify-wsl.sh"
 fi
 for f in install.sh VERSION INSTALL.md INSTALL.it.md SHA256SUMS; do
 	[ ! -f "$here/$f" ] || run cp "$here/$f" "$data/$f"
@@ -625,6 +627,15 @@ write_dropin_hook() { # target_file
         "command": "$data/hooks/drift-hook.sh stop",
         "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode stop\"",
         "timeoutSec": 10
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "bash": "$data/hooks/drift-hook.sh notify",
+        "command": "$data/hooks/drift-hook.sh notify",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& \\\"\\\$env:LOCALAPPDATA\\\\Programs\\\\drift\\\\hooks\\\\drift-hook.ps1\\\" -Mode notify\"",
+        "timeoutSec": 5
       }
     ]
   }

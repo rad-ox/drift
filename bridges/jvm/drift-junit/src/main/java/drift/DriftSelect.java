@@ -37,6 +37,9 @@ public final class DriftSelect implements PostDiscoveryFilter {
 
     public DriftSelect() {
         String files = Drift.mutationRun() ? null : System.getProperty(SELECT);
+        if ((files == null || files.isBlank()) && !Drift.mutationRun()) {
+            files = DriftInternal.sessionProperty("select", true);
+        }
         String contractsProp = Drift.mutationRun()
                 ? null
                 : System.getProperty("drift.contracts", System.getenv().getOrDefault("DRIFT_CONTRACTS", ""));

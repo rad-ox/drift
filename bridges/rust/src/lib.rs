@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.5.1";
-pub const BRIDGE_VERSION: &str = "0.5.1";
+pub const ADAPTER_ID: &str = "drift_rust@0.6.0";
+pub const BRIDGE_VERSION: &str = "0.6.0";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",
@@ -52,41 +52,19 @@ pub enum TestError {
 }
 
 impl TestError {
-    pub fn assertion(msg: impl Into<String>) -> Self {
-        TestError::Assertion(msg.into())
-    }
-
-    pub fn harness(msg: impl Into<String>) -> Self {
-        TestError::Harness(msg.into())
-    }
-
-    pub fn message(&self) -> &str {
-        match self {
-            TestError::Assertion(s) | TestError::Harness(s) => s.as_str(),
-        }
-    }
+    pub fn assertion(msg: impl Into<String>) -> Self { TestError::Assertion(msg.into()) }
+    pub fn harness(msg: impl Into<String>) -> Self { TestError::Harness(msg.into()) }
+    pub fn message(&self) -> &str { match self { TestError::Assertion(s) | TestError::Harness(s) => s.as_str() } }
 }
 
 impl std::fmt::Display for TestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TestError::Assertion(s) => write!(f, "{}", s),
-            TestError::Harness(s) => write!(f, "harness error: {}", s),
-        }
+        match self { TestError::Assertion(s) => write!(f, "{}", s), TestError::Harness(s) => write!(f, "harness error: {}", s) }
     }
 }
 
-impl From<String> for TestError {
-    fn from(s: String) -> Self {
-        TestError::Assertion(s)
-    }
-}
-
-impl From<&str> for TestError {
-    fn from(s: &str) -> Self {
-        TestError::Assertion(s.to_string())
-    }
-}
+impl From<String> for TestError { fn from(s: String) -> Self { TestError::Assertion(s) } }
+impl From<&str> for TestError { fn from(s: &str) -> Self { TestError::Assertion(s.to_string()) } }
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -103,17 +81,7 @@ pub struct RunOptions {
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self {
-            contract: String::new(),
-            test: String::new(),
-            cases: Vec::new(),
-            level: "unit".to_string(),
-            resolved_dir: String::new(),
-            events_dir: String::new(),
-            mutation_events_dir: String::new(),
-            mutant_mode: MutantMode::Auto,
-            cargo_test_filter: String::new(),
-        }
+        Self { contract: String::new(), test: String::new(), cases: Vec::new(), level: "unit".to_string(), resolved_dir: String::new(), events_dir: String::new(), mutation_events_dir: String::new(), mutant_mode: MutantMode::Auto, cargo_test_filter: String::new() }
     }
 }
 
@@ -351,6 +319,8 @@ fn load_contract_view(
     Ok(map)
 }
 
+pub(crate) use checks::load_contract_plan_stub;
+
 fn resolve_env_map() -> Result<BTreeMap<String, String>, TestError> {
     let raw = env::var("DRIFT_ENV").unwrap_or_default().trim().to_string();
     let pk = env::var("DRIFT_PROOF_KEY")
@@ -467,6 +437,20 @@ impl DriftContext {
                     .collect()
             });
         let proj_then = extract_then_projections(&self.view);
+        let mut used_plan = false;
+        if !self.in_mutation && !is_ui_obs && adapter_caps.is_none() {
+            if let Some(pc) = checks::load_contract_plan_case(&self.contract_id, &self.resolved_dir, &self.view, case_id) {
+                let (ok, preds) = checks::eval_compiled_plan_case(&self.contract_id, case_id, &pc, &doc)
+                    .map_err(TestError::assertion)?;
+                if ok {
+                    for p in preds {
+                        self.mark_read(case_id, &p);
+                    }
+                    used_plan = true;
+                }
+            }
+        }
+        if !used_plan {
         for (pred, expected) in &then_map {
             let lowered;
             let expected = if let Some(raw) = expected.as_object().filter(|_| is_relational_table(expected)) {
@@ -539,6 +523,7 @@ impl DriftContext {
                     expected.to_json_string()
                 )));
             }
+        }
         }
         if let Some(fr_obj) = doc.as_object().and_then(|m| m.get("_frame")) {
             if let Some(fmap) = fr_obj.as_object() {

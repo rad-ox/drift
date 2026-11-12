@@ -16,7 +16,7 @@
 
 namespace drift {
 
-inline constexpr const char* VERSION = "drift.cpp@0.5.1";
+inline constexpr const char* VERSION = "drift.cpp@0.6.0";
 inline constexpr const char* BRIDGE_RUNTIME_BASELINE = "cpp-20";
 
 inline const std::vector<std::string>& capabilities() {
@@ -33,7 +33,7 @@ inline const std::vector<std::string>& capabilities() {
 }
 
 inline std::string bridgeCapabilitiesJson() {
-    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.5.1","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
+    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.6.0","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
 }
 
 inline void requireCapabilities(const std::vector<std::string>& required) {
@@ -272,6 +272,36 @@ inline void emitSimReceipt(
        << "\",\"subject_ref\":\"" << subjectRef << "\",\"tick_determinism\":{\"divergent_ticks\":[],\"input_stream_ref\":\""
        << inputRef << "\",\"platforms_compared\":" << jsonStrArray(platformsCompared) << ",\"seed_corpus_ref\":\""
        << seedRef << "\",\"ticks_executed\":" << ticksExecuted << ",\"trajectory_digest\":\"" << trajRef << "\"}}\n";
+}
+
+inline void checkPlanBalance(
+    const std::string& key,
+    double actual,
+    const std::vector<double>& adds,
+    const std::vector<double>& subs,
+    double absTol = 1e-9) {
+    double total = 0.0;
+    for (double v : adds) total += v;
+    for (double v : subs) total -= v;
+    if (absTol < 0.0 || std::fabs(actual - total) > absTol) {
+        throw std::runtime_error("then." + key + ": balance mismatch against " + std::to_string(total));
+    }
+}
+
+inline void checkPlanScaledBounds(
+    const std::string& key,
+    double actual,
+    double conv,
+    bool hasMin,
+    double minVal,
+    bool hasMax,
+    double maxVal) {
+    if (hasMin && actual + 1e-9 < minVal * conv) {
+        throw std::runtime_error("then." + key + ": below scaled min");
+    }
+    if (hasMax && actual - 1e-9 > maxVal * conv) {
+        throw std::runtime_error("then." + key + ": above scaled max");
+    }
 }
 
 } // namespace drift

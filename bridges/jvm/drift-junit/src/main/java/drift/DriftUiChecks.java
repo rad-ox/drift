@@ -40,41 +40,23 @@ final class DriftUiChecks {
     private DriftUiChecks() {}
 
     private static Object mapOr(Map<?, ?> m, String k, Object def) {
-        if (m == null) {
-            return def;
-        }
-        Object v = m.get(k);
+        Object v = m == null ? null : m.get(k);
         return v != null ? v : def;
     }
 
     static boolean isElementHidden(Map<?, ?> el) {
-        if (el == null) {
-            return false;
-        }
+        if (el == null) return false;
         String pres = String.valueOf(el.containsKey("presence") ? el.get("presence") : mapOr(el, "state", "")).trim().toLowerCase();
-        if ("hidden".equals(pres) || "absent".equals(pres) || "collapsed".equals(pres)) {
-            return true;
-        }
-        if (Boolean.TRUE.equals(el.get("hidden"))
-                || Boolean.TRUE.equals(el.get("ariaHidden"))
-                || "true".equals(String.valueOf(el.get("aria-hidden")))) {
-            return true;
-        }
-        String disp = String.valueOf(mapOr(el, "display", "")).trim().toLowerCase();
-        String vis = String.valueOf(mapOr(el, "visibility", "")).trim().toLowerCase();
+        if ("hidden".equals(pres) || "absent".equals(pres) || "collapsed".equals(pres)) return true;
+        if (Boolean.TRUE.equals(el.get("hidden")) || Boolean.TRUE.equals(el.get("ariaHidden")) || "true".equals(String.valueOf(el.get("aria-hidden")))) return true;
+        String disp = String.valueOf(mapOr(el, "display", "")).trim().toLowerCase(), vis = String.valueOf(mapOr(el, "visibility", "")).trim().toLowerCase();
         return "none".equals(disp) || "hidden".equals(vis) || "collapse".equals(vis);
     }
 
     static boolean isElementScrollable(Map<?, ?> el, String axis) {
-        if (el == null) {
-            return false;
-        }
-        if (Boolean.TRUE.equals(el.get("scrollable"))) {
-            return true;
-        }
-        if (Boolean.FALSE.equals(el.get("scrollable"))) {
-            return false;
-        }
+        if (el == null) return false;
+        if (Boolean.TRUE.equals(el.get("scrollable"))) return true;
+        if (Boolean.FALSE.equals(el.get("scrollable"))) return false;
         String ox = String.valueOf(mapOr(el, "overflowX", mapOr(el, "overflow", ""))).trim().toLowerCase();
         String oy = String.valueOf(mapOr(el, "overflowY", mapOr(el, "overflow", ""))).trim().toLowerCase();
         boolean sx = "auto".equals(ox) || "scroll".equals(ox) || Boolean.TRUE.equals(el.get("horizontallyScrollable"));
@@ -83,42 +65,21 @@ final class DriftUiChecks {
     }
 
     static boolean isElementUnintentionallyClipped(Map<?, ?> el) {
-        if (el == null || isElementHidden(el)) {
-            return false;
-        }
-        double sw = el.get("scrollWidth") instanceof Number n ? n.doubleValue() : 0.0;
-        double cw = el.get("clientWidth") instanceof Number n ? n.doubleValue() : 0.0;
-        double sh = el.get("scrollHeight") instanceof Number n ? n.doubleValue() : 0.0;
-        double ch = el.get("clientHeight") instanceof Number n ? n.doubleValue() : 0.0;
-        return ((sw > cw) && !isElementScrollable(el, "x"))
-                || ((sh > ch) && !isElementScrollable(el, "y"));
+        if (el == null || isElementHidden(el)) return false;
+        double sw = el.get("scrollWidth") instanceof Number n ? n.doubleValue() : 0.0, cw = el.get("clientWidth") instanceof Number n ? n.doubleValue() : 0.0;
+        double sh = el.get("scrollHeight") instanceof Number n ? n.doubleValue() : 0.0, ch = el.get("clientHeight") instanceof Number n ? n.doubleValue() : 0.0;
+        return ((sw > cw) && !isElementScrollable(el, "x")) || ((sh > ch) && !isElementScrollable(el, "y"));
     }
 
-    static void checkAdapterCapability(
-            String contract,
-            String id,
-            String key,
-            Map<String, Object> v,
-            Map<String, String> proj) {
-        if (!(v.get("adapter") instanceof Map<?, ?> adapter)
-                || !(adapter.get("capabilities") instanceof List<?> caps)) {
-            return;
-        }
-        String ptr = proj != null ? proj.getOrDefault(key, "") : "";
-        String leaf = "";
+    static void checkAdapterCapability(String contract, String id, String key, Map<String, Object> v, Map<String, String> proj) {
+        if (!(v.get("adapter") instanceof Map<?, ?> adapter) || !(adapter.get("capabilities") instanceof List<?> caps)) return;
+        String ptr = proj != null ? proj.getOrDefault(key, "") : "", leaf = "";
         if (ptr != null && !ptr.isEmpty()) {
             String[] segs = ptr.split("/");
-            for (int i = segs.length - 1; i >= 0; i--) {
-                if (!segs[i].isEmpty()) {
-                    leaf = segs[i];
-                    break;
-                }
-            }
+            for (int i = segs.length - 1; i >= 0; i--) if (!segs[i].isEmpty()) { leaf = segs[i]; break; }
         }
         String reqCap = PREDICATE_CAPABILITY.getOrDefault(key, PREDICATE_CAPABILITY.get(leaf));
-        if (reqCap != null && !caps.contains(reqCap)) {
-            throw new AssertionError(contract + "." + id + ": ui.capability_unverifiable:" + reqCap + " for then." + key);
-        }
+        if (reqCap != null && !caps.contains(reqCap)) throw new AssertionError(contract + "." + id + ": ui.capability_unverifiable:" + reqCap + " for then." + key);
     }
 
     static boolean checkSurfaceKey(
@@ -362,18 +323,10 @@ final class DriftUiChecks {
     }
 
     static List<Set<String>> allowedWriteSetsOf(Map<String, Object> view, String caseId) {
-        List<?> swList = (view.get("scope") instanceof Map<?, ?> scopeMap && scopeMap.get("writes") instanceof List<?> sl)
-                ? sl
-                : List.of();
-        List<?> cwList = (view.get("cases") instanceof Map<?, ?> casesMap
-                        && casesMap.get(caseId) instanceof Map<?, ?> cm
-                        && cm.get("writes") instanceof List<?> cl)
-                ? cl
-                : null;
-        List<?> rawAllowed = cwList != null ? cwList : swList;
-        Set<String> allowed = new LinkedHashSet<>();
-        Set<String> allowedBases = new LinkedHashSet<>();
-        for (Object item : rawAllowed) {
+        List<?> swList = (view.get("scope") instanceof Map<?, ?> sm && sm.get("writes") instanceof List<?> sl) ? sl : List.of();
+        List<?> cwList = (view.get("cases") instanceof Map<?, ?> cm0 && cm0.get(caseId) instanceof Map<?, ?> cm && cm.get("writes") instanceof List<?> cl) ? cl : null;
+        Set<String> allowed = new LinkedHashSet<>(), allowedBases = new LinkedHashSet<>();
+        for (Object item : (cwList != null ? cwList : swList)) {
             String w = String.valueOf(item);
             allowed.add(w);
             int h = w.indexOf('#');
@@ -389,64 +342,43 @@ final class DriftUiChecks {
     }
 
     static List<String> forbiddenWritesOf(Map<String, Object> view, String caseId) {
-        if (!(view.get("scope") instanceof Map<?, ?> scopeMap)
-                || !(scopeMap.get("writes") instanceof List<?> swList)
-                || !(view.get("cases") instanceof Map<?, ?> casesMap)
-                || !(casesMap.get(caseId) instanceof Map<?, ?> cm)
-                || !(cm.get("writes") instanceof List<?>)) {
-            return List.of();
-        }
+        if (!(view.get("scope") instanceof Map<?, ?> sm) || !(sm.get("writes") instanceof List<?> swList)
+                || !(view.get("cases") instanceof Map<?, ?> cm0) || !(cm0.get(caseId) instanceof Map<?, ?> cm)
+                || !(cm.get("writes") instanceof List<?>)) return List.of();
         List<Set<String>> sets = allowedWriteSetsOf(view, caseId);
-        Set<String> allowed = sets.get(0);
-        Set<String> allowedBases = sets.get(1);
         List<String> out = new ArrayList<>();
         for (Object item : swList) {
             String r = String.valueOf(item);
-            if (!isWriteResourceAllowed(r, allowed, allowedBases)) {
-                out.add(r);
-            }
+            if (!isWriteResourceAllowed(r, sets.get(0), sets.get(1))) out.add(r);
         }
         return out;
     }
 
     private static boolean isNonNegInteger(Object v) {
-        if (!Json.isFiniteNumber(v)) {
-            return false;
-        }
+        if (!Json.isFiniteNumber(v)) return false;
         double d = ((Number) v).doubleValue();
         return d >= 0.0 && d == Math.rint(d) && d <= 9007199254740991.0;
     }
 
     private static void verifySingleFrameObs(String pfx, String res, Object obs, boolean isAmbient) {
         boolean checked = false;
-        String writeLbl = isAmbient
-                ? "undeclared write on perimeter resource \"" + res + "\""
-                : "frame violation on resource \"" + res + "\"";
-        String snapLbl = isAmbient
-                ? "undeclared state mutation on perimeter resource \"" + res + "\""
-                : "frame state mutation on resource \"" + res + "\"";
+        String writeLbl = (isAmbient ? "undeclared write on perimeter resource \"" : "frame violation on resource \"") + res + "\"";
+        String snapLbl = (isAmbient ? "undeclared state mutation on perimeter resource \"" : "frame state mutation on resource \"") + res + "\"";
         if (isNonNegInteger(obs)) {
             checked = true;
-            if (((Number) obs).longValue() > 0L) {
-                throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + obs);
-            }
+            if (((Number) obs).longValue() > 0L) throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + obs);
         } else if (obs instanceof Map<?, ?> om) {
             for (String wk : new String[] {"writes", "operations", "events"}) {
-                if (om.containsKey(wk)) {
-                    Object wv = om.get(wk);
-                    if (isNonNegInteger(wv)) {
-                        checked = true;
-                        if (((Number) wv).longValue() > 0L) {
-                            throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + wv);
-                        }
-                    } else if (wv instanceof java.util.Collection<?> col) {
-                        checked = true;
-                        if (!col.isEmpty()) {
-                            throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + col.size());
-                        }
-                    } else {
-                        throw new AssertionError(pfx + ": invalid frame " + wk + " for \"" + res + "\": expected non-negative integer, got " + wv);
-                    }
+                if (!om.containsKey(wk)) continue;
+                Object wv = om.get(wk);
+                if (isNonNegInteger(wv)) {
+                    checked = true;
+                    if (((Number) wv).longValue() > 0L) throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + wv);
+                } else if (wv instanceof java.util.Collection<?> col) {
+                    checked = true;
+                    if (!col.isEmpty()) throw new AssertionError(pfx + ": " + writeLbl + ": expected 0 writes, observed " + col.size());
+                } else {
+                    throw new AssertionError(pfx + ": invalid frame " + wk + " for \"" + res + "\": expected non-negative integer, got " + wv);
                 }
             }
             if (om.containsKey("before") && om.containsKey("after")) {

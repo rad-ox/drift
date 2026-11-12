@@ -353,37 +353,65 @@ final class DriftStubs {
         Drift.recordSeamStub(prodId, caseId, prodRef);
     }
 
+    private static Map<String, Object> mergeOntoBase(Map<String, Object> base, Object precomputed) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> out = base == null || base.isEmpty()
+                ? new LinkedHashMap<>()
+                : (Map<String, Object>) Json.cloneJsonValue(base);
+        if (precomputed instanceof Map<?, ?> pm) {
+            for (Map.Entry<?, ?> e : pm.entrySet()) {
+                out.put(String.valueOf(e.getKey()), Json.cloneJsonValue(e.getValue()));
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> planCase(Map<String, Object> v, String contractOrResource, String caseId) {
+        String cid = v.get("id") instanceof String s ? s : contractOrResource;
+        Map<String, Object> plan = DriftInternal.loadPlan(cid);
+        return plan != null && plan.get("cases") instanceof Map<?, ?> cs && cs.get(caseId) instanceof Map<?, ?> cm
+                ? DriftInternal.map(cm, cid + ".plan.cases." + caseId)
+                : null;
+    }
+
     static Map<String, Object> buildStub(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
         Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
         recordSeamIfExternal(v, contractOrResource, caseId, inTest);
-        Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
-        Map<String, String> whenProjections = extractProjectionMap(v, "when");
-        Map<String, String> thenProjections = extractProjectionMap(v, "then");
-        Map<String, Object> thenMap = tightenThenMapBySumResiduals(whenMap, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), whenProjections, thenProjections);
-        return synthesizeMap(thenMap, buildPeerIndex(whenMap, thenMap, whenProjections, thenProjections), whenProjections, thenProjections, base, true);
+        Map<String, Object> pcm = planCase(v, contractOrResource, caseId);
+        if (pcm != null && pcm.get("stub_output") instanceof Map<?, ?>) {
+            return mergeOntoBase(base, pcm.get("stub_output"));
+        }
+        Map<String, String> wp = extractProjectionMap(v, "when"), tp = extractProjectionMap(v, "then");
+        Map<String, Object> wm = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
+        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
+        return synthesizeMap(tm, buildPeerIndex(wm, tm, wp, tp), wp, tp, base, true);
     }
 
     static List<Map<String, Object>> buildStubVariants(String contractOrResource, String caseId, Map<String, Object> base, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
         Map<String, Object> cm = requireActiveCase(v, contractOrResource, caseId);
         recordSeamIfExternal(v, contractOrResource, caseId, inTest);
-        Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
-        Map<String, String> whenProjections = extractProjectionMap(v, "when");
-        Map<String, String> thenProjections = extractProjectionMap(v, "then");
-        Map<String, Object> thenMap = tightenThenMapBySumResiduals(whenMap, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), whenProjections, thenProjections);
-        Map<String, Object> peerIdx = buildPeerIndex(whenMap, thenMap, whenProjections, thenProjections);
-        List<String> keys = new ArrayList<>(new TreeMap<>(thenMap).keySet());
-        int d = keys.size();
-        List<List<Object>> varsByKey = new ArrayList<>(d);
-        Map<String, Object> cur = new LinkedHashMap<>(d);
+        Map<String, Object> pcm = planCase(v, contractOrResource, caseId);
+        if (pcm != null && pcm.get("stub_variants") instanceof List<?> pv && !pv.isEmpty()) {
+            List<Map<String, Object>> res = new ArrayList<>(pv.size());
+            for (Object item : pv) res.add(mergeOntoBase(base, item));
+            return res;
+        }
+        Map<String, String> wp = extractProjectionMap(v, "when"), tp = extractProjectionMap(v, "then");
+        Map<String, Object> wm = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
+        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
+        Map<String, Object> peerIdx = buildPeerIndex(wm, tm, wp, tp);
+        List<String> keys = new ArrayList<>(new TreeMap<>(tm).keySet());
+        List<List<Object>> varsByKey = new ArrayList<>(keys.size());
+        Map<String, Object> cur = new LinkedHashMap<>(keys.size());
         for (String k : keys) {
-            List<Object> vars = witnessVariants(thenMap.get(k), base, peerIdx, whenProjections, thenProjections);
+            List<Object> vars = witnessVariants(tm.get(k), base, peerIdx, wp, tp);
             varsByKey.add(vars);
             cur.put(k, vars.get(0));
         }
         List<Map<String, Object>> outList = new ArrayList<>();
-        collectStubVariants(keys, varsByKey, 0, 0, d >= 3 ? 2 : d, cur, whenMap, thenMap, whenProjections, thenProjections, base, outList);
+        collectStubVariants(keys, varsByKey, 0, 0, keys.size() >= 3 ? 2 : keys.size(), cur, wm, tm, wp, tp, base, outList);
         return outList;
     }
 

@@ -44,10 +44,15 @@ def _wild_tok(pat: str, txt: str) -> bool:
    if idx < 0:return False
    pos=idx+len(piece)
  return True
-def _match_segs(pat: list[str], path: list[str], pi: int = 0, si: int = 0) -> bool:
- if pi==len(pat):return si==len(path)
- if pat[pi]=="**":return _match_segs(pat,path,pi+1,si) or (si < len(path) and _match_segs(pat,path,pi,si+1))
- return si < len(path) and _wild_tok(pat[pi],path[si]) and _match_segs(pat,path,pi+1,si+1)
+def _match_segs(pat: list[str], path: list[str]) -> bool:
+ pi = si = 0; st_p = st_s = -1
+ while si < len(path):
+  if pi < len(pat) and pat[pi] == "**": st_p, st_s, pi = pi, si, pi + 1
+  elif pi < len(pat) and _wild_tok(pat[pi], path[si]): pi += 1; si += 1
+  elif st_p >= 0: st_s += 1; si, pi = st_s, st_p + 1
+  else: return False
+ while pi < len(pat) and pat[pi] == "**": pi += 1
+ return pi == len(pat)
 def _cov_matches(cov_raw: str, sc_raw: str) -> bool:
  cov,cov_anchor=_split_scope_anchor(cov_raw)
  sc,sc_anchor=_split_scope_anchor(sc_raw)

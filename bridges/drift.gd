@@ -3,7 +3,7 @@
 class_name DriftBridge
 extends RefCounted
 
-const VERSION: String = "drift.gdscript@0.5.1"
+const VERSION: String = "drift.gdscript@0.6.0"
 const BRIDGE_RUNTIME_BASELINE: String = "gdscript-4.3"
 const CAPABILITIES: Array[String] = [
 	"predicates",
@@ -170,6 +170,57 @@ static func check_frame(scope_writes: Array, allowed_writes: Array, frames: Dict
 				read_keys.append("@frame:" + str(res))
 		else:
 			read_keys.append("@frame:" + str(res))
+	return true
+
+static func check_plan_case(plan_case: Dictionary, observed: Dictionary, frames: Dictionary = {}) -> bool:
+	for raw_cl in plan_case.get("clauses", []):
+		if typeof(raw_cl) != TYPE_DICTIONARY:
+			continue
+		var cl: Dictionary = raw_cl as Dictionary
+		var pred: String = str(cl.get("pred", ""))
+		var ptr: String = str(cl.get("pointer", "/" + pred))
+		var conv: float = float(cl.get("conv", 1.0))
+		var cur: Variant = observed
+		for seg in ptr.trim_prefix("/").split("/", false):
+			var key_seg: String = seg.replace("~1", "/").replace("~0", "~")
+			if typeof(cur) != TYPE_DICTIONARY or not (cur as Dictionary).has(key_seg):
+				return false
+			cur = (cur as Dictionary)[key_seg]
+		var c: Dictionary = cl.get("constraint", {}) as Dictionary
+		if c.has("eq"):
+			var eq_v: Variant = float(c["eq"]) * conv if (typeof(c["eq"]) == TYPE_FLOAT or typeof(c["eq"]) == TYPE_INT) and conv != 1.0 else c["eq"]
+			if c.has("tol"):
+				var tm: Dictionary = c["tol"] as Dictionary
+				var at: float = float(tm.get("abs", 0.0)) * conv
+				var rt: float = float(tm.get("rel", 0.0))
+				if absf(float(cur) - float(eq_v)) > at + rt * absf(float(eq_v)):
+					return false
+			elif (absf(float(cur) - float(eq_v)) > 1e-9 if (typeof(eq_v) == TYPE_FLOAT or typeof(eq_v) == TYPE_INT) else cur != eq_v):
+				return false
+		if c.has("min") and float(cur) + 1e-9 < float(c["min"]) * conv:
+			return false
+		if c.has("max") and float(cur) - 1e-9 > float(c["max"]) * conv:
+			return false
+		if c.has("peer") and (c["peer"] as Dictionary).has("balance"):
+			var bm: Dictionary = (c["peer"] as Dictionary)["balance"] as Dictionary
+			var pp: Dictionary = cl.get("peer_pointers", {}) as Dictionary
+			var tot: float = 0.0
+			for side in ["add", "sub"]:
+				var sgn: float = 1.0 if side == "add" else -1.0
+				for r in bm.get(side, []):
+					var r_ptr: String = str(pp.get(str(r), "/" + str(r)))
+					var pv: Variant = observed
+					for seg2 in r_ptr.trim_prefix("/").split("/", false):
+						pv = (pv as Dictionary).get(seg2, null) if typeof(pv) == TYPE_DICTIONARY else null
+					if pv == null:
+						return false
+					tot += sgn * float(pv)
+			if absf(float(cur) - tot) > 1e-9:
+				return false
+	if bool(plan_case.get("enforces_frame", false)):
+		var dummy_reads: Array = []
+		if not check_frame(frames.keys(), plan_case.get("permitted_writes", []), frames, dummy_reads):
+			return false
 	return true
 
 static func replay_counterexamples(contract_id: String, case_id: String, fixtures: Array, runner: Callable) -> int:

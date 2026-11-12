@@ -211,6 +211,48 @@ jobs:
             assert json.load(open(f'schemas/drift-{k}-0.3.schema.json'))['$schema'].endswith('2020-12/schema')
           PY
 
+          mkdir -p /tmp/drift-ci/forged && cp -R example/.drift /tmp/drift-ci/forged/.drift
+          sed -i 's/by = "items-team"/by = "forged-actor"/' /tmp/drift-ci/forged/.drift/contracts/item-get.toml
+          drift gate /tmp/drift-ci/forged/.drift/contracts --config /tmp/drift-ci/forged/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_forged.json || true
+          python3 verifier/drift_verify.py /tmp/drift-ci/forged/.drift/contracts --config /tmp/drift-ci/forged/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/v_forged.json || true
+          python3 - <<'PY'
+          import json
+          for p in ('/tmp/drift-ci/g_forged.json', '/tmp/drift-ci/v_forged.json'):
+            c = json.load(open(p))['contracts'][0]
+            assert c['ok'] is False and 'contract.approval.unlisted' in c['reasons'], c
+          PY
+
+          mkdir -p /tmp/drift-ci/self-stub
+          DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/self-stub/js.jsonl node --input-type=module - <<'EOF'
+          import { runDriftCase } from './bridges/drift.mjs';
+          await runDriftCase({ contract: 'item-get', test: 'ci.mjs#self_stub', cases: ['found'], level: 'http' }, async (d) => {
+            await d.check('found', d.buildOutput('found'));
+          });
+          EOF
+          drift review example/.drift/contracts/item-get.toml --events /tmp/drift-ci/self-stub --brief > /tmp/drift-ci/rev_stub.json || true
+          python3 - <<'PY'
+          import json
+          meta = json.load(open('/tmp/drift-ci/self-stub/js.meta.json'))
+          rev = json.load(open('/tmp/drift-ci/rev_stub.json'))
+          assert 'ci.mjs#self_stub' in meta.get('self_stubbed', []), meta
+          assert 'oracle.self_stubbed' in rev.get('signals', []), rev
+          PY
+
+          mkdir -p /tmp/drift-ci/sec-req/.drift/profiles /tmp/drift-ci/sec-req/.drift/contracts
+          cp example/.drift/config.toml /tmp/drift-ci/sec-req/.drift/config.toml
+          cp example/.drift/profiles/http-json@1.toml /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
+          printf '\n[requires]\nsecurity = ["sast"]\n' >> /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
+          cp example/.drift/contracts/item-get.toml /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml
+          drift approve /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml --by items-team >/dev/null
+          drift gate /tmp/drift-ci/sec-req/.drift/contracts --config /tmp/drift-ci/sec-req/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_sec.json || true
+          python3 verifier/drift_verify.py /tmp/drift-ci/sec-req/.drift/contracts --config /tmp/drift-ci/sec-req/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/v_sec.json || true
+          python3 - <<'PY'
+          import json
+          for p in ('/tmp/drift-ci/g_sec.json', '/tmp/drift-ci/v_sec.json'):
+            c = json.load(open(p))['contracts'][0]
+            assert c['ok'] is False and 'security.missing' in c['reasons'], c
+          PY
+
   verify-macos-arm64:
     runs-on: macos-15
     steps:

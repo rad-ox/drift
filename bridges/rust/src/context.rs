@@ -657,6 +657,9 @@ impl DriftContext {
             self.self_stubbed = true;
             let self_key = format!(".drift/self-stub/{}", self.contract_id);
             self.record_input(&self_key, "sha256:self-stub");
+            if let Some(stub) = load_contract_plan_stub(&self.contract_id, &self.resolved_dir, &self.view, case_id) {
+                return Ok(stub);
+            }
         }
         build_projected_json(&self.view, case_id)
     }
@@ -673,6 +676,9 @@ impl DriftContext {
                 self.self_stubbed = true;
                 let self_key = format!(".drift/self-stub/{}", self.contract_id);
                 self.record_input(&self_key, "sha256:self-stub");
+                if let Some(stub) = load_contract_plan_stub(&self.contract_id, &self.resolved_dir, &self.view, case_id) {
+                    return Ok(stub);
+                }
             }
             return build_projected_json(&self.view, case_id);
         }
@@ -682,6 +688,11 @@ impl DriftContext {
             &self.resolved_dir
         };
         let up_view = load_contract_view(target, eff_rdir)?;
+        let plan_stub = if !self.in_mutation {
+            load_contract_plan_stub(target, eff_rdir, &up_view, case_id)
+        } else {
+            None
+        };
         if !self.in_mutation {
             let prod_id = up_view.get("id").and_then(|v| v.as_str()).unwrap_or(target);
             let prod_ref = up_view
@@ -691,6 +702,9 @@ impl DriftContext {
                 .unwrap_or("sha256:seam-stub");
             let seam_key = format!(".drift/seam-stub/{}#{}", prod_id, case_id);
             self.record_input(&seam_key, prod_ref);
+            if let Some(stub) = plan_stub {
+                return Ok(stub);
+            }
         }
         build_projected_json(&up_view, case_id)
     }

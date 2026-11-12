@@ -1,6 +1,6 @@
 [package]
 name = "drift_rust"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Zero-dependency compile-once Rust test bridge for DRIFT"

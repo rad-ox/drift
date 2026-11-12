@@ -4,6 +4,7 @@ import {
   checkProjectedLeaf,
   checkRelationalLeaf,
   escapePointer,
+  evalCompiledPlanCase,
   invokeVerifiedCallback,
   isAssertErr,
   isObj,
@@ -180,6 +181,17 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
 export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whenObs = null) {
   ctx._tag(caseId);
   const seen = ctx.reads.get(caseId);
+  const hasCallbacks = isObj(checks) && Object.entries(checks).some(([k, v]) => k !== 'frame' && k !== 'strictFrame' && typeof v === 'function');
+  const isUiObs = isObj(payload) && (payload.schema === 'drift.ui-observation/1' || isObj(payload.evidence));
+  const planCase = !ctx.mutationOverride && !hasCallbacks && whenObs === null && !isUiObs ? ctx.view?.__plan?.cases?.[caseId] : null;
+  if (planCase && evalCompiledPlanCase(ctx.contractId, caseId, planCase, payload, seen)) {
+    const frameObs = isObj(checks?.frame) ? checks.frame : (isFrameMetadataEnvelope(payload?._frame) ? payload._frame : null);
+    if (frameObs) {
+      const strictFrame = checks?.strictFrame === true || !Object.values(frameObs).some((v) => isObj(v) && v.observed === false);
+      verifyCaseFrame(ctx, caseId, frameObs, strictFrame);
+    }
+    return;
+  }
   const proj = ctx._projMap('then');
   const whenEnv = typeof ctx._whenEnv === 'function' ? ctx._whenEnv(caseId, payload, whenObs) : null;
   for (const [k, exp] of Object.entries(ctx._tt(caseId))) {
@@ -344,7 +356,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.5.1',
+    version: '0.6.0',
   };
 }
 

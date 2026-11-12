@@ -4,15 +4,17 @@ import {
   adaptPlaywrightSurface,
   adaptUiaSnapshot,
   bindUiEnvironment,
+  evalPlanCaseImpl,
   observeUiSequence,
 } from './drift_ui.mjs';
-import { collectPlaywrightSequence, collectUiSequence } from './drift_ui_collector.mjs';
+import { attachBridgePlan, collectPlaywrightSequence, collectUiSequence } from './drift_ui_collector.mjs';
 import { buildWhenEnv, CAPS_03, desugar03Rel, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, resolvePeerValue, unwrap03Eq } from './drift_ui_recovery.mjs';
 import { captureSurfaceDom, checkSurfaceKey } from './drift_ui_surface.mjs';
 export {
   adaptComposeSemantics,
   adaptPlaywrightSurface,
   adaptUiaSnapshot,
+  attachBridgePlan,
   bindUiEnvironment,
   buildWhenEnv,
   CAPS_03,
@@ -327,6 +329,10 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
     } else throwAssertionError(`${pfx}: invalid sum_total on then.${key}`);
   }
   return true;
+}
+
+export function evalCompiledPlanCase(contractId, caseId, planCase, payload, seen = null) {
+  return evalPlanCaseImpl(contractId, caseId, planCase, payload, seen, escapePointer, readPointer, checkRelationalLeaf, throwAssertionError);
 }
 
 export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, mutationOverride, withAt, missMsg, whenEnv = null, contract = null) {

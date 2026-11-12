@@ -2,8 +2,100 @@
 
 User-visible changes and capabilities by release.
 
+## 0.6.0
+
+- Release `0.6.0`.
+- Package `drift-notify-wsl.sh` and `notification` hook entries in release archives, sync `0.6` CLI docs, and harden public changelog sanitization.
+- Add `0.3` clean-room specification grants (`export grant`, `init --grant`, `drift.grant-lock/1`, `--grant-lock`, MIT `drift_verify.py` parity).
+- Consolidate 38 CLI and kernel micro-test files into 21 suites with symbol-exact contract bindings, cutting 38 V/C test compilations in make t.
+- Precompute Profile03 canonical schemas, projections, unit pairs, and scope requires, and share unmodified norm_cases in 0.3 digest/resolved views.
+- Cache dev/prod CLI builds separately (.build/drift.{dev,prod}), propagate PROD to sub-makes, and restage across mode/BUILD switches without recompiling.
+- Harden JS template/regex, Rust nested-comment/raw-string, and multi-line Python import/heal scanners, and optimize subsumed_code_glob_map to O(N*|U|).
+- Harden symbolic scope slicing across multi-line headers, inline/leading attrs, receiver homonyms, ordered imports_only preambles, and broad forbid_imports.
+- Use checked i64 pivot/merge math in integer polytopes and pass -ffp-contract=off on -prod C builds to prevent near-2^53 rounding and cross-arch FMA drift.
+- Keep unknown hook events inert, check polyglot untracked dirs on Stop, and pipe drift.attention/1 to WSL2 in-place Toasts.
+- Close `explain` over runtime reasons and envelopes (`--example`), add `init --graduate`, `case --unbound-vocab`, and `doctor` checks.
+- Target Java 17 in JVM bridges, skip unadopted reactor modules, add `session.json` fallback, and use `.plan.json` stubs.
+- Isolate `sweep` surface staleness per namespace, index Scala basenames in O(1), and load Owned reachable closures.
+- Add 3-way relational F2P verdict, batch non-vacuity, and `proof.f2p_regressed` to `gate --compare-before`.
+- Unify SweepRootContext/import caches across sweep --root --flow, use O(log N) V/Rust prefix lookup, and parallelize sweep source I/O & SHA-256 pins.
+- Parallelize show --out / export views, compiled .plan.json emission, batch mutants generation, fmt / fmt --diff, and pre-warm status/approve.
+- Stage only diffed Git baseline blobs, fix O(N^2) gate inventory replay, add header-only batch recall, and run conformance with -gc none.
+- Support '#' comments in DirectParser, replace recall token maps with 64-bit masks, parallelize gate verdicts, and add v1/v2 slab inventories.
+- Parallelize CLI contract batches and large JSONL shards, stack-sort small JCS maps, add lean prepare_recall, and isolate Surefire test dirs.
+- Streamline 0.3 proof/check/verifier hot paths, compact ObsValue/Event maps, shard conformance, and add chk03/proof03+obs bench lanes.
+- Clamp DRIFT_EDITION to compiled edition tier, fail-close export_public.py, fix Boehm GC C codegen, and fix array/object stub type hints.
+- Thin polyglot bridges onto `.plans/<id>.plan.json` interpreters with zero `drift` CLI in CI/CD, cut >1,600 LOC.
+- Synthesize projected `then` stubs, desymmetrized peers, and 2-skeleton variants in `obs_stub.v` and `bridge_suite_plan.v`.
+- Compile `0.2`/`0.3` contracts into `.plans/<id>.plan.json` (`drift.bridge-plan/1`) in `show --out` and `export views`.
+- Add `fmt --diff` (`pure_read`, unified diff, exit 1 on a difference), `merge --out FILE|-`, `export views|boundary --out -` and atomic `export views --out DIR` staging.
+- Add `version --json|--as json` and `explain --list [codes|reasons|checks|operators] [--json]`; `explain <code> --json` prints one entry; plain `version`/`explain` text stays.
+- Add `mutants --detail summary` (an `operators: <op>=<count>` line) and `stats --since <ref>` with `--detail summary` (provenance line, radar table, churn).
+- List contracts with coarsened obligations first in multi-contract `review` summaries and non-delta `md`; hint `--base HEAD` on directory summaries without `--base`.
+- Ship `schemas/drift-boundary-0.3.schema.json`, checked by `make schema-check` against exported bundles; document `diff <a|ref|approved> <b>` in the synopsis.
+- Print `verify offline: python3 verifier/drift_verify.py ...` last in the text of `gate --attest`; test `merge` approval safety and `recall sync` on partial checkouts.
+- Align `0.3` cause and fix text of codes in the diagnostic catalogue; audit all 29 codes against emission and `explain` (DR-E002, DR-E003, DR-E105, DR-E209, DR-E406, DR-E601, DR-E701, DR-E702).
+- Lint `drift` invocations in docs, skills and hooks against the option registry; fix the guide `select --plan --cmd` and Pro/Enterprise cold-review commands.
+- Resolve 0.3 schema pointer projections in peer checks and close transitive order stars in partitions and `check`.
+- Add `drift plan --pack speculative` and position-independent `content_ref` pack fencing across `plan` and `gate`.
+- Heal unowned top-level symbols in `#<symbol>`-partitioned files during `drift sweep sync-scope` via unique intra-file caller fixed-point attribution.
+- Add paired `verify_slots`/`verify_pct` pool queues to `drift plan --staffing` and `--staffing` slot locks in `scripts/proof_events.py`.
+- Add `drift eval <file|id>#<case> --observation FILE|-` (Free, `pure_read`): judge `drift.observation/1` envelopes with the kernel oracle; exit 0, 1 or 2, no proof event.
+- Re-judge `observations` of `0.3` proof events in `prove` and `gate`: a violated or inconclusive one turns a passed event red for its case; malformed ones are `DR-E701`.
+- Add `eval` as a `cli` command to the `69-command-coverage-status` golden, as `drift eval` joins the command catalogue.
+- Close symmetric star `eq_field` equivalences in bounded partitions, `--when` mutants, `check`, and poset tightening.
+- Render multi-option choice trade-offs, speculative picks, consumer impacts, and relaxation witnesses in `review --as md`.
+- Validate `--as` and `--detail` in one place: an unsupported value exits 2 with `--as <v> is not supported by <command>; supported: <list>`; `--as json` equals `--json`.
+- Accept `--as text|json` on `check`, `diff`, `prove`, `mutants`, `select`, `stats`, `impact`, `plan`, `recall`, `sweep` and `doctor`, and `--detail full` on `prove`.
+- Add `summary` to the formats of `status`, `gate` and `review`, `text` and `md` to `show`, and `guided` to the details of `plan` in `drift help --json`.
+- Print the effective cases (own, inherited, waived, deferred) and invariants of a contract as a table with `drift show <contract> --as text|md`; JSON stays the default.
+- Resolve a target that is no path as a contract `<id>` or profile `<name>@<N>` of the nearest area; an unknown word exits 2 with a near-name hint.
+- Narrow `show`, `prove --explain` and `gate --explain` to one case with `<id>#<case>`; the verdict and exit status stay whole; other commands exit 2.
+- List the contracts that are not green first in the directory text of `prove` and `gate` and fold green ones into `green: <N> contract(s)`; `--detail full` lists all.
+- Add `drift doctor [<dir>] [--json]` (Free, `pure_read`): one ok/warn/fail line per check of edition, config, profiles, contracts, events and hooks; exit 1 only on a fail.
+- Add `drift completion <bash|zsh|fish|pwsh>` (Free, `pure_read`): a static script generated from the option registry of the active edition.
+- End a text run with a `DR-E401` finding with one `hint: profiles in <dir>: <refs>` line (or `none; create one with drift new <dir>/<name>@<N>.toml`); `--json` unchanged.
+- Follow a `DR-E603` finding of `drift approve` with `hint: approvers in <config>: <names>`; exit status 1 unchanged.
+- Scaffold a minimal profile with `drift new <dir>/profiles/<name>@<N>.toml`; it checks clean, never overwrites (exit 2) and takes no contract options.
+- Read the events of `status`, `prove`, `gate` and `select` from `[area] events` of the area config when `--events` and the state dir give none; reject absolute and `..` paths.
+- Open the text of `status`, `prove`, `gate` and `select` with `events: <path> (<source>)` and add `events_source` to their `--json` (not `status`) unless `--events` is given.
+- Name the resolved events path in the guided `next_command` instead of `--events <events-dir>` when events resolve.
+- Name the shard, line, contract and expected and found digests of each `events.other_digest` event in `select --explain`, and list them as `other_digest_events`.
+- Answer `impact --schedule`, `impact --recall`, `sweep --recall` and `new --area` with exit 2 and `was replaced by drift plan|recall query|recall sync|init`, not in help.
+- Reject `new --epoch-manifest` and `sweep --from-intent`, which were accepted and ignored, as unknown options.
+- Make `drift fmt --upgrade 0.3` write all files or none (exit 1 on a finding) and end with `removed <N> approval(s); review and approve the upgraded files again`.
+- Write the profile of `drift sweep --openapi F --scaffold-profile P` only with `--apply`; without it print `would write P`; `sweep check` accepts `--apply`.
+- Make the legacy `drift sweep <dir> --root R --sync-scope` preview like `sweep sync-scope` and write only with `--apply`.
+- Declare `recall.sync` as `writes_digest_preserving` instead of `writes_ephemeral` in `drift help --json`, and resolve each invocation's effect class from its options.
+- Add `; did you mean "<hint>"?` to the first stderr line of an unknown command, subcommand, option or `explain` code with a near name; nothing is run, exit status stays 2.
+- Print `Options:` and `Exit status:` sections after the usage lines of `drift <command> --help`, `-h` and `help <command>`, listing every accepted option; usage lines kept.
+- Read `--name=value` like `--name value` for every valued option, reject `--switch=value` with `--<name> takes no value`, and end option parsing at a bare `--`.
+- Print an `external reads:` line before the text `checks:` line of a sweep that counts external reads, pointing to the `resource.external_read` explain reason; JSON unchanged.
+- Open `drift plan` text with its schedule block under a `weights:` line stating the unit of `w`, before the contract and lane lines; JSON unchanged.
+- Name `drift sweep sync-scope --root <dir> --apply` instead of the legacy `--sync-scope` flag in the `code.undeclared` remedy shown by `drift explain`.
+- Print a `fix: <reason>: <remedy>` line after each not-green gate text verdict, one per distinct catalogue reason; JSON, junit, summary and guided unchanged.
+- Print a `checks:` line before the text `sweep ok|not ok` total, naming the check families that ran and the ones skipped for lack of their option; JSON unchanged.
+- Print a `merged by:` line under each cluster group and one `what-if cut` line per cut after the totals in `drift plan` text, JSON unchanged.
+- Add `drift plan --staffing FILE` and `schedule.staffing`: agent-pool sizing by makespan plus spawn cost under caps and remote handoff.
+- Orient colored mutex components in `impact --schedule` by a deterministic weighted portfolio and local search, kept only on strict improvement.
+- Contract only the read-after-write cycle inside a mutex component in `impact --schedule`; the rest stays colored.
+- Make `list_schedule_makespan` work-conserving so `max_workers` and `what_if` makespans never idle a worker while a group is ready.
+
 ## 0.5.1
 
+- Structure dense capability prose into scannable tables/bullets in `GUIDE*.md` and `EDITIONS.md`, clarify `Linux & macOS` paths in `INSTALL*.md`, and refine `README.md` wording.
+- Align `INSTALL*.md` JDK 25 source-build deps, `EDITIONS.md` gated flags, `SECURITY.md` version bump, public changelog sanitization, and automated doc-parity checks.
+- Bundle OS-aware CLI bootstrap scripts (`scripts/install-cli.{sh,ps1}`) in packaged skills for `skills.sh` installs and auto-fetch Windows archives on clone.
+- Build the JVM plugin id from the same tag-aware `git describe --tags` as the Makefile `REV`, so a lightweight release tag names it.
+- Point the Stop hook's unmatched-code remedy at `drift sweep sync-scope --root <area> --apply` instead of the legacy `--sync-scope` flag.
+- Make the README bootstrap quickstart run from an empty directory with the owner as first approver and the example profile.
+- Derive the build `REV` from the nearest Git tag of any kind, so a lightweight release tag names the installed build.
+- Make the `DR-E105` explanation cover every case, decision, invariant, parameter, projection, concept and predicate collision (DR-E105).
+- Reject unknown single-dash options and `drift version` arguments with exit 2, keeping the `recall query` negation expression valid.
+- Let `drift mutants --out -` stream the complete manifest to standard output instead of creating a file named `-`.
+- Fix guided text, Markdown and next-action views to render only existing `findings`, so a contract entry without them shows no phantom finding.
+- Fix README tier-label rendering; align docs with schema `0.3`, dual seals, profile setup, diagnostics, proof states, and offline-install boundaries.
+- Close `0.3` empty invariant/peer meet (`in` $\sqcap$ `min`/`max`), lock concurrent approval/recall/ops writes, verify 180 conformance obligations, and test threats 6–8 (DR-E003, DR-E105).
 - Upgrade `central-publishing-maven-plugin` to `0.12.0` to strip `maven-metadata-local.xml` and `_remote.repositories` from Maven Central bundles.
 - Release `0.5.1`.
 - Harden `0.3` constraint algebra (unit-aware meet/refinement, `not_in`/UTF-8 codepoint lengths, `assurance_ref` simulation, `fmt --upgrade`, `mutants`, bridges, and small-model/ASan/fuzz checks).
@@ -13,10 +105,9 @@ User-visible changes and capabilities by release.
 - Add the complimentary Open-Source Maintainer Grant for DRIFT Enterprise in `LICENSE` Part III, `EDITIONS.md`, `README.md`, and `SUPPORT.md`.
 - Switch Maven `groupId` to `io.github.rad-ox` across POMs, installers (`install.sh`, `install.ps1`), skills, and docs for Maven Central readiness.
 - Showcase standout Free → Pro → Enterprise capabilities in `README.md`/`GUIDE*.md`/`EDITIONS.md`, add `skills/drift/` export for `skills.sh`, and add POM/Cargo metadata.
-- Add portable DRIFT dogfooding & perimeter release audit to `AGENTS.md`/`PUBLISHING.md`, sync `README.md`, `EDITIONS.md`, and `SECURITY.md`, and verify `0.3` schemas in CI.
 - Add `type = "any"` polymorphic `0.3` predicates, `dr1`-preserving `0.3`->`0.2` profile projection, and migrate `.drift/profiles/*.toml` and initial contracts to `0.3`.
-- Align `bridges/rust/Cargo.toml` license to `MIT`, add Part III Pro/Enterprise terms to `LICENSE`, and update `PUBLISHING.md` Maven Central `<licenses>` note.
-- Add `0.3` JSON Schema projections (`drift-{contract, profile, config, proof-event}-0.3.schema.json`) in `SPEC.md` §26 and `schemas/` alongside `0.2`.
+- Align `bridges/rust/Cargo.toml` license to `MIT`, add Part III Pro/Enterprise terms to `LICENSE`.
+- Add `0.3` JSON Schema projections (`drift-{contract,profile,config,proof-event}-0.3.schema.json`) in `schemas/` alongside `0.2`.
 - Add GitHub issue forms (`.github/ISSUE_TEMPLATE/`) and `.github/PULL_REQUEST_TEMPLATE.md` and include them in public exports.
 - Separate `0.3` `when.*`/`then.*` peer environments in bridges, fix `isStr` in `drift_ui_recovery.mjs`, and verify `0.3` `dr2b`/`dr2a` contracts in `drift_verify.py`.
 
@@ -122,7 +213,7 @@ User-visible changes and capabilities by release.
 - Detect state deadlocks, missing Saga compensations, unhandled duplicate deliveries and dynamic imports in `sweep`.
 - Add `@tree` domain lenses, `branch:<id>` recall filters, private branch leak checks in `sweep --flow`, and consumer-projected worker pack refs.
 - Add `schedule.what_if` bottleneck analysis, 3-service domain conflict checks in `sweep --flow`, and `causal_suspects` ranking in `select --explain`.
-- Scaffold contracts from runtime JSONL traces in `new --from-upstream`, add contract-free bridge `observe`, and enforce `DR-E602` in `drift_verify.py` (DR-E602).
+- Scaffold contracts from runtime JSONL traces in `new --from-upstream`, add contract-free bridge `observe()`, and enforce `DR-E602` in `drift_verify.py` (DR-E602).
 - Evaluate relational mutants by semantic satisfaction, include boundary `witness` values in `mutants`, and deduplicate `coupling_culprits` test counts.
 - Prioritize `impact --schedule` waves by downstream unlock density, detect 3-contract serial bottlenecks in `sweep`, and report queue load in `stats`.
 

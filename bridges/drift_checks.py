@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce
+    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce, drift_ui_collector as _uic
 except ImportError:
     try:
-        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce  # type: ignore[no-redef]
+        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce, drift_ui_collector as _uic  # type: ignore[no-redef]
     except ImportError:
         def _ld(n: str) -> Any:
             s = importlib.util.spec_from_file_location(n, Path(__file__).with_name(f'{n}.py'))
@@ -22,7 +22,7 @@ except ImportError:
             s.loader.exec_module(m)
             return m
         _up, _sec, _ui, _uis = _ld('drift_upstream'), _ld('drift_security'), _ld('drift_ui'), _ld('drift_ui_surface')
-        _ce = _ld('drift_ui_recovery')
+        _ce, _uic = _ld('drift_ui_recovery'), _ld('drift_ui_collector')
 
 REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion', 'eq', 'len', 'keys', 'peer', 'series', 'tol', 'convert_from'))
 CAPS_03 = ('rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1')
@@ -111,69 +111,57 @@ def run_domain_bounds_check(contract_id: str, case_id: str, then_table: Mapping[
 
 def expand_single_domain(spec: Any, first: bool = False) -> list[Any] | None:
     if isinstance(spec, (list, tuple)):
-        if not spec:
-            raise ValueError('domain sample sequence must not be empty')
+        if not spec: raise ValueError('domain sample sequence must not be empty')
         return [spec[0]] if first else list(spec)
-    if not isinstance(spec, Mapping):
-        raise ValueError('domain specification must be a sequence or mapping')
-    domain_type = spec.get('type')
-    if domain_type == 'int':
+    if not isinstance(spec, Mapping): raise ValueError('domain specification must be a sequence or mapping')
+    dt = spec.get('type')
+    if dt == 'int':
         lo, hi = spec.get('min'), spec.get('max')
-        if isinstance(lo, bool) or isinstance(hi, bool) or not isinstance(lo, int) or not isinstance(hi, int) or lo > hi:
-            raise ValueError(f'invalid int domain [{lo}, {hi}]')
-        if first:
-            return [0 if lo < 0 < hi else lo]
-        samples = ([0] if lo < 0 < hi else []) + [lo, min(hi, lo + 1), int((lo + hi) / 2), max(lo, hi - 1), hi]
-        return list(dict.fromkeys(samples))
-    if domain_type == 'string' and isinstance(spec.get('enum'), (list, tuple)) and spec['enum']:
+        if isinstance(lo, bool) or isinstance(hi, bool) or not isinstance(lo, int) or not isinstance(hi, int) or lo > hi: raise ValueError(f'invalid int domain [{lo}, {hi}]')
+        return [0 if lo < 0 < hi else lo] if first else list(dict.fromkeys(([0] if lo < 0 < hi else []) + [lo, min(hi, lo + 1), int((lo + hi) / 2), max(lo, hi - 1), hi]))
+    if dt == 'string' and isinstance(spec.get('enum'), (list, tuple)) and spec['enum']:
         return [str(spec['enum'][0])] if first else list(dict.fromkeys(str(v) for v in spec['enum']))
-    if domain_type == 'bool':
-        return [False] if first else [False, True]
-    return None
+    return ([False] if first else [False, True]) if dt == 'bool' else None
 
 
 def expand_domain(domain: Any, first: bool = False) -> list[Any]:
     single = expand_single_domain(domain, first)
-    if single is not None:
-        return single
-    if not isinstance(domain, Mapping) or not domain:
-        raise ValueError('Cartesian domain mapping must not be empty')
+    if single is not None: return single
+    if not isinstance(domain, Mapping) or not domain: raise ValueError('Cartesian domain mapping must not be empty')
     keys = sorted(domain.keys())
-    d = len(keys)
-    vals_by_key: list[list[Any]] = []
+    d, vals_by_key = len(keys), []
     for key in keys:
         vals = expand_single_domain(domain[key], first)
-        if vals is None:
-            raise ValueError(f'invalid domain specification for key "{key}"')
+        if vals is None: raise ValueError(f'invalid domain specification for key "{key}"')
         vals_by_key.append(vals)
     cur = {keys[i]: vals_by_key[i][0] for i in range(d)}
-    if first:
-        return [cur]
+    if first: return [cur]
     prod = 1
     for v in vals_by_key:
         prod *= len(v)
-        if prod > 16:
-            break
-    max_excursions = d if prod <= 16 else (2 if d >= 3 else d)
-    out: list[dict[str, Any]] = []
-
+        if prod > 16: break
+    max_exc, out = (d if prod <= 16 else (2 if d >= 3 else d)), []
     def dfs(pos: int, exc: int) -> None:
-        if pos == d or exc >= max_excursions:
-            out.append(dict(cur))
-            return
+        if pos == d or exc >= max_exc: out.append(dict(cur)); return
         dfs(pos + 1, exc)
-        vals_p = vals_by_key[pos]
-        k = keys[pos]
-        for idx in range(1, len(vals_p)):
-            cur[k] = vals_p[idx]
-            dfs(pos + 1, exc + 1)
-        cur[k] = vals_p[0]
-
+        for idx in range(1, len(vals_by_key[pos])):
+            cur[keys[pos]] = vals_by_key[pos][idx]; dfs(pos + 1, exc + 1)
+        cur[keys[pos]] = vals_by_key[pos][0]
     dfs(0, 0)
     return out
 
 
 ThenView = _sec.ThenView
+
+
+register_bridge_plan = _uic.register_bridge_plan
+get_bridge_plan = _uic.get_bridge_plan
+clear_bridge_plans = _uic.clear_bridge_plans
+attach_bridge_plan_file = _uic.attach_bridge_plan_file
+
+
+def eval_compiled_plan_case(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None = None) -> bool:
+    return _uic.eval_plan_case_impl(contract_id, case_id, plan_case, payload, seen, escape_pointer, read_pointer, check_relational_leaf)
 
 
 def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, when_env: Mapping[str, Any] | None = None, contract: Mapping[str, Any] | None = None) -> bool:
@@ -268,62 +256,39 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
 
 def check_projected_leaf(contract_id: str, case_id: str, key: str, exp: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, with_at: bool, miss_msg: str, when_env: Mapping[str, Any] | None = None, contract: Mapping[str, Any] | None = None) -> None:
     pfx = f'{contract_id}.{case_id}'
-    is_ui_obs = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
+    is_ui = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
     t_pay = payload.get('then') if isinstance(payload, Mapping) and isinstance(payload.get('then'), Mapping) and key not in payload else payload
-
-    def bump_unverifiable() -> None:
-        ev_map = payload.get('evidence') if isinstance(payload, Mapping) else None
-        if isinstance(ev_map, dict) and isinstance(ev_map.get('unverifiable_checks'), int):
-            ev_map['unverifiable_checks'] += 1
-            if isinstance(ev_map.get('unverifiable_reasons'), list):
-                ev_map['unverifiable_reasons'].append(f'unverifiable_then:{key}')
-
+    def bump() -> None:
+        ev = payload.get('evidence') if isinstance(payload, Mapping) else None
+        if isinstance(ev, dict) and isinstance(ev.get('unverifiable_checks'), int):
+            ev['unverifiable_checks'] += 1
+            if isinstance(ev.get('unverifiable_reasons'), list): ev['unverifiable_reasons'].append(f'unverifiable_then:{key}')
     if key in proj:
         ptr = proj[key]
         found, act = read_pointer(t_pay, ptr)
-        if not found and t_pay is not payload:
-            found, act = read_pointer(payload, ptr)
-        if not found:
-            bump_unverifiable()
-            raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{key}')
-        if is_ui_obs and exp is not None and (act is None or (act == '' and isinstance(exp, str) and exp != '')):
-            bump_unverifiable()
-            raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value at "{ptr}"')
-        if check_relational_leaf(contract_id, case_id, key, exp, act, payload, proj, mutation_override, when_env, contract):
-            return
-        if values_mismatch(act, exp):
-            at_suffix = f' at "{ptr}"' if with_at else ''
-            raise AssertionError(f'{pfx}: exp then.{key}={exp!r}{at_suffix}, got {act!r}')
+        if not found and t_pay is not payload: found, act = read_pointer(payload, ptr)
+        if not found: bump(); raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{key}')
+        if is_ui and exp is not None and (act is None or (act == '' and isinstance(exp, str) and exp != '')): bump(); raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value at "{ptr}"')
+        if check_relational_leaf(contract_id, case_id, key, exp, act, payload, proj, mutation_override, when_env, contract): return
+        if values_mismatch(act, exp): raise AssertionError(f'{pfx}: exp then.{key}={exp!r}{f" at \"{ptr}\"" if with_at else ""}, got {act!r}')
         return
     if isinstance(t_pay, Mapping) and key in t_pay:
-        if is_ui_obs and exp is not None and t_pay[key] is None:
-            bump_unverifiable()
-            raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value')
-        if check_relational_leaf(contract_id, case_id, key, exp, t_pay[key], payload, proj, mutation_override, when_env, contract):
-            return
-        if values_mismatch(t_pay[key], exp):
-            raise AssertionError(f'{pfx}: exp then.{key}={exp!r}, got {t_pay[key]!r}')
+        if is_ui and exp is not None and t_pay[key] is None: bump(); raise AssertionError(f'{pfx}: unverifiable then.{key}: unmeasured value')
+        if check_relational_leaf(contract_id, case_id, key, exp, t_pay[key], payload, proj, mutation_override, when_env, contract): return
+        if values_mismatch(t_pay[key], exp): raise AssertionError(f'{pfx}: exp then.{key}={exp!r}, got {t_pay[key]!r}')
         return
-    bump_unverifiable()
-    raise AssertionError(f'{pfx}: {miss_msg} then.{key}')
+    bump(); raise AssertionError(f'{pfx}: {miss_msg} then.{key}')
 
 
 def _unobserved_controls(controls: Any, then_table: Mapping[str, Any], proj: Mapping[str, str] | None) -> list[str]:
-    if not isinstance(controls, Mapping) or not controls:
-        return []
+    if not isinstance(controls, Mapping) or not controls: return []
     ctrls = sorted(controls.keys())
-    ctrl_set = set(ctrls)
-    obs: set[str] = set()
+    cset, obs = set(ctrls), set()
     for tk in then_table:
-        if tk == 'unobserved_controls':
-            continue
-        if tk in ctrl_set:
-            obs.add(tk)
-        p_str = proj.get(tk, '') if isinstance(proj, Mapping) else ''
-        if isinstance(p_str, str) and p_str:
-            for seg in p_str.split('/'):
-                if seg and seg in ctrl_set:
-                    obs.add(seg)
+        if tk == 'unobserved_controls': continue
+        if tk in cset: obs.add(tk)
+        for seg in (proj.get(tk, '') if isinstance(proj, Mapping) else '').split('/'):
+            if seg in cset: obs.add(seg)
     return [c for c in ctrls if c not in obs]
 
 
@@ -433,45 +398,41 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
 
 
 def build_projected_output(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None = None, then_map: Mapping[str, Any] | None = None) -> Any:
+    pc = ((get_bridge_plan(view) or {}).get('cases') or {}).get(case_id)
+    rt = ((view.get('cases') or {}).get(case_id) or {}).get('then')
+    if isinstance(pc, Mapping) and 'stub_output' in pc and not base and (then_map is None or then_map == rt or then_map == _ce.converted_table(view, 'then', rt or {})):
+        return clone_json(pc['stub_output'])
     return _up.synthesize_view_output(view, case_id, base, then_map, extract_projection_map, write_pointer, clone_json, REL_KEYS)
 
 
 def build_projected_variants(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None = None) -> list[Any]:
+    pc = ((get_bridge_plan(view) or {}).get('cases') or {}).get(case_id)
+    if isinstance(pc, Mapping) and isinstance(pc.get('stub_variants'), list) and pc['stub_variants'] and not base:
+        return [clone_json(x) for x in pc['stub_variants']]
     return _up.synthesize_view_variants(view, case_id, base, extract_projection_map, write_pointer, clone_json, REL_KEYS)
 
 
-def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: str | Mapping[str, Any], base: Mapping[str, Any] | None = None) -> str:
-    return _up.resolve_stub_case_id(view, id_or_res, case_or_when, base, extract_projection_map, write_pointer, clone_json, REL_KEYS)
+resolve_stub_case_id = lambda v, i, c, b=None: _up.resolve_stub_case_id(v, i, c, b, extract_projection_map, write_pointer, clone_json, REL_KEYS)
+find_upstream_contract = _up.find_upstream_contract
+auto_resolve_contract = lambda cid, b, td, w, cs, rj, sb, tj=None: _up._cli.auto_resolve_contract(cid, b, td, w, cs, rj, sb, find_upstream_contract, tj)
+run_drift_cli = lambda argv: _up._cli.run_drift_cli_runner(argv, resolve_selected_files)
+sidecar_head = _sec.sidecar_head
+merge_prior_inventory = lambda out, inv, sh, rd: _sec.merge_prior_inventory(out, inv, sh, rd, resolve_selected_files)
+run_adverse_checks = lambda ctx, cid, h, ch=None: _sec.run_adverse_checks(ctx, cid, h, ch, escape_pointer, read_pointer, values_mismatch, invoke_verified_callback, check_projected_leaf)
 
 
 def clear_upstream_cache() -> None:
-    _up.clear_upstream_cache()
-
-
-def find_upstream_contract(id_or_res: str, cwd: Path | None = None) -> tuple[dict[str, Any], Path] | None:
-    return _up.find_upstream_contract(id_or_res, cwd)
-
-
-def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], toml_dirs: dict[str, dict[str, Path]], warmed: set[str], cli_state: list[str], read_json: Callable[[Path], Any], strip_bom: Callable[[str], str], target_json: Path | None = None) -> dict[str, Any] | None:
-    return _up._cli.auto_resolve_contract(contract_id, batch, toml_dirs, warmed, cli_state, read_json, strip_bom, find_upstream_contract, target_json)
-
-
-def run_drift_cli(argv: list[str]) -> int:
-    return _up._cli.run_drift_cli_runner(argv, resolve_selected_files)
-
-
-def sidecar_head(environ: Mapping[str, str], classes: Any, tests: Any) -> dict[str, Any]:
-    return _sec.sidecar_head(environ, classes, tests)
-
-
-def merge_prior_inventory(out: str, inv: dict[str, Any], is_shard: bool, root_dir: Path) -> None:
-    _sec.merge_prior_inventory(out, inv, is_shard, root_dir, resolve_selected_files)
+    clear_bridge_plans(); _up.clear_upstream_cache()
 
 
 def run_projection_checks(ctx: Any, case_id: str, payload: Any, checks: Mapping[str, Callable[[Any], Any]] | None = None, when_obs: Mapping[str, Any] | None = None) -> None:
+    ctx._require_tagged(case_id)
+    has_cb = isinstance(checks, Mapping) and any(k not in ('frame', 'strictFrame') and callable(v) for k, v in checks.items())
+    is_ui = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
+    pc = ((get_bridge_plan(ctx.view) or {}).get('cases') or {}).get(case_id) if getattr(ctx, 'mutation_override', None) is None and not has_cb and when_obs is None and not is_ui else None
+    if isinstance(pc, Mapping) and eval_compiled_plan_case(ctx.contract_id, case_id, pc, payload, ctx.reads[case_id]):
+        fo = checks.get('frame') if isinstance(checks, Mapping) and isinstance(checks.get('frame'), Mapping) else (payload.get('_frame') if isinstance(payload, Mapping) and _sec.is_frame_metadata_envelope(payload.get('_frame')) else None)
+        if fo is not None: _sec.verify_case_frame(ctx, case_id, fo, values_mismatch, bool(isinstance(checks, Mapping) and checks.get('strictFrame') is True) or not any(isinstance(v, Mapping) and v.get('observed') is False for v in fo.values()))
+        return
     _sec.run_projection_checks(ctx, case_id, payload, checks, invoke_verified_callback, check_projected_leaf, read_pointer, when_obs)
-
-
-def run_adverse_checks(ctx: Any, case_id: str, harness: Mapping[str, Any], checks: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
-    _sec.run_adverse_checks(ctx, case_id, harness, checks, escape_pointer, read_pointer, values_mismatch, invoke_verified_callback, check_projected_leaf)
 

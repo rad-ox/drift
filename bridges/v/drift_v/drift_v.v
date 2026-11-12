@@ -1,12 +1,16 @@
-// Zero-dependency native V test bridge for DRIFT.
+// Zero-dependency native V test bridge for DRIFT consuming precompiled .plans/<id>.plan.json.
 module drift_v
 
 import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.5.1'
-pub const bridge_version = '0.5.1'
+pub const adapter_id = 'drift_v.v@0.6.0'
+pub const bridge_version = '0.6.0'
+pub const bridge_runtime_baseline = 'v-0.5.2'
+pub const bridge_capabilities_list = ['allowed_keys', 'case_frames', 'counterexample_replay',
+	'forbid_keys', 'inventory_sidecar', 'mutants', 'not_in', 'predicates', 'projections',
+	'relational_bounds', 'stubs']!
 
 const env_keys = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']!
 
@@ -30,6 +34,7 @@ pub:
 	level          string
 pub mut:
 	view         map[string]json2.Any
+	plan         map[string]json2.Any
 	read_keys    map[string]map[string]bool
 	inputs       map[string]string
 	self_stubbed bool
@@ -38,16 +43,6 @@ pub mut:
 
 pub fn normalize_crlf_bytes(raw []u8) []u8 {
 	if 0 in raw {
-		return raw
-	}
-	mut has_crlf := false
-	for i := 0; i + 1 < raw.len; i++ {
-		if raw[i] == 13 && raw[i + 1] == 10 {
-			has_crlf = true
-			break
-		}
-	}
-	if !has_crlf {
 		return raw
 	}
 	mut out := []u8{cap: raw.len}
@@ -100,14 +95,12 @@ fn resolve_env_map() !map[string]string {
 		'drift':     bridge_version
 		'policy':    'core@1'
 		'runner':    'v-test'
-		'toolchain': 'v@0.5.1'
+		'toolchain': 'v@0.6.0'
 	}
 	if raw != '' {
 		doc := json2.decode[json2.Any](raw) or { return error('DRIFT_ENV must be valid JSON') }
-		if doc !is map[string]json2.Any {
-			return error('DRIFT_ENV must be a JSON object')
-		}
-		for k, v in doc.as_map() {
+		dm := j_map(doc) or { return error('DRIFT_ENV must be a JSON object') }
+		for k, v in dm {
 			if k !in env_keys || v !is string || v.str().trim_space() == '' {
 				return error('invalid DRIFT_ENV key "${k}"')
 			}
@@ -137,20 +130,31 @@ fn find_drift_cli() string {
 	return 'drift'
 }
 
-fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2.Any {
-	rdir := if resolved_dir != '' {
-		resolved_dir
-	} else {
-		os.getenv('DRIFT_RESOLVED').trim_space()
+fn load_contract_plan(contract_id string, resolved_dir string, view map[string]json2.Any) map[string]json2.Any {
+	rdir := if resolved_dir != '' { resolved_dir } else { os.getenv('DRIFT_RESOLVED').trim_space() }
+	if rdir == '' {
+		return map[string]json2.Any{}
 	}
+	p := os.join_path(rdir, '.plans', '${contract_id}.plan.json')
+	txt := os.read_file(p) or { return map[string]json2.Any{} }
+	doc := json2.decode[json2.Any](txt) or { return map[string]json2.Any{} }
+	pm := j_map(doc) or { return map[string]json2.Any{} }
+	pdig := (pm['digest'] or { json2.Any('') }).str()
+	vdig := (view['digest'] or { json2.Any('') }).str()
+	vref := (view['ref'] or { json2.Any('') }).str()
+	if pdig == '' || (pdig != vdig && pdig != vref) {
+		return map[string]json2.Any{}
+	}
+	return pm
+}
+
+fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2.Any {
+	rdir := if resolved_dir != '' { resolved_dir } else { os.getenv('DRIFT_RESOLVED').trim_space() }
 	if rdir != '' {
 		p := os.join_path(rdir, '${contract_id}.json')
 		txt := os.read_file(p) or { return error('cannot read resolved view ${p}') }
 		doc := json2.decode[json2.Any](txt) or { return error('invalid JSON in ${p}') }
-		if doc !is map[string]json2.Any {
-			return error('resolved view ${p} is not a JSON object')
-		}
-		return doc.as_map()
+		return j_map(doc) or { error('resolved view ${p} is not a JSON object') }
 	}
 	mut dir := os.getwd()
 	mut toml_path := ''
@@ -169,35 +173,24 @@ fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2
 	if toml_path == '' {
 		return error('cannot locate contract ${contract_id}.toml')
 	}
-	cli := find_drift_cli()
-	res := os.execute('"${cli}" show "${toml_path}" --as json')
+	res := os.execute('"${find_drift_cli()}" show "${toml_path}" --as json')
 	if res.exit_code != 0 {
 		return error('drift show failed for ${toml_path}: ${res.output}')
 	}
-	doc := json2.decode[json2.Any](res.output) or {
-		return error('invalid JSON from drift show ${toml_path}')
-	}
-	if doc !is map[string]json2.Any {
-		return error('drift show output is not a JSON object')
-	}
-	return doc.as_map()
+	doc := json2.decode[json2.Any](res.output) or { return error('invalid JSON from drift show') }
+	return j_map(doc) or { error('drift show output is not a JSON object') }
 }
 
 fn (ctx &DriftContext) case_map(case_id string) !map[string]json2.Any {
 	if case_id !in ctx.cases {
 		return error('case "${case_id}" is not tagged on test "${ctx.test_id}"')
 	}
-	cases_any := ctx.view['cases'] or { return error('contract "${ctx.contract_id}" has no cases') }
-	if cases_any !is map[string]json2.Any {
-		return error('missing case "${case_id}"')
+	cm_all := j_map(ctx.view['cases'] or { json2.Null{} }) or {
+		return error('contract "${ctx.contract_id}" has no cases')
 	}
-	c_any := cases_any.as_map()[case_id] or {
-		return error('contract "${ctx.contract_id}" has no case "${case_id}"')
+	return j_map(cm_all[case_id] or { json2.Null{} }) or {
+		error('contract "${ctx.contract_id}" has no case "${case_id}"')
 	}
-	if c_any !is map[string]json2.Any {
-		return error('missing case "${case_id}"')
-	}
-	return c_any.as_map()
 }
 
 fn (mut ctx DriftContext) mark_read(case_id string, key string) {
@@ -208,10 +201,13 @@ fn (mut ctx DriftContext) mark_read(case_id string, key string) {
 }
 
 fn (ctx &DriftContext) unwrap_if_03(val json2.Any) json2.Any {
-	if (ctx.view['drift'] or { json2.Any('') }).str() == '0.3' && val is map[string]json2.Any
-		&& val.len == 1 {
-		if eq_v := val['eq'] {
-			return eq_v
+	if (ctx.view['drift'] or { json2.Any('') }).str() == '0.3' {
+		if m := j_map(val) {
+			if m.len == 1 {
+				if eq_v := m['eq'] {
+					return eq_v
+				}
+			}
 		}
 	}
 	return val
@@ -219,23 +215,21 @@ fn (ctx &DriftContext) unwrap_if_03(val json2.Any) json2.Any {
 
 pub fn (ctx &DriftContext) when_any(case_id string, key string) !json2.Any {
 	cm := ctx.case_map(case_id)!
-	w_any := cm['when'] or { return error('case "${case_id}" has no when table') }
-	if w_any is map[string]json2.Any {
-		if val := w_any[key] {
-			return ctx.unwrap_if_03(val)
-		}
+	wm := j_map(cm['when'] or { json2.Null{} }) or { return error('case "${case_id}" has no when') }
+	if val := wm[key] {
+		return ctx.unwrap_if_03(val)
 	}
 	return error('case "${case_id}" has no when."${key}"')
 }
 
 pub fn (ctx &DriftContext) when_str(case_id string, key string) !string {
-	v := ctx.when_any(case_id, key)!
-	return if v is string { v } else { error('when."${key}" is not a string') }
+	return j_str(ctx.when_any(case_id, key)!) or { error('when."${key}" is not a string') }
 }
 
 pub fn (ctx &DriftContext) when_int(case_id string, key string) !i64 {
-	f := as_finite_f64(ctx.when_any(case_id, key)!) or { return error('when."${key}" is not a number') }
-	return i64(f)
+	return i64(as_finite_f64(ctx.when_any(case_id, key)!) or {
+		return error('when."${key}" is not a number')
+	})
 }
 
 pub fn (ctx &DriftContext) find_when_str(case_id string, key string, fallback string) string {
@@ -244,35 +238,31 @@ pub fn (ctx &DriftContext) find_when_str(case_id string, key string, fallback st
 
 pub fn (mut ctx DriftContext) then_any(case_id string, key string) !json2.Any {
 	cm := ctx.case_map(case_id)!
-	t_any := cm['then'] or { return error('case "${case_id}" has no then table') }
-	if t_any is map[string]json2.Any {
-		if val := t_any[key] {
-			ctx.mark_read(case_id, key)
-			return ctx.unwrap_if_03(val)
-		}
+	tm := j_map(cm['then'] or { json2.Null{} }) or { return error('case "${case_id}" has no then') }
+	if val := tm[key] {
+		ctx.mark_read(case_id, key)
+		return ctx.unwrap_if_03(val)
 	}
 	return error('case "${case_id}" has no then."${key}"')
 }
 
 pub fn (mut ctx DriftContext) then_str(case_id string, key string) !string {
-	v := ctx.then_any(case_id, key)!
-	return if v is string { v } else { error('then."${key}" is not a string') }
+	return j_str(ctx.then_any(case_id, key)!) or { error('then."${key}" is not a string') }
 }
 
 pub fn (mut ctx DriftContext) then_int(case_id string, key string) !i64 {
-	f := as_finite_f64(ctx.then_any(case_id, key)!) or { return error('then."${key}" is not a number') }
-	return i64(f)
+	return i64(as_finite_f64(ctx.then_any(case_id, key)!) or {
+		return error('then."${key}" is not a number')
+	})
 }
 
 pub fn (mut ctx DriftContext) then_bool(case_id string, key string) !bool {
-	v := ctx.then_any(case_id, key)!
-	return if v is bool { v } else { error('then."${key}" is not a bool') }
+	return j_bool(ctx.then_any(case_id, key)!) or { error('then."${key}" is not a bool') }
 }
 
 pub fn (mut ctx DriftContext) record_input(rel_path string, digest string) {
 	if !ctx.in_mutation {
-		norm := rel_path.replace('\\', '/').trim_left('/')
-		ctx.inputs[norm] = digest
+		ctx.inputs[rel_path.replace('\\', '/').trim_left('/')] = digest
 	}
 }
 
@@ -286,33 +276,9 @@ pub fn (mut ctx DriftContext) verify_golden(rel_path string, actual string) ! {
 	expected_raw := os.read_bytes(rel_path) or { return error('cannot read golden "${rel_path}"') }
 	exp_dig := hash_fixture_bytes(expected_raw)
 	ctx.record_input(rel_path, exp_dig)
-	act_dig := hash_fixture_bytes(actual.bytes())
-	if exp_dig != act_dig {
-		return error('golden mismatch for "${rel_path}": expected ${exp_dig}, got ${act_dig}')
+	if exp_dig != hash_fixture_bytes(actual.bytes()) {
+		return error('golden mismatch for "${rel_path}"')
 	}
-}
-
-fn extract_then_projections(view map[string]json2.Any) map[string]string {
-	mut out := map[string]string{}
-	if proj_any := view['projections'] {
-		if proj_any is map[string]json2.Any {
-			for k, v in proj_any {
-				if k !in ['when', 'then'] && v is string {
-					out[k] = v
-				}
-			}
-			if t_any := proj_any['then'] {
-				if t_any is map[string]json2.Any {
-					for k, v in t_any {
-						if v is string {
-							out[k] = v
-						}
-					}
-				}
-			}
-		}
-	}
-	return out
 }
 
 pub type AdverseExecuteFn = fn (string) !string
@@ -322,12 +288,9 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 		return error('check_adverse for ${ctx.contract_id}.${case_id} requires at least one variant')
 	}
 	cm := ctx.case_map(case_id)!
-	proj_when := extract_when_projections(ctx.view)
-	mut when_map := map[string]json2.Any{}
-	if w_any := cm['when'] {
-		if w_any is map[string]json2.Any {
-			when_map = w_any.clone()
-		}
+	proj_when := extract_side_projections(ctx.view, 'when')
+	when_map := j_map(cm['when'] or { json2.Null{} }) or {
+		map[string]json2.Any{}
 	}
 	pfx := '${ctx.contract_id}.${case_id}'
 	for v_json in variants_json {
@@ -338,31 +301,26 @@ pub fn (mut ctx DriftContext) check_adverse(case_id string, variants_json []stri
 				ptr := proj_when[wk] or { '/' + escape_pointer(wk) }
 				if v_act := resolve_pointer(v_doc, ptr) {
 					if !values_equal(v_act, wexp) {
-						return error('${ctx.contract_id}.${case_id}.when.${wk} fixture mismatch: got ${v_act.json_str()}, expected ${wexp.json_str()}')
+						return error('${pfx}.when.${wk} fixture mismatch')
 					}
 				}
 			}
 		}
-		obs_json := exec(v_json)!
-		ctx.check_projection(case_id, obs_json)!
+		ctx.check_projection(case_id, exec(v_json)!)!
 	}
 }
 
 fn is_unobserved_frame_entry(obs json2.Any) bool {
-	if obs is map[string]json2.Any {
-		if ob := obs['observed'] {
-			if ob is bool && !(ob as bool) {
-				return true
-			}
-		}
+	if m := j_map(obs) {
+		return !(j_bool(m['observed'] or { json2.Any(true) }) or { true })
 	}
 	return false
 }
 
 fn has_frame_metrics_entry(obs json2.Any) bool {
-	if obs is map[string]json2.Any {
-		return 'writes' in obs || 'operations' in obs || 'events' in obs
-			|| ('before' in obs && 'after' in obs)
+	if m := j_map(obs) {
+		return 'writes' in m || 'operations' in m || 'events' in m
+			|| ('before' in m && 'after' in m)
 	}
 	return false
 }
@@ -375,20 +333,17 @@ fn (mut ctx DriftContext) check_frame_with_mode(case_id string, frame_json strin
 	_ := ctx.case_map(case_id)!
 	forbidden := forbidden_writes_of(ctx.view, case_id)
 	doc := json2.decode[json2.Any](frame_json) or { return error('frame_json is not valid JSON') }
-	if doc !is map[string]json2.Any {
-		return error('frame_json must be a JSON object')
-	}
-	fmap := doc.as_map()
+	fmap := j_map(doc) or { return error('frame_json must be a JSON object') }
 	pfx := '${ctx.contract_id}.${case_id}'
-	mut checked_keys := map[string]bool{}
+	mut checked := map[string]bool{}
 	for res in forbidden {
 		base_res := res.all_before('#')
-		checked_keys[res] = true
-		checked_keys[base_res] = true
+		checked[res] = true
+		checked[base_res] = true
 		obs := fmap[res] or {
 			fmap[base_res] or {
 				if strict {
-					return error('${pfx}: missing frame observation for forbidden write resource "${res}"')
+					return error('${pfx}: missing frame observation for "${res}"')
 				}
 				continue
 			}
@@ -398,7 +353,7 @@ fn (mut ctx DriftContext) check_frame_with_mode(case_id string, frame_json strin
 		}
 		if is_unobserved_frame_entry(obs) {
 			if strict {
-				return error('${pfx}: frame.observer_missing for forbidden write resource "${res}"')
+				return error('${pfx}: frame.observer_missing for "${res}"')
 			}
 			continue
 		}
@@ -407,145 +362,151 @@ fn (mut ctx DriftContext) check_frame_with_mode(case_id string, frame_json strin
 		}
 		ctx.mark_read(case_id, '@frame:${res}')
 	}
-	allowed, allowed_bases, _ := allowed_write_sets_of(ctx.view, case_id)
+	allowed, bases, _ := allowed_write_sets_of(ctx.view, case_id)
 	mut fkeys := fmap.keys()
 	fkeys.sort()
 	for k in fkeys {
-		if k in checked_keys || is_write_resource_allowed(k, allowed, allowed_bases) {
+		if k in checked || is_write_resource_allowed(k, allowed, bases) {
 			continue
 		}
-		if obs_k := fmap[k] {
-			if has_frame_metrics_entry(obs_k) {
-				verify_single_frame_obs(pfx, k, obs_k, true)!
+		obs_k := fmap[k] or { continue }
+		if has_frame_metrics_entry(obs_k) {
+			verify_single_frame_obs(pfx, k, obs_k, true)!
+		}
+		if is_unobserved_frame_entry(obs_k) {
+			if strict {
+				return error('${pfx}: frame.observer_missing for perimeter resource "${k}"')
 			}
-			if is_unobserved_frame_entry(obs_k) {
-				if strict {
-					return error('${pfx}: frame.observer_missing for perimeter resource "${k}"')
-				}
-				continue
-			}
-			if !has_frame_metrics_entry(obs_k) {
-				verify_single_frame_obs(pfx, k, obs_k, true)!
-			}
+			continue
+		}
+		if !has_frame_metrics_entry(obs_k) {
+			verify_single_frame_obs(pfx, k, obs_k, true)!
 		}
 	}
 }
 
 pub fn (mut ctx DriftContext) check_projection(case_id string, payload_json string) ! {
 	cm := ctx.case_map(case_id)!
-	t_any := cm['then'] or { return error('case "${case_id}" has no then table') }
-	if t_any !is map[string]json2.Any {
-		return error('case "${case_id}" then is not a table')
+	t_map := j_map(cm['then'] or { json2.Null{} }) or {
+		return error('case "${case_id}" has no then table')
 	}
-	mut doc := json2.decode[json2.Any](payload_json) or { return error('payload is not valid JSON') }
-	if doc is map[string]json2.Any {
-		mut dm := doc.clone()
+	mut doc := json2.decode[json2.Any](payload_json) or {
+		return error('payload is not valid JSON')
+	}
+	if dm_orig := j_map(doc) {
+		mut dm := dm_orig.clone()
 		if 'when' !in dm && 'before' !in dm {
 			mut w_env := map[string]json2.Any{}
-			if w_any := cm['when'] {
-				if w_any is map[string]json2.Any {
-					for wk, wv in w_any {
-						if wv is map[string]json2.Any {
-							if eq_v := wv['eq'] {
-								if 'peer' !in wv && 'eq_field' !in wv {
-									w_env[wk] = eq_v
-								}
-							}
-						} else {
-							w_env[wk] = wv
+			for wk, wv in map_field(cm, 'when') {
+				if wm := j_map(wv) {
+					if eq_v := wm['eq'] {
+						if 'peer' !in wm && 'eq_field' !in wm {
+							w_env[wk] = eq_v
 						}
 					}
+				} else {
+					w_env[wk] = wv
 				}
 			}
 			dm['_when_env'] = json2.Any(w_env)
 			doc = json2.Any(dm)
 		}
 	}
-	proj_then := extract_then_projections(ctx.view)
-	check_ui_projection_guards(ctx.contract_id, case_id, doc, proj_then, t_any.as_map())!
-	for pred, raw_expected in t_any.as_map() {
-		expected := if is_relational_table(raw_expected) {
-			json2.Any(normalize_constraint_03(raw_expected.as_map(), ctx.view, pred)!)
-		} else {
-			raw_expected
-		}
-		ctx.mark_read(case_id, pred)
-		if is_relational_table(expected) && ('allowed_keys' in expected.as_map()
-			|| 'forbid_keys' in expected.as_map()) && pred !in proj_then {
-			mut target := doc
-			if doc is map[string]json2.Any {
-				if sub := doc[pred] {
-					if sub is map[string]json2.Any {
-						target = json2.Any(sub.clone())
-					}
+	proj_then := extract_side_projections(ctx.view, 'then')
+	check_ui_projection_guards(ctx.contract_id, case_id, doc, proj_then, t_map)!
+	mut used_plan := false
+	if !ctx.in_mutation && ctx.plan.len > 0 {
+		if pc := j_map((j_map(ctx.plan['cases'] or { json2.Null{} }) or {
+			map[string]json2.Any{}
+		})[case_id] or { json2.Null{} })
+		{
+			ok, preds := eval_compiled_plan_case(ctx.contract_id, case_id, pc, doc)!
+			if ok {
+				for p in preds {
+					ctx.mark_read(case_id, p)
 				}
+				used_plan = true
 			}
-			check_relational_leaf(doc, target, expected.as_map(), proj_then, pred)!
-			continue
-		}
-		ptr := proj_then[pred] or { '/' + escape_pointer(pred) }
-		actual := resolve_pointer(doc, ptr) or {
-			return error('missing pointer "${ptr}" for predicate "${pred}"')
-		}
-		if is_relational_table(expected) {
-			check_relational_leaf(doc, actual, expected.as_map(), proj_then, pred)!
-		} else if !values_equal(actual, expected) {
-			return error('mismatch on "${pred}" (${ptr}): got ${actual.json_str()}, expected ${expected.json_str()}')
 		}
 	}
-	if doc is map[string]json2.Any {
-		if fr_any := doc['_frame'] {
-			if fr_any is map[string]json2.Any {
-				mut has_unobs := false
-				for _, fv in fr_any {
-					if is_unobserved_frame_entry(fv) {
-						has_unobs = true
-						break
+	if !used_plan {
+		for pred, raw_expected in t_map {
+			expected := if is_relational_table(raw_expected) {
+				json2.Any(normalize_constraint_03(raw_expected.as_map(), ctx.view, pred)!)
+			} else {
+				raw_expected
+			}
+			ctx.mark_read(case_id, pred)
+			if is_relational_table(expected) && ('allowed_keys' in expected.as_map()
+				|| 'forbid_keys' in expected.as_map()) && pred !in proj_then {
+				mut target := doc
+				if dm := j_map(doc) {
+					if sub := j_map(dm[pred] or { json2.Null{} }) {
+						target = json2.Any(sub)
 					}
 				}
-				ctx.check_frame_with_mode(case_id, json2.Any(fr_any).json_str(), !has_unobs)!
+				check_relational_leaf(doc, target, expected.as_map(), proj_then, pred)!
+				continue
 			}
+			ptr := proj_then[pred] or { '/' + escape_pointer(pred) }
+			actual := resolve_pointer(doc, ptr) or {
+				return error('missing pointer "${ptr}" for predicate "${pred}"')
+			}
+			if is_relational_table(expected) {
+				check_relational_leaf(doc, actual, expected.as_map(), proj_then, pred)!
+			} else if !values_equal(actual, expected) {
+				return error('mismatch on "${pred}" (${ptr}): got ${actual.json_str()}, expected ${expected.json_str()}')
+			}
+		}
+	}
+	if dm := j_map(doc) {
+		if fr := j_map(dm['_frame'] or { json2.Null{} }) {
+			mut has_unobs := false
+			for _, fv in fr {
+				if is_unobserved_frame_entry(fv) {
+					has_unobs = true
+					break
+				}
+			}
+			ctx.check_frame_with_mode(case_id, json2.Any(fr).json_str(), !has_unobs)!
 		}
 	}
 }
 
-fn build_projected_json(view map[string]json2.Any, case_id string) !string {
-	cases_any := view['cases'] or { return error('contract has no cases') }
-	if cases_any !is map[string]json2.Any {
-		return error('invalid cases map')
+fn build_projected_json(view map[string]json2.Any, plan map[string]json2.Any, case_id string, in_mutation bool) !string {
+	cm_all := j_map(view['cases'] or { json2.Null{} }) or { return error('contract has no cases') }
+	cm := j_map(cm_all[case_id] or { json2.Null{} }) or {
+		return error('unknown case "${case_id}"')
 	}
-	c_any := cases_any.as_map()[case_id] or { return error('unknown case "${case_id}"') }
-	if c_any !is map[string]json2.Any {
-		return error('invalid case "${case_id}"')
-	}
-	cm := c_any.as_map()
-	if st_any := cm['status'] {
-		if st_any is string && st_any != '' {
-			return error('cannot synthesize stub for ${st_any} case "${case_id}"')
+	if st := j_str(cm['status'] or { json2.Null{} }) {
+		if st != '' {
+			return error('cannot synthesize stub for ${st} case "${case_id}"')
 		}
 	}
-	t_any := cm['then'] or { return error('case "${case_id}" has no then table') }
-	if t_any !is map[string]json2.Any {
-		return error('case "${case_id}" has invalid then table')
+	if !in_mutation && plan.len > 0 {
+		if pc := j_map((j_map(plan['cases'] or { json2.Null{} }) or {
+			map[string]json2.Any{}
+		})[case_id] or { json2.Null{} })
+		{
+			if stub_out := pc['stub_output'] {
+				return stub_out.json_str()
+			}
+		}
 	}
-	proj_then := extract_then_projections(view)
-	then_map := t_any.as_map()
+	then_map := j_map(cm['then'] or { json2.Null{} }) or {
+		return error('case "${case_id}" has no then table')
+	}
+	proj_then := extract_side_projections(view, 'then')
 	mut built := map[string]json2.Any{}
-	for pred, expected in then_map {
-		if is_relational_table(expected) && 'sum_fields' in expected.as_map() {
-			continue
+	for pass in 0 .. 2 {
+		for pred, expected in then_map {
+			is_sum := is_relational_table(expected) && 'sum_fields' in expected.as_map()
+			if (pass == 0 && is_sum) || (pass == 1 && !is_sum) {
+				continue
+			}
+			ptr := normalize_pointer(proj_then[pred] or { '/' + escape_pointer(pred) })
+			write_pointer(mut built, ptr, synthesize_leaf_witness(expected, built, proj_then))
 		}
-		ptr := normalize_pointer(proj_then[pred] or { '/' + escape_pointer(pred) })
-		val := synthesize_leaf_witness(expected, built, proj_then)
-		write_pointer(mut built, ptr, val)
-	}
-	for pred, expected in then_map {
-		if !is_relational_table(expected) || 'sum_fields' !in expected.as_map() {
-			continue
-		}
-		ptr := normalize_pointer(proj_then[pred] or { '/' + escape_pointer(pred) })
-		val := synthesize_leaf_witness(expected, built, proj_then)
-		write_pointer(mut built, ptr, val)
 	}
 	return json2.Any(built).json_str()
 }
@@ -558,7 +519,7 @@ pub fn (mut ctx DriftContext) build_output(case_id string) !string {
 		ctx.self_stubbed = true
 		ctx.record_input('.drift/self-stub/${ctx.contract_id}', 'sha256:self-stub')
 	}
-	return build_projected_json(ctx.view, case_id)
+	return build_projected_json(ctx.view, ctx.plan, case_id, ctx.in_mutation)
 }
 
 pub fn (mut ctx DriftContext) build_stub(target string, case_id string, resolved_dir string) !string {
@@ -567,9 +528,10 @@ pub fn (mut ctx DriftContext) build_stub(target string, case_id string, resolved
 			ctx.self_stubbed = true
 			ctx.record_input('.drift/self-stub/${ctx.contract_id}', 'sha256:self-stub')
 		}
-		return build_projected_json(ctx.view, case_id)
+		return build_projected_json(ctx.view, ctx.plan, case_id, ctx.in_mutation)
 	}
 	up_view := load_contract_view(target, resolved_dir)!
+	up_plan := load_contract_plan(target, resolved_dir, up_view)
 	if !ctx.in_mutation {
 		prod_id := if id_any := up_view['id'] { id_any.str() } else { target }
 		prod_ref := if r_any := up_view['ref'] {
@@ -581,46 +543,23 @@ pub fn (mut ctx DriftContext) build_stub(target string, case_id string, resolved
 		}
 		ctx.record_input('.drift/seam-stub/${prod_id}#${case_id}', prod_ref)
 	}
-	return build_projected_json(up_view, case_id)
+	return build_projected_json(up_view, up_plan, case_id, ctx.in_mutation)
 }
 
 fn (ctx &DriftContext) fully_read_cases() []string {
 	mut out := []string{}
-	cases_any := ctx.view['cases'] or { return out }
-	if cases_any !is map[string]json2.Any {
-		return out
-	}
-	cm_all := cases_any.as_map()
+	cm_all := j_map(ctx.view['cases'] or { json2.Null{} }) or { return out }
 	for cid in ctx.cases {
-		c_any := cm_all[cid] or { continue }
-		if c_any !is map[string]json2.Any {
+		cm := j_map(cm_all[cid] or { continue }) or { continue }
+		t_map := j_map(cm['then'] or { continue }) or { continue }
+		if t_map.len == 0 || cid !in ctx.read_keys {
 			continue
 		}
-		t_any := c_any.as_map()['then'] or { continue }
-		if t_any !is map[string]json2.Any {
-			continue
-		}
-		t_map := t_any.as_map()
-		if t_map.len == 0 {
-			continue
-		}
-		if cid !in ctx.read_keys {
-			continue
-		}
-		mut all_read := true
-		for k, _ in t_map {
-			if !(ctx.read_keys[cid][k] or { false }) {
-				all_read = false
-				break
-			}
-		}
+		mut all_read := t_map.keys().all(ctx.read_keys[cid][it] or { false })
 		if all_read {
-			for fr in forbidden_writes_of(ctx.view, cid) {
-				if !(ctx.read_keys[cid]['@frame:${fr}'] or { false }) {
-					all_read = false
-					break
-				}
-			}
+			all_read = forbidden_writes_of(ctx.view, cid).all(ctx.read_keys[cid]['@frame:${it}'] or {
+				false
+			})
 		}
 		if all_read {
 			out << cid
@@ -630,75 +569,42 @@ fn (ctx &DriftContext) fully_read_cases() []string {
 	return out
 }
 
+fn append_unique_strs(mut dst []string, arr_any json2.Any) {
+	for item in j_arr(arr_any) or { []json2.Any{} } {
+		s := item.str()
+		if s !in dst {
+			dst << s
+		}
+	}
+}
+
 fn update_shard_and_meta(events_dir string, event_line string, cls string, canon_test string, inputs map[string]string, self_stubbed bool) ! {
 	os.mkdir_all(events_dir)!
 	shard := os.join_path(events_dir, 'v-shard.jsonl')
 	meta := os.join_path(events_dir, 'v-shard.meta.json')
-	mut existing := if os.is_file(shard) { os.read_file(shard) or { '' } } else { '' }
-	existing += event_line + '\n'
-	os.write_file(shard, existing)!
+	existing := if os.is_file(shard) { os.read_file(shard) or { '' } } else { '' }
+	os.write_file(shard, existing + event_line + '\n')!
 
 	mut classes := [cls]
 	mut tests := [canon_test]
 	mut all_inputs := map[string]json2.Any{}
 	mut stub_list := []string{}
 	if os.is_file(meta) {
-		if m_txt := os.read_file(meta) {
-			if m_doc := json2.decode[json2.Any](m_txt) {
-				if m_doc is map[string]json2.Any {
-					mm := m_doc.clone()
-					if c_arr := mm['classes'] {
-						if c_arr is []json2.Any {
-							for item in c_arr {
-								s := item.str()
-								if s !in classes {
-									classes << s
-								}
-							}
-						}
-					}
-					if t_arr := mm['tests'] {
-						if t_arr is []json2.Any {
-							for item in t_arr {
-								s := item.str()
-								if s !in tests {
-									tests << s
-								}
-							}
-						}
-					}
-					if inp_any := mm['inputs'] {
-						if inp_any is map[string]json2.Any {
-							for k, v in inp_any {
-								all_inputs[k] = v
-							}
-						}
-					}
-					if sb_any := mm['self_stubbed'] {
-						if sb_any is []json2.Any {
-							for item in sb_any {
-								s := item.str()
-								if s !in stub_list {
-									stub_list << s
-								}
-							}
-						}
-					}
-				}
+		if mm := j_map(json2.decode[json2.Any](os.read_file(meta) or { '' }) or { json2.Null{} }) {
+			append_unique_strs(mut classes, mm['classes'] or { json2.Null{} })
+			append_unique_strs(mut tests, mm['tests'] or { json2.Null{} })
+			append_unique_strs(mut stub_list, mm['self_stubbed'] or { json2.Null{} })
+			for k, v in map_field(mm, 'inputs') {
+				all_inputs[k] = v
 			}
 		}
 	}
 	classes.sort()
 	tests.sort()
 	if inputs.len > 0 {
-		mut my_inps := map[string]json2.Any{}
-		if prev := all_inputs[canon_test] {
-			if prev is map[string]json2.Any {
-				for k, v in prev {
-					my_inps[k] = v
-				}
-			}
-		}
+		mut my_inps := (j_map(all_inputs[canon_test] or { json2.Null{} }) or {
+			map[string]json2.Any{}
+		}).clone()
 		for k, v in inputs {
 			my_inps[k] = json2.Any(v)
 		}
@@ -708,10 +614,11 @@ fn update_shard_and_meta(events_dir string, event_line string, cls string, canon
 		stub_list << canon_test
 		stub_list.sort()
 	}
-	mut meta_obj := map[string]json2.Any{}
-	meta_obj['version'] = json2.Any(1)
-	meta_obj['classes'] = json2.Any(classes.map(json2.Any(it)))
-	meta_obj['tests'] = json2.Any(tests.map(json2.Any(it)))
+	mut meta_obj := {
+		'version': json2.Any(1)
+		'classes': json2.Any(classes.map(json2.Any(it)))
+		'tests':   json2.Any(tests.map(json2.Any(it)))
+	}
 	snap := os.getenv('DRIFT_SNAPSHOT').trim_space()
 	if snap.len in [40, 64] {
 		meta_obj['snapshot'] = json2.Any(snap)
@@ -734,12 +641,8 @@ fn update_shard_and_meta(events_dir string, event_line string, cls string, canon
 }
 
 fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string, after json2.Any) map[string]json2.Any {
-	raw_json := json2.Any(base_view).json_str()
-	cloned_any := json2.decode[json2.Any](raw_json) or { return base_view }
-	if cloned_any !is map[string]json2.Any {
-		return base_view
-	}
-	mut cloned := cloned_any.as_map()
+	cloned_any := json2.decode[json2.Any](json2.Any(base_view).json_str()) or { return base_view }
+	mut cloned := (j_map(cloned_any) or { return base_view }).clone()
 	side := if path.starts_with('/cases/${escape_pointer(cid)}/when/') { 'when' } else { 'then' }
 	prefix := '/cases/${escape_pointer(cid)}/${side}/'
 	if !path.starts_with(prefix) {
@@ -757,8 +660,7 @@ fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string,
 		side_map[k0] = after
 	} else if segs.len == 2 {
 		k1 := segs[1]
-		if after is map[string]json2.Any {
-			am := after.clone()
+		if am := j_map(after) {
 			if k0 in side_map && k1 in side_map && k0 in am && k1 in am {
 				side_map[k0] = am[k0] or { json2.Null{} }
 				side_map[k1] = am[k1] or { json2.Null{} }
@@ -768,12 +670,10 @@ fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string,
 				return cloned
 			}
 		}
-		if cur_rel := side_map[k0] {
-			if cur_rel is map[string]json2.Any {
-				mut rel_m := cur_rel.clone()
-				rel_m[k1] = after
-				side_map[k0] = json2.Any(rel_m)
-			}
+		if cur_rel := j_map(side_map[k0] or { json2.Null{} }) {
+			mut rel_m := cur_rel.clone()
+			rel_m[k1] = after
+			side_map[k0] = json2.Any(rel_m)
 		}
 	}
 	case_obj[side] = json2.Any(side_map)
@@ -797,40 +697,22 @@ fn run_in_process_mutants(opts RunOptions, base_view map[string]json2.Any, cb fn
 	}
 	raw_bytes := os.read_bytes(mut_file)!
 	manifest_id := 'sha256:${sha256.hexhash(raw_bytes.bytestr())}'
-	doc := json2.decode[json2.Any](raw_bytes.bytestr()) or {
+	doc := j_map(json2.decode[json2.Any](raw_bytes.bytestr()) or {
 		return error('invalid DRIFT_MUTANTS JSON')
-	}
-	if doc !is map[string]json2.Any {
-		return
-	}
-	contracts_any := doc.as_map()['contracts'] or { return }
-	if contracts_any !is []json2.Any {
-		return
-	}
-	contracts_arr := contracts_any.as_array()
+	}) or { return }
+	contracts_arr := j_arr(doc['contracts'] or { return }) or { return }
 	os.mkdir_all(mut_dir)!
 	out_file := os.join_path(mut_dir, 'v-mutants.jsonl')
 	mut lines := if os.is_file(out_file) { os.read_file(out_file) or { '' } } else { '' }
 	_, _, canon_test := canonical_test_id(opts.test)!
 	for c_item in contracts_arr {
-		if c_item !is map[string]json2.Any {
+		cm := j_map(c_item) or { continue }
+		if (cm['id'] or { json2.Any('') }).str() != opts.contract {
 			continue
 		}
-		cm := c_item.as_map()
-		mc := (cm['id'] or { json2.Any('') }).str()
 		cdig := (cm['digest'] or { json2.Any('') }).str()
-		if mc != opts.contract {
-			continue
-		}
-		muts_any := cm['mutants'] or { continue }
-		if muts_any !is []json2.Any {
-			continue
-		}
-		for item in muts_any.as_array() {
-			if item !is map[string]json2.Any {
-				continue
-			}
-			mm := item.as_map()
+		for item in j_arr(cm['mutants'] or { continue }) or { continue } {
+			mm := j_map(item) or { continue }
 			mcase := (mm['case'] or { json2.Any('') }).str()
 			mid := (mm['id'] or { json2.Any('') }).str()
 			mpath := (mm['path'] or { json2.Any('') }).str()
@@ -851,15 +733,15 @@ fn run_in_process_mutants(opts RunOptions, base_view map[string]json2.Any, cb fn
 			}
 			mut killed := false
 			cb(mut mut_ctx) or { killed = true }
-			outcome := if killed { 'killed' } else { 'survived' }
-			mut ev := map[string]json2.Any{}
-			ev['manifest'] = json2.Any(manifest_id)
-			ev['contract'] = json2.Any(opts.contract)
-			ev['digest'] = json2.Any(cdig)
-			ev['mutant'] = json2.Any(mid)
-			ev['case'] = json2.Any(mcase)
-			ev['outcome'] = json2.Any(outcome)
-			ev['control'] = json2.Any('passed')
+			ev := {
+				'manifest': json2.Any(manifest_id)
+				'contract': json2.Any(opts.contract)
+				'digest':   json2.Any(cdig)
+				'mutant':   json2.Any(mid)
+				'case':     json2.Any(mcase)
+				'outcome':  json2.Any(if killed { 'killed' } else { 'survived' })
+				'control':  json2.Any('passed')
+			}
 			lines += json2.Any(ev).json_str() + '\n'
 		}
 	}
@@ -872,6 +754,7 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	}
 	cls, _, canon_test := canonical_test_id(opts.test)!
 	view := load_contract_view(opts.contract, opts.resolved_dir)!
+	plan := load_contract_plan(opts.contract, opts.resolved_dir, view)
 	digest := if r_any := view['ref'] {
 		r_any.str()
 	} else {
@@ -889,6 +772,7 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 		cases:          opts.cases
 		level:          if opts.level != '' { opts.level } else { 'unit' }
 		view:           view
+		plan:           plan
 		read_keys:      map[string]map[string]bool{}
 		inputs:         map[string]string{}
 	}
@@ -899,14 +783,16 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 		run_err = err.msg()
 	}
 	if ev_dir != '' {
-		mut ev := map[string]json2.Any{}
-		ev['cases'] = json2.Any(opts.cases.map(json2.Any(it)))
-		ev['contract'] = json2.Any(opts.contract)
+		mut ev := {
+			'cases':    json2.Any(opts.cases.map(json2.Any(it)))
+			'contract': json2.Any(opts.contract)
+			'level':    json2.Any(ctx.level)
+			'outcome':  json2.Any(outcome)
+			'test':     json2.Any(opts.test)
+		}
 		if digest != '' {
 			ev['digest'] = json2.Any(digest)
 		}
-		ev['level'] = json2.Any(ctx.level)
-		ev['outcome'] = json2.Any(outcome)
 		if outcome == 'passed' {
 			read_list := ctx.fully_read_cases()
 			if read_list.len > 0 {
@@ -916,20 +802,14 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 		if (view['drift'] or { json2.Any('') }).str() == '0.3' {
 			supported_03 := ['rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1',
 				'rel-series/1', 'rel-tol/1', 'unit-conversion/1']
-			if rc := view['required_capabilities'] {
-				if rc is []json2.Any {
-					for item in rc {
-						s := item.str()
-						if s !in supported_03 {
-							return error('bridge.capability_unsupported:${s}')
-						}
-					}
+			for item in arr_field(view, 'required_capabilities') {
+				if item.str() !in supported_03 {
+					return error('bridge.capability_unsupported:${item.str()}')
 				}
 			}
 			ev['schema'] = json2.Any('0.3')
 			ev['capabilities'] = json2.Any(supported_03.map(json2.Any(it)))
 		}
-		ev['test'] = json2.Any(opts.test)
 		update_shard_and_meta(ev_dir, json2.Any(ev).json_str(), cls, canon_test, ctx.inputs,
 			ctx.self_stubbed)!
 	}
@@ -939,22 +819,6 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	run_in_process_mutants(opts, view, cb)!
 	return outcome
 }
-
-pub const bridge_runtime_baseline = 'v-0.5.2'
-
-pub const bridge_capabilities_list = [
-	'allowed_keys',
-	'case_frames',
-	'counterexample_replay',
-	'forbid_keys',
-	'inventory_sidecar',
-	'mutants',
-	'not_in',
-	'predicates',
-	'projections',
-	'relational_bounds',
-	'stubs',
-]!
 
 pub fn require_capabilities(required []string) ! {
 	for cap in required {

@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
@@ -25,11 +26,61 @@ final class DriftInternal {
     private static final Map<Path, Long> PROFILE_MTIME_CACHE = new ConcurrentHashMap<>();
     private static final Set<Path> BATCH_WARMED_DIRS = ConcurrentHashMap.newKeySet();
     private static final Map<String, Map<String, Object>> AUTO_BATCH_CACHE = new ConcurrentHashMap<>();
+    private static final Map<String, Optional<Map<String, Object>>> PLAN_CACHE = new ConcurrentHashMap<>();
     private static final Map<Path, Map<String, UpstreamMatch>> UPSTREAM_CACHE = new ConcurrentHashMap<>();
     private static volatile String cachedCliKey;
     private static volatile String cachedCli;
 
     private DriftInternal() {}
+
+    static String sessionProperty(String key, boolean requireLiveAuthority) {
+        Path sf = Path.of(System.getProperty("drift.session", "target/drift/session.json"));
+        if (!Files.isRegularFile(sf)) return null;
+        try {
+            if (!(Json.read(sf) instanceof Map<?, ?> m) || !"drift.jvm-session/1".equals(m.get("schema"))) return null;
+            if (!isLiveSession(m) && requireLiveAuthority) return null;
+            return m.get(key) instanceof String s && !s.isBlank() ? s : null;
+        } catch (IOException | RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isLiveSession(Map<?, ?> m) {
+        String propNonce = System.getProperty("drift.nonce", "");
+        if (!propNonce.isBlank() && propNonce.equals(m.get("nonce"))) return true;
+        long wantPid = m.get("maven_pid") instanceof Number n ? n.longValue() : -1L;
+        long wantStart = m.get("maven_start_ms") instanceof Number n ? n.longValue() : -1L;
+        if (wantPid <= 0) return false;
+        for (ProcessHandle ph = ProcessHandle.current(); ph != null; ph = ph.parent().orElse(null)) {
+            if (ph.pid() == wantPid) {
+                long gotStart = ph.info().startInstant().map(java.time.Instant::toEpochMilli).orElse(-1L);
+                return wantStart <= 0 || gotStart <= 0 || gotStart == wantStart;
+            }
+        }
+        return false;
+    }
+
+    static Map<String, Object> loadPlan(String contract) {
+        if (Drift.mutationRun()) return null;
+        String dir = System.getProperty(Drift.RESOLVED, System.getenv().getOrDefault("DRIFT_RESOLVED", ""));
+        if (dir == null || dir.isBlank()) dir = sessionProperty("resolved", true);
+        String key = (dir == null ? "" : dir) + "\u0000" + contract;
+        return PLAN_CACHE.computeIfAbsent(key, ignored -> {
+            String d = System.getProperty(Drift.RESOLVED, System.getenv().getOrDefault("DRIFT_RESOLVED", ""));
+            if (d == null || d.isBlank()) d = sessionProperty("resolved", true);
+            if (d == null || d.isBlank()) return Optional.empty();
+            Path p = Path.of(d, ".plans", contract + ".plan.json");
+            if (Files.isRegularFile(p)) {
+                try {
+                    if (Json.read(p) instanceof Map<?, ?> m && "drift.bridge-plan/1".equals(m.get("schema"))) {
+                        return Optional.of(map(m, p.toString()));
+                    }
+                } catch (IOException | RuntimeException ignored2) {
+                }
+            }
+            return Optional.empty();
+        }).orElse(null);
+    }
 
     static String fileSignature(Path abs) {
         try {
@@ -159,6 +210,7 @@ final class DriftInternal {
         PROFILE_MTIME_CACHE.clear();
         BATCH_WARMED_DIRS.clear();
         AUTO_BATCH_CACHE.clear();
+        PLAN_CACHE.clear();
         UPSTREAM_CACHE.clear();
     }
 
@@ -330,15 +382,21 @@ final class DriftInternal {
                             bp.getInputStream().readAllBytes();
                             bp.waitFor();
                             try (Stream<Path> stream = Files.list(tmpOut)) {
-                                stream.filter(p -> p.getFileName().toString().endsWith(".json"))
-                                        .forEach(p -> {
-                                            String fn = p.getFileName().toString();
-                                            String cid = fn.substring(0, fn.length() - 5);
-                                            try {
-                                                AUTO_BATCH_CACHE.put(cid, map(Json.read(p), p.toString()));
-                                            } catch (IOException ignored) {
-                                            }
-                                        });
+                                stream.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
+                                    String fn = p.getFileName().toString();
+                                    String cid = fn.substring(0, fn.length() - 5);
+                                    try { AUTO_BATCH_CACHE.put(cid, map(Json.read(p), p.toString())); } catch (IOException ignored) {}
+                                });
+                            }
+                            Path plansDir = tmpOut.resolve(".plans");
+                            if (Files.isDirectory(plansDir)) {
+                                try (Stream<Path> ps = Files.list(plansDir)) {
+                                    ps.filter(p -> p.getFileName().toString().endsWith(".plan.json")).forEach(p -> {
+                                        String fn = p.getFileName().toString();
+                                        String cid = fn.substring(0, fn.length() - 10);
+                                        try { PLAN_CACHE.put("\u0000" + cid, Optional.of(map(Json.read(p), p.toString()))); } catch (IOException ignored) {}
+                                    });
+                                }
                             }
                             Map<String, Object> warmed = AUTO_BATCH_CACHE.get(contract);
                             if (warmed != null) {
@@ -350,15 +408,8 @@ final class DriftInternal {
                         } finally {
                             if (tmpOut != null) {
                                 try (Stream<Path> s = Files.walk(tmpOut)) {
-                                    s.sorted(java.util.Comparator.reverseOrder())
-                                            .forEach(p -> {
-                                                try {
-                                                    Files.deleteIfExists(p);
-                                                } catch (IOException ignored) {
-                                                }
-                                            });
-                                } catch (IOException ignored) {
-                                }
+                                    s.sorted(java.util.Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
+                                } catch (IOException ignored) {}
                             }
                         }
                     }

@@ -604,10 +604,10 @@ export default function (pi: any) {
           `When changing code or contracts in DRIFT Free, use drift check, drift fmt, drift review --brief, drift approve --by <owner>, drift prove, and drift gate.]`
         : `[DRIFT area active at ${area}.${statsSummary} ` +
           `For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. ` +
-          `When changing code or contracts, follow the ${driftSkill} skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. ` +
-          `(1) Behaviour unchanged on covered code: 0 stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. ` +
-          `(2) Multi-slice Wave: use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = "execution" for non-blocking details), ` +
-          `run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, ` +
+          `When changing code or contracts, follow the ${driftSkill} skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. ` +
+          `(1) Behaviour unchanged on covered code: 0 stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. ` +
+          `(2) Multi-slice Wave: use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = "execution" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), ` +
+          `run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, ` +
           `then execute via drift plan --pack ready. Never piggyback new behaviour onto existing approved cases.]`;
 
     const entries = ctx?.sessionManager?.getEntries?.() ?? [];
@@ -738,7 +738,7 @@ export default function (pi: any) {
             if (lastUnownedKey !== unownedKey) {
               lastUnownedKey = unownedKey;
               settledForCurrentPrompt = true;
-              const unownedMsg = `Changed source files in ${area} are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root ${area} --sync-scope; otherwise report them and leave them unchanged.`;
+              const unownedMsg = `Changed source files in ${area} are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep sync-scope --root ${area} --apply; otherwise report them and leave them unchanged.`;
               return emitGateMessage(unownedMsg, event);
             }
           } else {

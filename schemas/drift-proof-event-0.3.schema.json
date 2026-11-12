@@ -64,6 +64,13 @@
         "minLength": 1
       },
       "description": "Bridge capability identifiers covering the resolved contract's required_capabilities."
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/observationEnvelope"
+      },
+      "description": "Optional drift.observation/1 envelope per case of this event (keys must be in cases); prove and gate re-judge each with the kernel oracle."
     }
   },
   "$defs": {
@@ -196,7 +203,7 @@
       "required": ["schema", "outcome", "payload"],
       "properties": {
         "schema": { "type": "string", "const": "drift.observation/1" },
-        "outcome": { "type": "string", "enum": ["returned", "thrown", "timeout"] },
+        "outcome": { "type": "string", "enum": ["returned", "thrown", "timeout", "interrupted"] },
         "payload": {
           "type": ["object", "array", "string", "number", "boolean", "null"]
         },

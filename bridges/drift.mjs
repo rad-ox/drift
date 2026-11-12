@@ -9,7 +9,7 @@ import { desugar03Rel } from './drift_ui_recovery.mjs';
 import { normalizeBytes } from './drift_cli.mjs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { applyMutation, bindUiEnvironment, buildWhenEnv, CAPS_03, captureSurfaceView, checkProjectedLeaf, checkRelationalLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, readPointer, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, unwrap03Eq, writePointer } from './drift_checks.mjs';
+import { applyMutation, attachBridgePlan, bindUiEnvironment, buildWhenEnv, CAPS_03, captureSurfaceView, checkProjectedLeaf, checkRelationalLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, readPointer, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, unwrap03Eq, writePointer } from './drift_checks.mjs';
 import { extractTestOrigin, forbiddenWritesOf, requiredProbesOf, resolveSeamMutatedThen, runAdverseChecks, runIdempotencyProbe, runLogSinkProbe, runProjectionChecks, runRollbackProbe, runSeamBoundsChecks, runSeamProbe, verifyCaseFrame } from './drift_security.mjs';
 import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
 export { bindUiEnvironment, captureSurfaceView, checkViewTable, collectPlaywrightSequence, collectUiSequence, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, observeUiSequence };
@@ -51,7 +51,7 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- const base = { adapter: 'drift.mjs@0.5.1', config: 'default', deps: 'none', drift: '0.5.1', policy: 'core@1', runner: 'node:test', toolchain: `node@${process.versions.node}` };
+ const base = { adapter: 'drift.mjs@0.6.0', config: 'default', deps: 'none', drift: '0.6.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${process.versions.node}` };
  if (raw) {
   const parsed = parseJson(raw);
   if (!isObj(parsed)) err('DRIFT_ENV must be a JSON object');
@@ -68,20 +68,13 @@ function flushInventory(out, inv) {
  inv.dirty = false;
  mergePriorInventory(out, inv, out === shardPath, fs, path, process.cwd());
  const head = sidecarHead(process.env, inv.classes, inv.tests), inputs = {};
- for (const tid of [...inv.inputs.keys()].sort()) {
-  const fm = inv.inputs.get(tid);
-  if (fm && fm.size) inputs[tid] = Object.fromEntries([...fm.keys()].sort().map((fp) => [fp, fm.get(fp)]));
- }
+ for (const tid of [...inv.inputs.keys()].sort()) { const fm = inv.inputs.get(tid); if (fm?.size) inputs[tid] = Object.fromEntries([...fm.keys()].sort().map((fp) => [fp, fm.get(fp)])); }
  const env = resolveEnv(), sidecar = { ...head, ...(Object.keys(inputs).length ? { inputs } : {}), ...(env ? { env } : {}) };
  fs.writeFileSync(out.slice(0, -6) + '.meta.json', JSON.stringify(sidecar) + '\n', 'utf8');
 }
-function flushAllInventories() {
- for (const [out, inv] of INVENTORIES.entries()) flushInventory(out, inv);
-}
+function flushAllInventories() { for (const [out, inv] of INVENTORIES.entries()) flushInventory(out, inv); }
 const AUTO_STATE = { batch: BATCH, tomlDirs: TOML_DIRS, warmed: WARMED, cachedCliKey: '', cachedCliPath: '' };
-function autoResolve(id, targetJson = '') {
- return autoResolveView(id, AUTO_STATE, fs, path, execFileSync, readJson, parseJson, targetJson);
-}
+function autoResolve(id, targetJson = '') { return autoResolveView(id, AUTO_STATE, fs, path, execFileSync, readJson, parseJson, targetJson); }
 function resolveStubContract(idOrRes, caseId, base = {}) {
  const up = findUpstreamContract(idOrRes, process.cwd(), fs, path), curCtx = CTX_ALS.getStore();
  if (up && curCtx && up.file && idOrRes !== curCtx.contractId) curCtx.recordInput(up.file);
@@ -117,10 +110,10 @@ function loadView(id) {
  const f = res.endsWith('.json') ? res : path.join(res, `${id}.json`);
  if (!res.endsWith('.json')) {
   const synced = autoResolve(id, path.resolve(f));
-  if (synced && synced.id === id) return VIEWS.set(id, synced).get(id);
+  if (synced && synced.id === id) return VIEWS.set(id, attachBridgePlan(synced, path.resolve(f), fs, path, readJson)).get(id);
  }
  if (!fs.existsSync(f)) err(`contract "${id}" was not found at ${f}`);
- const d = readJson(f);
+ const d = attachBridgePlan(readJson(f), f, fs, path, readJson);
  if (d.id !== id) err(`resolved view ${f} has id "${d.id}", expected "${id}"`);
  return VIEWS.set(id, d).get(id);
 }
@@ -190,31 +183,17 @@ function writeEvent(ev) {
 function recordDiscovery(testId, activeOut = '') {
  const tgt = activeOut || process.env.DRIFT_EVENTS || discoverEventsDir();
  if (!tgt) return;
- const h = isStr(testId) ? testId.indexOf('#') : -1;
- const cls = h > 0 ? testId.slice(0, h) : '';
- const mth = (h > 0 ? testId.slice(h + 1) : '').split('[', 1)[0];
- if (!cls || !mth || /[\s/\\#[\]]/u.test(cls) || /[\s#[\]]/u.test(mth)) {
-  err(`DRIFT_EVENTS requires a test id in Class#method form: "${testId}"`);
- }
- const canon = `${cls}#${mth}`;
- DISCOVERED_CLASSES.add(cls);
- DISCOVERED_TESTS.add(canon);
- const out = activeOut || shardPath || (tgt.endsWith('.jsonl') && fs.existsSync(tgt) ? tgt : '');
+ const h = isStr(testId) ? testId.indexOf('#') : -1, cls = h > 0 ? testId.slice(0, h) : '', mth = (h > 0 ? testId.slice(h + 1) : '').split('[', 1)[0];
+ if (!cls || !mth || /[\s/\\#[\]]/u.test(cls) || /[\s#[\]]/u.test(mth)) err(`DRIFT_EVENTS requires a test id in Class#method form: "${testId}"`);
+ const canon = `${cls}#${mth}`, out = activeOut || shardPath || (tgt.endsWith('.jsonl') && fs.existsSync(tgt) ? tgt : '');
+ DISCOVERED_CLASSES.add(cls); DISCOVERED_TESTS.add(canon);
  if (!out) return;
- const inv = ensureInventory(out);
- const before = inv.classes.size + inv.tests.size;
- inv.classes.add(cls);
- inv.tests.add(canon);
+ const inv = ensureInventory(out), before = inv.classes.size + inv.tests.size;
+ inv.classes.add(cls); inv.tests.add(canon);
  if (before === inv.classes.size + inv.tests.size && !inv.dirty && fs.existsSync(out.slice(0, -6) + '.meta.json')) return;
  inv.dirty = true;
- if (!exitHook) {
-  exitHook = true;
-  process.once('exit', flushAllInventories);
- }
- if (!inv.scheduled) {
-  inv.scheduled = true;
-  queueMicrotask(() => flushInventory(out, inv));
- }
+ if (!exitHook) { exitHook = true; process.once('exit', flushAllInventories); }
+ if (!inv.scheduled) { inv.scheduled = true; queueMicrotask(() => flushInventory(out, inv)); }
 }
 function loadMutants() {
  const file = (process.env.DRIFT_MUTANTS || '').trim(), outputTarget = (process.env.DRIFT_MUTATION_EVENTS || '').trim();
@@ -254,27 +233,19 @@ export async function withMutation(target, fn) {
 }
 function activeMutationFor(contractId, cases) {
  const stack = MUT_ALS.getStore() || [];
- for (let i = stack.length - 1; i >= 0; i -= 1) {
-  if (stack[i]?.contract === contractId && cases.includes(stack[i].case)) return stack[i];
- }
+ for (let i = stack.length - 1; i >= 0; i--) if (stack[i]?.contract === contractId && cases.includes(stack[i].case)) return stack[i];
  return null;
 }
 export class DriftContext {
  constructor(contractId, testId, cases, level, mutationOverride = null) {
   if (!Array.isArray(cases) || !cases.length) err(`@DriftCase for "${testId}" requires at least one case id`);
-  this.contractId = contractId;
-  this.testId = testId;
-  this.cases = [...cases];
-  this.level = level || 'unit';
+  Object.assign(this, { contractId, testId, cases: [...cases], level: level || 'unit', reads: new Map(), unobservedCases: new Set(), inputFiles: new Map() });
   const m = (this.mutationOverride = mutationOverride ?? activeMutationFor(contractId, this.cases));
   this.view = loadView(contractId);
   const isW = Boolean(m && m.contract === contractId && (m.isWhen === true || (isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/when/`))));
   const isS = Boolean(m && isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/seam/`));
   this.mutatedWhen = isW ? applyMutation(this.view.cases[m.case]?.when || {}, contractId, m.case, m.path, m.after, 'when', m.segments || null) : null;
   this.mutatedThen = (m && m.contract === contractId && !isW && !isS) ? applyMutation(this.view.cases[m.case]?.then || {}, contractId, m.case, m.path, m.after, 'then', m.segments || null) : null;
-  this.reads = new Map();
-  this.unobservedCases = new Set();
-  this.inputFiles = new Map();
   for (const c of this.cases) {
    if (!this.view.cases || !(c in this.view.cases)) err(`contract "${contractId}" has no case "${c}"`);
    this.reads.set(c, new Set());

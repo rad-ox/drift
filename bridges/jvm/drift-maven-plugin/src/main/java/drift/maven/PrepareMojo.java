@@ -6,7 +6,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.stream.Stream;
+import org.apache.maven.model.Plugin;
+import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
@@ -69,7 +72,10 @@ public final class PrepareMojo extends DriftMojo {
                 output.toPath(),
                 Path.of(project.getBuild().getDirectory()),
                 basedir.resolve("target")));
-        String line = "-Ddrift.resolved=" + quoted(resolved()) + " -Ddrift.events=" + quoted(events());
+        String nonce = UUID.randomUUID().toString().replace("-", "");
+        Path selectFile = null;
+        String line = "-Ddrift.resolved=" + quoted(resolved()) + " -Ddrift.events=" + quoted(events())
+                + " -Ddrift.nonce=" + nonce;
         if (snapshot != null) {
             line += " -Ddrift.snapshot=" + snapshot.treeOid();
         }
@@ -131,6 +137,7 @@ public final class PrepareMojo extends DriftMojo {
                     } catch (IOException e) {
                         throw new MojoExecutionException("cannot write " + sel, e);
                     }
+                    selectFile = sel;
                     line += " -Ddrift.select=" + quoted(sel);
                 }
             } else {
@@ -157,9 +164,11 @@ public final class PrepareMojo extends DriftMojo {
                 } catch (IOException e) {
                     throw new MojoExecutionException("cannot write " + sel, e);
                 }
+                selectFile = sel;
                 line += " -Ddrift.select=" + quoted(sel);
             }
         }
+        writeSessionAndDiagnostics(nonce, snapshot != null ? snapshot.treeOid() : null, selectFile);
         Properties props = project.getProperties();
         String before = props.getProperty("argLine", "");
         if (!before.contains(line)) {
@@ -187,6 +196,66 @@ public final class PrepareMojo extends DriftMojo {
             throw new MojoExecutionException("cannot remove prior proof events from " + directory, e);
         }
         getLog().info("drift: cleared prior event shards and inventories for a fresh full run");
+    }
+
+    private void writeSessionAndDiagnostics(String nonce, String snapshotOid, Path selectFile)
+            throws MojoExecutionException {
+        ProcessHandle ph = ProcessHandle.current();
+        long startMs = ph.info().startInstant().map(java.time.Instant::toEpochMilli).orElse(-1L);
+        StringBuilder sb = new StringBuilder("{\"schema\":\"drift.jvm-session/1\",\"resolved\":\"")
+                .append(escJson(resolved().toAbsolutePath().normalize().toString()))
+                .append("\",\"events\":\"")
+                .append(escJson(events().toAbsolutePath().normalize().toString()))
+                .append("\",\"nonce\":\"").append(nonce)
+                .append("\",\"maven_pid\":").append(ph.pid())
+                .append(",\"maven_start_ms\":").append(startMs);
+        if (snapshotOid != null) {
+            sb.append(",\"snapshot\":\"").append(escJson(snapshotOid)).append('"');
+        }
+        if (selectFile != null) {
+            sb.append(",\"select\":\"").append(escJson(selectFile.toAbsolutePath().normalize().toString())).append('"');
+        }
+        sb.append("}\n");
+        try {
+            Files.createDirectories(output.toPath());
+            Files.writeString(output.toPath().resolve("session.json"), sb.toString());
+            List<String> shadowed = new ArrayList<>();
+            if (project.getBuildPlugins() != null) {
+                for (Plugin pl : project.getBuildPlugins()) {
+                    String aid = pl.getArtifactId();
+                    if (!"maven-surefire-plugin".equals(aid) && !"maven-failsafe-plugin".equals(aid)) continue;
+                    List<Object> cfgs = new ArrayList<>();
+                    if (pl.getConfiguration() != null) cfgs.add(pl.getConfiguration());
+                    if (pl.getExecutions() != null) pl.getExecutions().forEach(ex -> { if (ex.getConfiguration() != null) cfgs.add(ex.getConfiguration()); });
+                    for (Object rawCfg : cfgs) {
+                        if (rawCfg instanceof Xpp3Dom dom && dom.getChild("argLine") != null) {
+                            String v = dom.getChild("argLine").getValue();
+                            if (v != null && !v.isBlank() && !v.contains("@{argLine}") && !v.contains("${argLine}") && !shadowed.contains(aid)) {
+                                shadowed.add(aid);
+                                getLog().warn("drift: " + aid + " overrides <argLine> without @{argLine}; using session.json fallback");
+                            }
+                        }
+                    }
+                }
+            }
+            Path diag = output.toPath().resolve("diagnostics.json");
+            if (shadowed.isEmpty()) {
+                Files.deleteIfExists(diag);
+            } else {
+                StringBuilder dj = new StringBuilder("{\"schema\":\"drift.bridge-diagnostics/1\",\"issues\":[");
+                for (int i = 0; i < shadowed.size(); i++) {
+                    if (i > 0) dj.append(',');
+                    dj.append("{\"kind\":\"bridge.argline_shadowed\",\"plugin\":\"").append(escJson(shadowed.get(i))).append("\"}");
+                }
+                Files.writeString(diag, dj.append("]}\n").toString());
+            }
+        } catch (IOException e) {
+            throw new MojoExecutionException("cannot write session metadata in " + output, e);
+        }
+    }
+
+    private static String escJson(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static String quoted(Path p) {

@@ -36,7 +36,7 @@ When AI coding agents—or fast-moving engineering teams—write both the implem
 | Guarantee | How DRIFT enforces it |
 |---|---|
 | **Explicit Slice Intent** | Every behaviour slice lives in `.drift/contracts/<id>.toml` with typed `when`/`then` predicates, blast-radius `[scope]`, and explicit `[decisions]` trade-off cards. |
-| **Human Owner Seal (`dr1:<hash>`)** | Only the owner approves a contract (`drift approve --by <owner>`). Editing any `when`, `then`, `writes`, or decision immediately turns approval **stale** (`DR-E601`). |
+| **Human Owner Seals (`dr2b:` / `dr2a:`)** | The owner approves a contract (`drift approve --by <owner>`). Behaviour and assurance have separate seals; an edit makes the corresponding approval **stale** (`DR-E601`). |
 | **Honest Runtime Proof** | Tests bind to cases (`@DriftCase`, `runDriftCase`, `run_drift_case`), read expected values directly from the contract, and emit `.jsonl` proof events tied to the exact contract digest. |
 | **Deterministic Gate** | `drift gate` is **green** only when configuration and contracts are approved and every case has a passing current-version proof from tests that still exist. |
 
@@ -49,7 +49,7 @@ Suppose an AI coding agent breaks the `name` field in `GET /items/1` and "fixes"
 | **1. Drops `assert.equal(body.name, 'lamp')` so the broken handler passes** | **PASS (False Green)** — `res.status === 200` passes; runner exits `0`. | **FAIL (`AssertionError` / `proof.not_green`)** — `d.check('found', { status: res.status })` throws `no check for then.name`; even if bypassed via raw `d.expect`, the case stays `bound` and fails the `proof = "verified"` policy floor. |
 | **2. Passes a dummy callback `name: (expected) => { const x = expected; }`** | **PASS (False Green)** — callback does not throw; runner exits `0`. | **FAIL (`AssertionError`)** — `invokeVerifiedCallback` rejects callbacks that neither assert nor return `true`. |
 | **3. Calls `d.buildOutput('found')` without asserting runtime output** | **PASS (False Green)** — test constructs a synthetic object and exits `0`. | **FAIL (`proof.not_green`)** — `buildOutput` never records `then.*` reads (`fullyReadCases() == []`), leaving the case `bound`. |
-| **4. Quietly edits `then.status = 500` in `item-get.toml` to match broken code** | **PASS (False Green)** — test reads `500` and passes. | **FAIL (`DR-E601 contract.approval.stale`)** — `dr1:sha256` digest changes; both `drift gate` and `drift_verify.py` reject the unapproved contract. |
+| **4. Quietly edits `then.status = 500` in `item-get.toml` to match broken code** | **PASS (False Green)** — test reads `500` and passes. | **FAIL (`DR-E601`)** — `dr2b:sha256` behaviour digest changes; both `drift gate` and `drift_verify.py` reject the stale approval. |
 | **5. Deletes the failing test method while keeping old `.jsonl` logs** | **PASS (False Green)** — remaining tests pass. | **FAIL (`gone: 1`, `proof.not_green`)** — `<shard>.meta.json` discovery sidecar reconciles active tests and discards orphaned events. |
 
 ---
@@ -62,8 +62,10 @@ Suppose an AI coding agent breaks the `name` field in `GET /items/1` and "fixes"
 
 ### 1. Write a Slice Contract (`.drift/contracts/item-get.toml`)
 
+Examples use **contract/profile schema `0.3`**, independently of the CLI release version (`0.6.0`). Declare a matching `0.3` profile first (see the [guide](GUIDE.md#2-scaffold-a-slice-contract)); schema `0.2` remains supported for existing areas.
+
 ```toml
-drift = "0.2"
+drift = "0.3"
 id = "item-get"
 intent = "Return a single catalog item by identifier or 404 when absent."
 
@@ -75,13 +77,15 @@ surface = "GET /items/{id}"
 writes = []
 reads = ["items"]
 indirect = "none"
+
+[bind]
 code = ["src/main/java/example/items/**"]
 
 [cases.found]
 at = ["http"]
 when.request = "GET /items/1"
 then.status = 200
-then.body = { id = "1", name = "lamp" }
+then.name = "lamp"
 
 [cases.not-found]
 at = ["http"]
@@ -107,9 +111,11 @@ drift gate .drift/contracts --events target/drift/events.jsonl
 ```
 
 ```text
-item-get dr1:5922b40e14d7: green; 2 verified
+item-get dr2b:<12-hex>: green; 2 verified
 gate: green (1/1 contracts)
 ```
+
+The reference above is illustrative; DRIFT computes it from your contract and profile. Both cases need passing bound tests before this gate can be green.
 
 Every case progresses through strict proof states:
 - **`missing`** — No current-version test event exists yet (never green).
@@ -124,7 +130,7 @@ Every case progresses through strict proof states:
 
 ### Install in 10 Seconds
 
-Download the archive for your platform from **[GitHub Releases](https://github.com/rad-ox/drift/releases/latest)** (100% offline install, verified via `SHA256SUMS`) or run `./install.sh` from a clone (which automatically downloads and SHA-256-verifies the matching release binary for Linux `x86_64` or macOS `arm64`/`x86_64`):
+Download the archive for your platform from **[GitHub Releases](https://github.com/rad-ox/drift/releases/latest)** (installation from an extracted archive is offline, verified via `SHA256SUMS`) or run `./install.sh` from a clone (which automatically downloads and SHA-256-verifies the matching release binary for Linux `x86_64` or macOS `arm64`/`x86_64`):
 
 ```bash
 # Linux (x86_64) or macOS (Apple Silicon arm64 / Intel x86_64)
@@ -149,10 +155,15 @@ drift explain DR-E601
 ### Bootstrap a New Project Area
 
 ```bash
-drift init my-service .
+drift init alice .
 drift approve .drift/config.toml --by alice
+mkdir -p .drift/profiles
+cp ~/.local/share/drift/example/.drift/profiles/http-json@1.toml .drift/profiles/
+drift fmt .drift --upgrade 0.3
 drift new .drift/contracts/health-check.toml --profile http-json@1 --intent "Report service readiness."
 ```
+
+`init` creates the area configuration, not a profile; `drift new .drift/profiles/<name>@<N>.toml` scaffolds a minimal one. Run `drift doctor` at any point to see what is missing, and `drift completion bash` (or `zsh`, `fish`, `pwsh`) for tab completion. The copy command uses the default Linux/macOS installation path; on Windows, copy the profile from `%LOCALAPPDATA%\Programs\drift\example\.drift\profiles\`. For an existing `0.2` area, `drift fmt .drift --upgrade 0.3` upgrades profiles and contracts together, removes their old approvals, and requires owner review and re-approval before new proofs. It leaves the area configuration unchanged.
 
 ---
 
@@ -160,7 +171,7 @@ drift new .drift/contracts/health-check.toml --profile http-json@1 --intent "Rep
 
 DRIFT scales from zero-footprint local adoption to fleet-wide formal and mutation governance. Expand any capability below (ordered **Free → Pro → Enterprise**) to see how it works and the exact commands:
 
-### `<kbd>FREE</kbd>` Core Assurance & Zero-Footprint Adoption
+### <kbd>FREE</kbd> Core Assurance & Zero-Footprint Adoption
 
 <details>
 <summary><kbd>FREE</kbd> <strong>Shadow Mode &amp; Two-Phase JUnit XML Adapter</strong> — <em>Govern a legacy or third-party repository without committing a single file</em></summary>
@@ -171,7 +182,7 @@ Adopt DRIFT outside the target repository (`--state-dir` / `DRIFT_STATE_DIR`). T
 
 ```bash
 # 1. Initialize an external shadow area pointing at an untouched repository
-drift init legacy-owner /path/to/legacy-repo --state-dir ~/.drift-shadows/legacy
+drift init alice /path/to/legacy-repo --state-dir ~/.drift-shadows/legacy
 drift approve ~/.drift-shadows/legacy/.drift/config.toml --by alice
 
 # 2. Credit existing JUnit XML test runs via two-phase pre/post snapshot provenance
@@ -192,10 +203,11 @@ drift init --unshadow /path/to/legacy-repo --state-dir ~/.drift-shadows/legacy
 
 <br />
 
-Schema `0.3` (`drift fmt --upgrade 0.3`) splits the contract seal into four domain-separated 256-bit SHA-256 digests so evolving tests, performance budgets, or security receipts never invalidates the owner's behavioral approval:
+Schema `0.3` (`drift fmt --upgrade 0.3`) separates behavioural and assurance approval, with four domain-separated SHA-256 identities. TOML approval seals use compact 12-hex references (full digests are also accepted); JSON views and attestations expose full 256-bit digests:
 - **`dr2b:` (Behavior)** — Covers `when`, `then`, `[invariants]`, `scope.writes`/`reads`/`indirect`, and resolved vocabulary.
-- **`dr2a:` (Assurance)** — Covers `[assurance.guards]`, `[budgets.<id>]`, `[formal.<id>]`, `[risks]`, and `[controls]`.
-- **Write-Frame & Anti-Self-Stub Guards** — Per-case `writes` frames (`checkFrame`), recursive `allowed_keys` / `forbid_keys`, signed double-entry `balance_fields`, numerical tolerances (`approx`, `abs_tol`, `rel_tol`), and automatic `self_stubbed` detection when a test feeds `buildStub()` output back into its own assertion.
+- **`dr2a:` (Assurance)** — Covers merged profile requirements and `[assurance]` guards, budgets, formal obligations, cutover, risks, and controls. Assurance edits require re-approval of this seal, not the behavioural seal.
+- **`dr2r:` / `dr2x:`** — Identify individual evidence requirements and case execution contexts; they are not additional owner approval seals.
+- **Write-Frame & Anti-Self-Stub Guards** — Per-case `writes` frames (`checkFrame`), recursive `keys.allow` / `keys.forbid`, signed double-entry `peer.balance`, numerical tolerances (`eq` + `tol.abs` / `tol.rel`), and automatic `self_stubbed` detection when a test feeds `buildStub()` output back into its own assertion.
 </details>
 
 <details>
@@ -208,14 +220,14 @@ Schema `0.3` (`drift fmt --upgrade 0.3`) splits the contract seal into four doma
 - **Zero-Trust Open Verifier (`verifier/drift_verify.py`)**: A standalone, MIT-licensed Python 3.11+ stdlib script that independently recomputes `dr1:` and `dr2b:`/`dr2a:` digests, reconciles `.meta.json` inventories, and verifies OpenSSH signatures without invoking the `drift` binary.
 </details>
 
-### `<kbd>PRO</kbd>` Incremental Velocity & Multi-Agent Orchestration
+### <kbd>PRO</kbd> Incremental Velocity & Multi-Agent Orchestration
 
 <details>
 <summary><kbd>PRO</kbd> <strong>Causal Test Selection (<code>drift select --plan</code>), Static Literal Pre-Checks &amp; Proof Reuse (<code>gate --base</code>)</strong> — <em>Run only impacted tests and catch typos before the runner starts</em></summary>
 
 <br />
 
-`drift select` traces `scope.code`, `<path>#<symbol>` anchors, `policy.ignore` helper reverse-imports, and coupled resources across 11 languages + Pug/Sass/CSS:
+`drift select` traces `bind.code` (`scope.code` in schema `0.2`), `<path>#<symbol>` anchors, `policy.ignore` helper reverse-imports, and coupled resources across 11 languages + Pug/Sass/CSS:
 - **Executable Test Plans (`drift.test-plan/1`)**: Emits exact runner invocations (`action = "skip" | "narrowed" | "widened"`) with content-addressed `.drift-work/resolved-gen/` caching.
 - **Static Literal Pre-Check**: Inspects bound test closures before launching the test runner, failing fast on `test.unknown_contract`, `test.unknown_case`, or `test.then_key_mismatch` in `< 1 ms`.
 - **Bounded Proof & Security Reuse**: `drift gate --base HEAD --changed <path>...` reuses passing proof, performance, and `--security-lock` receipts on untouched slices while failing closed on any widened or stale seam stub (`blocked.seam`).
@@ -249,7 +261,7 @@ drift plan .drift/contracts --pack ready --detail guided
 - **Semantic Baseline Review (`drift review --brief --base HEAD`)**: Automatically pairs renamed contracts (`contract_change = "renamed"`), tracks cross-contract case transfers (`case.moved`), detects contravariant precondition narrowing (`when.narrowed`, `when.shifted`) and covariant `then.widened` / `writes.widened`, and synthesizes concrete counterexample `relaxation_witnesses`.
 </details>
 
-### `<kbd>ENTERPRISE</kbd>` Mathematical Soundness, Mutation Proofs & Regulated Release
+### <kbd>ENTERPRISE</kbd> Mathematical Soundness, Mutation Proofs & Regulated Release
 
 <details>
 <summary><kbd>ENTERPRISE</kbd> <strong>Contract &amp; Seam Mutation Campaigns (<code>drift mutants</code>) + <code>L0–L3</code> Causal Execution Coupling</strong> — <em>Prove tests actually assert behavior and defeat mock-only tests</em></summary>
@@ -312,7 +324,7 @@ class ItemHttpTest {
         Drift.Case c = Drift.expect("item-get", "found");
         var response = send(c.whenString("request"));
         assertEquals(c.thenInt("status"), response.statusCode());
-        assertEquals(c.thenMap("body").get("name"), response.json().get("name"));
+        assertEquals(c.thenString("name"), response.json().get("name"));
     }
 }
 ```
@@ -322,7 +334,7 @@ In closure-based JVM suites (such as **Scala 3 / MUnit** `FunSuite`), call `Drif
 ```scala
 // build.sbt:
 // resolvers += Resolver.mavenLocal
-// libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.5.1" % Test
+// libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.6.0" % Test
 // Test / fork := true
 // Test / javaOptions ++= Seq(s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved", s"-Ddrift.events=${baseDirectory.value}/target/drift/events")
 
@@ -347,7 +359,7 @@ test('GET /items/1 returns existing item', async (t) => {
     const res = await send(d.when('found', 'request'));
     await d.check('found', {
       status: res.status,
-      body:   res.body,
+      name:   res.body.name,
     });
   });
 });
@@ -365,7 +377,7 @@ def test_returns_existing_item():
         res = send(d.when("found", "request"))
         d.check("found", {
             "status": res.status,
-            "body":   res.json(),
+            "name":   res.json()["name"],
         })
 
     drift.run_drift_case(
@@ -426,7 +438,7 @@ fn test_returns_existing_item() {
 
 ### Legacy & Monolith Carve-Out Bridges (`DriftJUnit4.java`, `Drift.php`, `drift_cobol.py`)
 
-Main DRIFT bridges target the latest **LTS/stable** runtimes (Java 25 LTS / Scala 3.9 LTS JUnit 5 Platform, Node.js 24 LTS, Python 3.14, Rust Edition 2024, V 0.5.2). For brownfield monoliths and enterprise carve-outs, DRIFT provides zero-dependency bridges for **JUnit 4**, **PHP 8.2+**, and **COBOL 85**:
+Main DRIFT bridges target the latest **LTS/stable** runtimes (Java 25 LTS with a Java 17 bytecode floor / Scala 2.12–3.9 JUnit 5 Platform, Node.js 24 LTS, Python 3.14, Rust Edition 2024, V 0.5.2). For brownfield monoliths and enterprise carve-outs, DRIFT provides zero-dependency bridges for **JUnit 4**, **PHP 8.2+**, and **COBOL 85**:
 
 - **Java 6+ / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: Zero-dependency single-file JUnit 4 bridge with `DriftJUnit4.Listener` (recording `.meta.json` inventories and `bound` events across `passed`, `failed`, `skipped`, and `disabled` outcomes without JUnit 5 on the classpath), `DriftJUnit4.verify(contract, caseId, observations, frames)` (promoting extracted slice tests to `verified` after checking projections, relational bounds, and forbidden write frames), `DriftJUnit4.replayCounterexamples(...)` (`*.cex.json` regression replay), and `DriftJUnit4.requireCapabilities(...)` (`drift.bridge-capabilities/1`).
 - **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: Zero-dependency single-file PHP bridge with RFC 6901 JSON Pointer projection checks, relational/negative clause verification (`forbid_keys`, `not_in`), case write frames (`checkFrame`), `*.cex.json` counterexample replay, and atomic `.events.jsonl` / `.meta.json` emission.
@@ -448,7 +460,7 @@ DRIFT is designed from the ground up for **Agentic Specification-Driven Developm
    - Presents `drift review --brief` (cases, decision cards, and at most 5 open questions) and **waits for your approval** before writing implementation code.
 2. **Automatic Guardrail Hooks (`./install.sh --hooks`)**:
    - **`SessionStart`**: Injects live contract status into the agent's context window.
-   - **`Stop`**: Prevents the agent from concluding a turn if `.drift` has static check errors (`DR-E*`) or if source code was modified without a covering contract.
+   - **`Stop`**: Prevents the agent from concluding a turn if `.drift` has static check errors (`DR-E*`); Pro/Enterprise also check for source changes without a covering contract.
 
 ---
 
@@ -458,23 +470,26 @@ Exit codes are uniform across every command: **`0`** = OK / Gate Green, **`1`** 
 
 | Command | Tier | Purpose |
 |---|---|---|
-| `drift init <owner> [dir]` | **Free** | Initialize a new `.drift/config.toml` area configuration (or external shadow state via `--state-dir` / `DRIFT_STATE_DIR`) |
+| `drift init <owner> [dir]` | **Free** | Initialize a new `.drift/config.toml` area configuration (external shadow state via `--state-dir` / `--graduate`, or clean-room grant adoption via `--grant <dir>`) |
 | `drift new <file> [--profile REF]` | **Free** *(+Pro)* | Scaffold a new contract or profile (`--concept` in **Free**; `--openapi`, `--asyncapi`, `--wsdl`, `--copybook`, `--from-upstream`, `--from-recall`, `--from-intent` in **Pro**) |
-| `drift case add <file> [<id>] --ask TEXT` | **Free** *(+Pro)* | Append a draft case or question (`--from-intent`, `--from-signal` in **Pro**) |
-| `drift fmt <file\|dir>... [--check]` | **Free** | Format TOML contracts and configs into canonical order (`--sync-vocab`, `--upgrade 0.3`) |
-| `drift check [<file\|dir>...]` | **Free** | Validate syntax, schema `0.2`/`0.3`, profile vocabulary, `[concepts]`, `[invariants]`, `[assurance.guards]`, `[risks]`/`[controls]`, `[cutover]`, `[budgets.<id>]`, `[requires].security`, `[formal.<id>]`, UI surfaces, and `dr1`/`dr2` approval hashes |
-| `drift diff <a> <b> [--json]` | **Free** | Compute structural and semantic differences between two contracts |
+| `drift case add <file> [<id>] --ask TEXT` | **Free** *(+Pro)* | Append a draft case or question (`--from-intent`, `--unbound-vocab`, `--from-signal` in **Pro**) |
+| `drift fmt <file\|dir>... [--check]` | **Free** | Format TOML contracts and configs into canonical order (`--diff`, `--sync-vocab`, `--upgrade 0.3`) |
+| `drift check [<file\|dir>...]` | **Free** | Validate schema `0.3` (plus legacy `0.2`), typed profile predicates, `[concepts]`, `[invariants]`, `[assurance]` obligations and guards, profile security requirements, UI surfaces, and approval hashes |
+| `drift diff <a|ref|approved> <b> [--json]` | **Free** | Compute structural and semantic differences between two contracts |
 | `drift review [<file\|dir>...] [--brief]` | **Free** *(+Pro)* | Render an owner review brief (`--detail guided` with `workflow_progress` in **Free**; `--base` with `contract_change = "renamed"` & `case.moved`, `--delta`, `--measurements`, `--as md` in **Pro**) |
 | `drift approve <file\|dir>... --by OWNER` | **Free** | Seal approved contract or config versions with `dr1:` / `dr2:` (`--reviewed --expect-review`, `--ssh-sign`) |
-| `drift show [<file\|dir>...] [--as json]` | **Free** *(+Pro)* | Export resolved contract views for test bridges (`--boundary` in **Pro**) |
-| `drift export views\|boundary --out PATH` | **Free / Pro** | Export resolved contract views (**Free**) or bidirectional `drift.boundary-bundle/1` bundles (`--openapi`, `--asyncapi`, `--wsdl`, `--copybook` in **Pro**) |
+| `drift show [<file\|dir>...] [--as json]` | **Free** *(+Pro)* | Export resolved contract views (`.plans/<id>.plan.json` sidecars on `--out`) or human tables (`--as text\|md`; `--boundary` in **Pro**) |
+| `drift export views\|boundary\|grant` | **Free / Pro** | Export resolved contract views (**Free**), bidirectional `drift.boundary-bundle/1` bundles (`--openapi`, `--asyncapi`, `--wsdl`, `--copybook` in **Pro**), or clean-room specification grants (`--policy` in **Pro**) |
 | `drift prove [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Evaluate runtime proof states, `drift.observation/1` lossless observations, `drift.bridge-session/1` supervisor sessions, UI sequences (`drift.ui-observation/1`), `.drift/seam-stub/` provenance, `--measurements` budgets, `*.security.json` (`--security-lock`), `*.study.json`, `*.evaluation.json`, `drift.sim-receipt/1`, `*.parity.json`, `*.migration.json`, and `*.formal.json` / `*.model.json` receipts |
-| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, proof events, `drift.observation/1` / `drift.bridge-session/1`, UI observations, seam provenance, budgets, security (`--security-lock`), regulated `[risks]`/`[controls]` & detached `.sig.json`, simulation, parity/migration, formal receipts, federated composition (`drift.composition-manifest/1`), and `--execution-context` (`--ssh-sign` / `--trust-root`) |
+| `drift gate [<file\|dir>...] --events DIR` | **Free** *(+Pro/Ent)* | Enforce the release gate across config, contracts, proof events, `--grant-lock`, `drift.observation/1` / `drift.bridge-session/1`, UI observations, seam provenance, budgets, security (`--security-lock`), regulated `[risks]`/`[controls]` & detached `.sig.json`, simulation, parity/migration, formal receipts, federated composition (`drift.composition-manifest/1`), and `--execution-context` (`--ssh-sign` / `--trust-root`; `--compare-before` in **Ent**) |
+| `drift eval <file\|id>#<case> --observation FILE\|-` | **Free** | Judge `drift.observation/1` envelopes (one object or JSONL) against a case with the kernel oracle; read-only, exit 0 / 1 / 2, no proof event |
 | `drift status [<file\|dir>...]` | **Free** | Summarize area approval and proof state at a glance (`--detail summary\|guided`, shadow mode indicator) |
-| `drift explain <DR-Exxx>` | **Free** | Explain the cause and exact fix for any diagnostic code or reason token |
+| `drift explain <DR-Exxx>` | **Free** | Explain the cause and exact fix for any diagnostic code, reason token, or envelope (`--list`, `--example`) |
+| `drift doctor [<dir>] [--json]` | **Free** | Diagnose the area in one read-only report: edition, config approval, approvers, profiles, contracts, resolved events, `DRIFT_*` variable names, Git merge driver and operational log (exit `1` only when a check fails) |
+| `drift completion <bash\|zsh\|fish\|pwsh>` | **Free** | Print a shell completion script generated from the option registry of the edition |
 | `drift select [<base>] --events DIR` | **Pro** | Select only tests and performance budgets (`--plan`, `--cmd` `drift.test-plan/1`) affected by changed files, `policy.ignore` helpers, or coupled resources |
 | `drift impact [<dir>]` | **Pro** | Blast-radius analysis, lexical search, and transitive dependency graph |
-| `drift plan [<dir>] [--pack GROUP\|ready]` | **Pro** | Wave DAG scheduling, `schedule.progress`, `what_if` cuts, `executor_ranking`, and parallel worker bundles |
+| `drift plan [<dir>] [--pack GROUP\|ready\|speculative]` | **Pro** | Wave DAG scheduling, `schedule.progress`, `what_if` cuts, `executor_ranking`, `--staffing` agent-pool sizing, and parallel worker bundles |
 | `drift recall query\|sync [<dir>]` | **Pro** | Symbolic `@recall` context capsules (`@tree`, `branch:<id>`, `@concept`) and dual-ring maintenance |
 | `drift merge <base> <ours> <theirs>` | **Pro** | Three-way semantic merge for concurrent contract branches |
 | `drift mutants [<dir>] --out FILE` | **Enterprise** | Generate in-process contract and incoming-seam (`prove.seam_mutants`) mutants (`--when`, `--budget` with `[policy].priority_weights`) |
@@ -489,7 +504,7 @@ DRIFT follows a clean **3-tier progressive architecture**. Each higher edition i
 
 | Capability | **DRIFT Free** (`drift`) | **DRIFT Pro** (`drift-pro`) | **DRIFT Enterprise** (`drift-enterprise`) |
 |---|:---:|:---:|:---:|
-| TOML Contracts, Profiles, Decision Cards, Relational `then` Bounds, `[invariants]`, Case `writes`, `[budgets.<id>]`, `[requires].security` & `[formal.<id>]` | ✅ | ✅ | ✅ |
+| TOML Contracts, Profiles, Decision Cards, Relational `then` Bounds, `[invariants]`, Case `writes`, `[assurance.budgets.<id>]`, Profile `[requires].security` & `[assurance.formal.<id>]` | ✅ | ✅ | ✅ |
 | Static Check (`check`), Canonical Formatter (`fmt`) & Diff (`diff`) | ✅ | ✅ | ✅ |
 | Owner Review (`review --brief`, `--detail guided`) & Cryptographic Seal (`approve`, `--reviewed`, `--ssh-sign`) | ✅ | ✅ | ✅ |
 | Resolved Views (`show`, `export views`), Proof Engine (`prove`) & Release Gate (`gate`, `--execution-context`) | ✅ | ✅ | ✅ |
@@ -499,7 +514,7 @@ DRIFT follows a clean **3-tier progressive architecture**. Each higher edition i
 | Change-Based Test & Budget Selection (`drift select`) & Proof Reuse (`gate --base --changed`) | — | ✅ | ✅ |
 | Blast-Radius (`impact`), Wave Scheduling (`plan`) & `@recall` Capsules (`recall`) | — | ✅ | ✅ |
 | 3-Way Semantic Contract Merge (`drift merge`) & Baseline/Measurement Reviews (`review --base`, `--measurements`) | — | ✅ | ✅ |
-| OpenAPI 3.2, AsyncAPI, Boundary, Trace & Recall Scaffolding (`new --openapi`, `--asyncapi`, `--from-upstream`, `--from-recall`, `export boundary`) | — | ✅ | ✅ |
+| OpenAPI 3.2, AsyncAPI, Boundary, Clean-Room Grant, Trace & Recall Scaffolding (`new --openapi`, `--asyncapi`, `--from-upstream`, `--from-recall`, `export boundary`, `export grant`) | — | ✅ | ✅ |
 | Contract Mutation Testing (`drift mutants`, `proof = "killed"`, `[policy].priority_weights`) | — | — | ✅ |
 | Cryptographic Gate Attestations (`gate --attest`, `--ssh-sign`, `--trust-root`) & JUnit CI XML (`gate --as junit`) | — | — | ✅ |
 | Fleet Dataflow, FSM/Saga, AsyncAPI Epoch, Budget & Security Boundary Audits (`sweep --flow --simplify --promote`) | — | — | ✅ |
@@ -518,7 +533,7 @@ See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, siblin
 | **[GUIDE.md](GUIDE.md)** · **[GUIDE.it.md](GUIDE.it.md)** | Step-by-step practical guide from first contract (L0) to mutation-backed policies (L3), in English and Italian |
 | **[INSTALL.md](INSTALL.md)** · **[INSTALL.it.md](INSTALL.it.md)** | Installation, verification, Maven/sbt/Node/Python/Rust/V bridge wiring, and troubleshooting for Linux, macOS, and Windows |
 | **[EDITIONS.md](EDITIONS.md)** | Complete comparison of **Free**, **Pro**, and **Enterprise** commands, flags, skills, and hooks |
-| **[GUARANTEES.md](GUARANTEES.md)** | Epistemic guarantee & threat matrix, normative `dr1:` / `dr2:` & `.jsonl` proof protocol, and adversarial CI scenarios |
+| **[GUARANTEES.md](GUARANTEES.md)** | Epistemic guarantee & threat matrix, `0.3` dual-seal / `.jsonl` proof protocol, legacy `dr1:` compatibility, and adversarial CI scenarios |
 | **[CHANGELOG.md](CHANGELOG.md)** | Concise release notes and user-visible capabilities by version |
 | **[SECURITY.md](SECURITY.md)** · **[SUPPORT.md](SUPPORT.md)** | Private vulnerability reporting policy, security guarantees, and support/diagnostic guide |
 | **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** | Contribution standards, local verification commands, and community code of conduct |
@@ -526,8 +541,8 @@ See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, siblin
 | **`skill/drift/`** | Agent Skill (`SKILL.md` + `references/`) for GitHub Copilot CLI, Claude Code, Codex, Cursor, and Pi |
 | **`bridges/`** | Zero-dependency test bridges for JavaScript/TypeScript (`drift.mjs`), Python 3 (`drift.py`), Rust (`bridges/rust`), V (`bridges/v/drift_v`), C++20 (`drift_cpp.hpp`), C# / .NET (`Drift.cs`), Godot 4 GDScript (`drift.gd`), PHP 8.2+ (`Drift.php`), COBOL 85 (`drift_cobol.py`), and JVM (`bridges/jvm`, `bridges/legacy/junit4/DriftJUnit4.java`) |
 | **`maven/`** | Offline-ready `drift-junit` (Java & Scala / MUnit) bridge and `drift-maven-plugin` artifacts for JVM projects |
-| **`schemas/`** | JSON Schemas (`drift-contract-0.2`/`0.3`, `drift-profile-0.2`/`0.3`, `drift-config-0.2`/`0.3`, `drift-proof-event-0.2`/`0.3`) for validation |
-| **`hooks/`** | `SessionStart` and `Stop` guardrail hooks (`drift-hook.sh`, `drift-hook.ps1`, `drift-pi.ts`) |
+| **`schemas/`** | JSON Schemas (`drift-contract-0.2`/`0.3`, `drift-profile-0.2`/`0.3`, `drift-config-0.2`/`0.3`, `drift-proof-event-0.2`/`0.3`, `drift-boundary-0.3`, `drift-grant-lock-0.3`) for validation |
+| **`hooks/`** | `SessionStart`, `Stop`, and `notification` guardrail hooks (`drift-hook.sh`, `drift-notify-wsl.sh`, `drift-hook.ps1`, `drift-pi.ts`) |
 | **`example/.drift/`** | Ready-to-run reference area with `config.toml`, `http-json@1` profile, and approved contracts |
 | **[LICENSE](LICENSE)** | Dual-surface license: **MIT License** for bridges, verifier, skill, schemas, hooks, and examples; **DRIFT Free Edition License** for the CLI binary |
 
@@ -538,10 +553,10 @@ See **[EDITIONS.md](EDITIONS.md)** for full details on tier capabilities, siblin
 DRIFT reports what is verified and never overclaims what a static or runtime check can prove (see **[GUARANTEES.md](GUARANTEES.md)** for the full threat matrix and normative proof protocol):
 
 1. **Content Seal (`[approval]`) vs. Identity Authentication**:
-   - `drift approve --by <owner>` computes a canonical SHA-256 digest (`dr1:<hash>` for `0.2`, or 256-bit `dr2b:`/`dr2a:`/`dr2r:` for `0.3`) over the contract's normative behaviour (`when`, `then`, `scope.writes`, `scope.reads`, `scope.indirect`, and resolved profile vocabulary). Any subsequent behavioural edit immediately invalidates the seal (`DR-E601`).
-   - Because `[approval].by` is a plain string inside the repository, **authentication of who approved a change** belongs to your version-control control plane: enforce **Git signed commits (`git commit -S`)** and **GitHub `CODEOWNERS` + branch protection** on `.drift/**`. In **DRIFT Enterprise** and **`verifier/drift_verify.py`**, combine `[policy] approvers` (`DR-E603`) with **OpenSSH signatures (`ssh-keygen -Y`)** over reviewed approval snapshots (`drift-approval@v1`) and release gate attestations (`drift-attestation@v1`) verified against an external `--trust-root` `allowed_signers` file and explicit `--verify-time UTC` (`--ssh-sign`, `--attest`, `--trust-root`).
-2. **`scope.code` Governance**:
-   - `scope.code` and `owners` are intentionally excluded from the behavioural `dr1:` / `dr2b:` digest so internal file renames or refactors do not force re-approval of unchanged external behaviour. Protect `.drift/contracts/*.toml` via GitHub `CODEOWNERS` so any change to `scope.code` is reviewed on pull requests.
+   - For schema `0.3`, `drift approve --by <owner>` records `[approval].behavior_ref` (`dr2b:`) and `assurance_ref` (`dr2a:`) separately. A behavioural edit makes the former stale; an assurance edit makes the latter stale (`DR-E601`). Schema `0.2` retains its single `dr1:` seal. Compact 12-hex references are content-change checks, not collision-resistant authentication; use full digests and authenticated signatures where required.
+   - Because `[approval].by` is a plain string inside the repository, **authentication of who approved a change** belongs to your version-control platform: enforce **Git signed commits (`git commit -S`)** and **GitHub `CODEOWNERS` + branch protection** on `.drift/**`. In **DRIFT Enterprise** and **`verifier/drift_verify.py`**, combine `[policy] approvers` (`DR-E603`) with **OpenSSH signatures (`ssh-keygen -Y`)** over reviewed approval snapshots (`drift-approval@v1`) and release gate attestations (`drift-attestation@v1`) verified against an external `--trust-root` `allowed_signers` file and explicit `--verify-time UTC` (`--ssh-sign`, `--attest`, `--trust-root`).
+2. **Code Binding Governance**:
+   - Schema `0.3` keeps `[bind]` (`code` and `sources`) outside the digests; schema `0.2` excludes `scope.code` and decision/question owner fields. Internal file renames do not force re-approval of unchanged behaviour. Protect `.drift/contracts/*.toml` via GitHub `CODEOWNERS` so binding changes are reviewed on pull requests.
 3. **Proof Floor (`bound` → `verified` → `killed`)**:
    - `bound` proves a tagged test executed and passed against the current contract digest.
    - `verified` proves the test checked every `then.*` key against the contract (directly via declarative `d.check(case, { key: actualValue })` or via checked callbacks that cannot be empty or return `false`).

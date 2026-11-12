@@ -70,10 +70,15 @@ if ($payload) {
     }
 }
 if (-not $eventName) {
-    if ($Mode -match '^(?i)(stop|agentstop)$') { $eventName = 'Stop' }
+    if ($Mode -match '^(?i)(stop|agentstop|stopfailure)$') { $eventName = 'Stop' }
     elseif ($Mode -match '^(?i)(prompt|userpromptsubmit|userpromptsubmitted|before_agent_start|beforeagentstart)$') { $eventName = 'UserPromptSubmit' }
+    elseif ($Mode -match '^(?i)(session|start|sessionstart)$') { $eventName = 'SessionStart' }
+    elseif ($Mode -match '^(?i)(notify|notification)$') { $eventName = 'Notification' }
+    elseif ($Mode) { exit 0 }
     elseif ($payload -and ($payload.PSObject.Properties['stop_hook_active'] -or $payload.PSObject.Properties['stopReason'] -or $payload.PSObject.Properties['stop_reason'])) { $eventName = 'Stop' }
-    elseif ($payload -and $payload.PSObject.Properties['prompt'] -and -not $payload.PSObject.Properties['source']) { $eventName = 'UserPromptSubmit' }
+    elseif ($payload -and ($payload.PSObject.Properties['notification_type'] -or $payload.PSObject.Properties['notificationType'])) { $eventName = 'Notification' }
+    elseif ($payload -and ($payload.PSObject.Properties['tool_name'] -or $payload.PSObject.Properties['toolName'])) { exit 0 }
+    elseif ($payload -and ($payload.PSObject.Properties['prompt'] -and -not $payload.PSObject.Properties['source'])) { $eventName = 'UserPromptSubmit' }
     else { $eventName = 'SessionStart' }
 }
 $norm = ($eventName.ToLowerInvariant() -replace '[_-]', '')
@@ -138,7 +143,7 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
             (Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.agents', 'skills', 'drift-pro')))) {
             $driftSkill = 'drift-pro'
         }
-        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $driftSkill skill: (0) Orient first with drift recall query '<expr>' (e.g. 'feature @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select --changed and drift gate --base. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, decide_by = `"execution`" for non-blocking details), run 1 batch drift review .drift/contracts --brief --base, wait ONCE for owner drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $driftSkill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = `"execution`" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
     }
     $out = @{ additionalContext = $msg } | ConvertTo-Json -Compress
     Write-Output $out
@@ -205,7 +210,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
     }
     $gitCmd = Get-Command 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($env:DRIFT_EDITION -ne 'free' -and $gitCmd) {
-        $porcelain = & $gitCmd.Source -C $area -c core.quotepath=false status --porcelain --untracked-files=normal 2>$null
+        $porcelain = & $gitCmd.Source -C $area -c core.quotepath=false status --porcelain --untracked-files=all 2>$null
         $changed = [System.Collections.Generic.List[string]]::new()
         foreach ($ln in $porcelain) {
             if ($ln -and $ln.Length -ge 4 -and $ln[0] -ne 'D' -and $ln[1] -ne 'D') {
@@ -214,7 +219,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
                     $f = ($f -split ' -> ')[-1].Trim()
                 }
                 $f = $f.Trim('"')
-                if ($f -and $f -notmatch '^\.drift/' -and $f -match '\.(v|java|kt|js|mjs|ts|tsx|py|go|rs)$') {
+                if ($f -and $f -notmatch '^\.drift/' -and $f -match '\.(v|java|kt|scala|js|mjs|cjs|ts|tsx|mts|cts|jsx|py|php|phtml|cob|cbl|cpy|go|rs|c|cc|cpp|cxx|h|hpp|cs|gd)$') {
                     $fullF = [IO.Path]::Combine($area, ($f -replace '/', [IO.Path]::DirectorySeparatorChar))
                     if (Test-Path -LiteralPath $fullF -PathType Leaf) {
                         $changed.Add($f)
@@ -252,7 +257,7 @@ if ($norm -in @('stop', 'agentstop', 'afteragent')) {
                             try { [IO.File]::WriteAllText($unownedStamp, '') } catch { }
                             $out = @{
                                 decision = 'block'
-                                reason   = "Changed source files in $area are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep --root $area --sync-scope; otherwise report them and leave them unchanged."
+                                reason   = "Changed source files in $area are not covered by any contract scope.code (unmatched_code); whether this task owns them is unknown (working-tree evidence, not task attribution). Next: if this task changed them, scaffold the baseline contract(s) (drift new --from-recall --code) or run drift sweep sync-scope --root $area --apply; otherwise report them and leave them unchanged."
                             } | ConvertTo-Json -Compress
                             Write-Output $out
                         }

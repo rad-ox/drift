@@ -404,6 +404,8 @@ public final class Drift {
             String env = System.getenv("DRIFT_RESOLVED");
             if (env != null && !env.isBlank()) {
                 dir = env;
+            } else {
+                dir = DriftInternal.sessionProperty("resolved", true);
             }
         }
         if (dir == null || dir.isBlank()) {

@@ -112,7 +112,7 @@ function Remove-Safely([string]$Path, [string]$Suffix) {
 
 function Test-Skill([string]$Dir) {
     $f = Join @($Dir, 'SKILL.md')
-    (Test-Path -LiteralPath $f) -and [bool](Select-String -LiteralPath $f -Pattern '^name: (drift|drift-recall)$' -Quiet)
+    (Test-Path -LiteralPath $f) -and [bool](Select-String -LiteralPath $f -Pattern '^name: drift$' -Quiet)
 }
 
 function Get-UserPath {
@@ -293,7 +293,7 @@ try {
                 'skill' {
                     if (Test-Skill $path) {
                         $sLeaf = Split-Path -Leaf $path
-                        if ($sLeaf -in @('drift', 'drift-recall')) {
+                        if ($sLeaf -in @('drift')) {
                             Remove-Safely $path $sLeaf
                         }
                         foreach ($up in @((Split-Path $path), (Split-Path (Split-Path $path)))) {
@@ -385,6 +385,31 @@ try {
 
     # -------------------------------------------------------------- install
     $pkgExe = Join @($here, 'bin', 'drift.exe')
+    if ((-not (Test-Path -LiteralPath $pkgExe)) -and (Test-Path -LiteralPath (Join @($here, 'VERSION'))) -and (-not (Test-SameDir $here $Prefix))) {
+        $vDl = (Get-Content -LiteralPath (Join @($here, 'VERSION')) -TotalCount 1).Trim()
+        $pkgN = "drift-$vDl-windows-x64"
+        $baseU = "https://github.com/rad-ox/drift/releases/download/v$vDl"
+        Note "Downloading $pkgN.zip from GitHub Releases..." "Scaricamento $pkgN.zip da GitHub Releases..."
+        $tmpD = Join @([IO.Path]::GetTempPath(), "drift-dl-$([Guid]::NewGuid().ToString('N'))")
+        New-Item -ItemType Directory -Force -Path $tmpD | Out-Null
+        try {
+            $zipFile = Join @($tmpD, "$pkgN.zip")
+            $sumsTmp = Join @($tmpD, 'SHA256SUMS')
+            Invoke-WebRequest -Uri "$baseU/$pkgN.zip" -OutFile $zipFile -UseBasicParsing
+            Invoke-WebRequest -Uri "$baseU/SHA256SUMS" -OutFile $sumsTmp -UseBasicParsing
+            $mLine = Select-String -LiteralPath $sumsTmp -Pattern "  $([regex]::Escape($pkgN))\.zip$" | Select-Object -First 1
+            if (-not $mLine -or (($mLine.Line -split '\s+')[0].ToLowerInvariant() -ne (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLowerInvariant())) {
+                Stop-Install 'Downloaded archive failed SHA256SUMS verification.' "Verifica SHA256SUMS dell'archivio scaricato fallita."
+            }
+            Expand-Archive -LiteralPath $zipFile -DestinationPath $tmpD -Force
+            foreach ($sub in @('bin', 'maven')) {
+                $srcSub = Join @($tmpD, $pkgN, $sub)
+                if (Test-Path -LiteralPath $srcSub) { Copy-Item -LiteralPath $srcSub -Destination (Join @($here, $sub)) -Recurse -Force }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpD) { Remove-Item -LiteralPath $tmpD -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
     if (-not (Test-Path -LiteralPath $pkgExe) -or (Test-SameDir $here $Prefix)) {
         Stop-Install 'Run the installer from the extracted release package (bin\drift.exe is missing here).' `
             "Esegui l'installer dal pacchetto estratto (qui manca bin\drift.exe)."
@@ -540,8 +565,10 @@ try {
     if (Test-Path -LiteralPath (Join @($here, 'hooks'))) {
         Invoke-Step "copy hooks to $Prefix" {
             New-Item -ItemType Directory -Force -Path (Join @($Prefix, 'hooks')) | Out-Null
-            foreach ($name in @('drift-hook.sh', 'drift-hook.ps1', 'drift-pi.ts')) {
-                Copy-Item -LiteralPath (Join @($here, 'hooks', $name)) -Destination (Join @($Prefix, 'hooks', $name)) -Force
+            foreach ($name in @('drift-hook.sh', 'drift-notify-wsl.sh', 'drift-hook.ps1', 'drift-pi.ts')) {
+                if (Test-Path -LiteralPath (Join @($here, 'hooks', $name))) {
+                    Copy-Item -LiteralPath (Join @($here, 'hooks', $name)) -Destination (Join @($Prefix, 'hooks', $name)) -Force
+                }
             }
         }
     }
@@ -603,7 +630,7 @@ try {
 
     $newSkills = [System.Collections.Generic.List[string]]::new()
     function Install-SkillTo([string]$TargetSkillsRoot) {
-        foreach ($sName in @('drift', 'drift-recall')) {
+        foreach ($sName in @('drift')) {
             $srcSkill = Join @($here, 'skill', $sName)
             if (-not (Test-Path -LiteralPath $srcSkill)) { continue }
             $targetSkill = Join @($TargetSkillsRoot, $sName)
@@ -647,7 +674,7 @@ try {
         $normOld = [Environment]::ExpandEnvironmentVariables($sOld).Trim().TrimEnd('\')
         if (-not $newSkillsSet.Contains($normOld) -and (Test-Skill $sOld)) {
             $sLeaf = Split-Path -Leaf $sOld
-            if ($sLeaf -in @('drift', 'drift-recall')) {
+            if ($sLeaf -in @('drift')) {
                 Remove-Safely $sOld $sLeaf
             }
             foreach ($up in @((Split-Path $sOld), (Split-Path (Split-Path $sOld)))) {
@@ -705,6 +732,15 @@ try {
         "command": "~/.local/share/drift/hooks/drift-hook.sh stop",
         "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$hookPs1\" -Mode stop",
         "timeoutSec": 10
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "bash": "~/.local/share/drift/hooks/drift-hook.sh notify",
+        "command": "~/.local/share/drift/hooks/drift-hook.sh notify",
+        "powershell": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$hookPs1\" -Mode notify",
+        "timeoutSec": 5
       }
     ]
   }

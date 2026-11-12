@@ -70,11 +70,9 @@ _hash_bytes = _checks._ce.hash_bytes
 
 
 def _input_digest(abs_p: Path, pre: bytes | None = None) -> str:
-    key = str(abs_p)
-    st = abs_p.stat()
+    key, st = str(abs_p), abs_p.stat()
     sig = (st.st_mtime_ns, st.st_size)
-    if pre is None and st.st_size > 65536 and _DIGESTS.get(key, (None, ''))[0] == sig:
-        return _DIGESTS[key][1]
+    if pre is None and st.st_size > 65536 and _DIGESTS.get(key, (None, ''))[0] == sig: return _DIGESTS[key][1]
     dig = _hash_bytes(pre if pre is not None else abs_p.read_bytes())
     _DIGESTS[key] = (sig, dig)
     return dig
@@ -86,7 +84,7 @@ def _resolve_env() -> dict[str, str] | None:
     if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
-    base = {'adapter': 'drift.py@0.5.1', 'config': 'default', 'deps': 'none', 'drift': '0.5.1', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.6.0', 'config': 'default', 'deps': 'none', 'drift': '0.6.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict): raise ValueError('DRIFT_ENV must be a JSON object')
@@ -167,10 +165,10 @@ def _load_view(contract_id: str) -> dict[str, Any]:
     if not res.endswith('.json'):
         synced = _auto_resolve(contract_id, fp.resolve())
         if isinstance(synced, dict) and synced.get('id') == contract_id:
-            _VIEWS[contract_id] = synced
-            return synced
+            _VIEWS[contract_id] = _checks.attach_bridge_plan_file(synced, fp.resolve(), _read_json)
+            return _VIEWS[contract_id]
     if not fp.is_file(): raise FileNotFoundError(f'contract "{contract_id}" was not found at {fp}')
-    doc = _read_json(fp)
+    doc = _checks.attach_bridge_plan_file(_read_json(fp), fp, _read_json)
     if doc.get('id') != contract_id: raise ValueError(f'resolved view {fp} has id "{doc.get("id")}", exp "{contract_id}"')
     _VIEWS[contract_id] = doc
     return doc
@@ -211,14 +209,10 @@ def _discover_events_dir() -> str:
 def _resolve_events_file() -> str:
     global _shard_path, _shard_seq
     tgt = os.environ.get('DRIFT_EVENTS', '').strip() or _discover_events_dir()
-    if not tgt:
-        return ''
-    if tgt.endswith('.jsonl'):
-        Path(tgt).parent.mkdir(parents=True, exist_ok=True)
-        return tgt
+    if not tgt: return ''
+    if tgt.endswith('.jsonl'): Path(tgt).parent.mkdir(parents=True, exist_ok=True); return tgt
     if _shard_path is None:
-        Path(tgt).mkdir(parents=True, exist_ok=True)
-        _shard_seq += 1
+        Path(tgt).mkdir(parents=True, exist_ok=True); _shard_seq += 1
         _shard_path = Path(tgt) / f'{int(time.time() * 1000):013d}-{os.getpid()}-{_shard_seq}.jsonl'
     return str(_shard_path)
 

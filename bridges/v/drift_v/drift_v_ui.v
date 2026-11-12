@@ -3,8 +3,7 @@ module drift_v
 import x.json2
 
 fn required_ui_capability_for(pred string, ptr string) string {
-	leaf := ptr.all_after_last('/')
-	for k in [pred, leaf] {
+	for k in [pred, ptr.all_after_last('/')] {
 		match k {
 			'min_contrast_ratio', 'min_contrast_wcag22', 'min_contrast_text_normal',
 			'min_contrast_text_large', 'min_contrast_ui_component', 'contrast_violations_count' {
@@ -35,76 +34,38 @@ fn required_ui_capability_for(pred string, ptr string) string {
 }
 
 fn check_ui_projection_guards(contract string, case_id string, doc json2.Any, proj_then map[string]string, then_map map[string]json2.Any) ! {
-	if doc !is map[string]json2.Any {
-		return
+	dm := j_map(doc) or { return }
+	is_ui_obs := (j_str(dm['schema'] or { json2.Any('') }) or { '' }) == 'drift.ui-observation/1'
+	if !(j_bool(dm['surface_found'] or { json2.Any(true) }) or { true }) || !(j_bool(dm['surfaceFound'] or {
+		json2.Any(true)
+	}) or { true }) {
+		return error('${contract}.${case_id}: surface.missing')
 	}
-	dm := doc.as_map()
-	mut is_ui_obs := false
-	if sch := dm['schema'] {
-		if sch is string && sch == 'drift.ui-observation/1' {
-			is_ui_obs = true
-		}
+	if is_ui_obs && !(j_bool(dm['surface_found'] or { json2.Any(false) }) or { false }) && !(j_bool(dm['surfaceFound'] or {
+		json2.Any(false)
+	}) or { false }) {
+		return error('${contract}.${case_id}: surface.missing')
 	}
-	if sf := dm['surface_found'] {
-		if sf is bool && !sf {
-			return error('${contract}.${case_id}: surface.missing')
-		}
-	}
-	if sf2 := dm['surfaceFound'] {
-		if sf2 is bool && !sf2 {
-			return error('${contract}.${case_id}: surface.missing')
+	if coll := j_map(dm['collector'] or { json2.Null{} }) {
+		if j_bool(coll['settle_timed_out'] or { json2.Any(false) }) or { false } {
+			return error('${contract}.${case_id}: ui.settle_timeout')
 		}
 	}
-	if is_ui_obs {
-		mut sf_true := false
-		if sf := dm['surface_found'] {
-			if sf is bool && sf {
-				sf_true = true
-			}
-		}
-		if sf2 := dm['surfaceFound'] {
-			if sf2 is bool && sf2 {
-				sf_true = true
-			}
-		}
-		if !sf_true {
-			return error('${contract}.${case_id}: surface.missing')
-		}
-	}
-	if coll_any := dm['collector'] {
-		if coll_any is map[string]json2.Any {
-			if sto := coll_any['settle_timed_out'] {
-				if sto is bool && sto {
-					return error('${contract}.${case_id}: ui.settle_timeout')
-				}
-			}
-		}
-	}
-	if ev_any := dm['evidence'] {
-		if ev_any is map[string]json2.Any {
-			if reasons := ev_any['unverifiable_reasons'] {
-				if reasons is []json2.Any {
-					for r_item in reasons {
-						if r_item is string && r_item == 'ui.settle_timeout' {
-							return error('${contract}.${case_id}: ui.settle_timeout')
-						}
-					}
-				}
-			}
+	if ev := j_map(dm['evidence'] or { json2.Null{} }) {
+		if (j_arr(ev['unverifiable_reasons'] or { json2.Null{} }) or { []json2.Any{} }).any(
+			it is string && it.str() == 'ui.settle_timeout')
+		{
+			return error('${contract}.${case_id}: ui.settle_timeout')
 		}
 	}
 	mut has_caps := false
 	mut caps := map[string]bool{}
-	if ad_any := dm['adapter'] {
-		if ad_any is map[string]json2.Any {
-			if caps_any := ad_any['capabilities'] {
-				if caps_any is []json2.Any {
-					has_caps = true
-					for c_item in caps_any {
-						if c_item is string {
-							caps[c_item] = true
-						}
-					}
+	if ad := j_map(dm['adapter'] or { json2.Null{} }) {
+		if ca := j_arr(ad['capabilities'] or { json2.Null{} }) {
+			has_caps = true
+			for it in ca {
+				if s := j_str(it) {
+					caps[s] = true
 				}
 			}
 		}
@@ -118,10 +79,8 @@ fn check_ui_projection_guards(contract string, case_id string, doc json2.Any, pr
 			}
 		}
 		if is_ui_obs && exp !is json2.Null {
-			if act := resolve_pointer(doc, ptr) {
-				if act is json2.Null {
-					return error('${contract}.${case_id}: unverifiable then.${pred}: unmeasured value at "${ptr}"')
-				}
+			if (resolve_pointer(doc, ptr) or { json2.Any(0) }) is json2.Null {
+				return error('${contract}.${case_id}: unverifiable then.${pred}: unmeasured value at "${ptr}"')
 			}
 		}
 	}

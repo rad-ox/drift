@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rad-ox/drift/schemas/drift-boundary-0.3.schema.json",
+  "title": "DRIFT Boundary Bundle Schema",
+  "description": "Normative schema for the JSON bundle written by `drift export boundary` (to a file or, with --out -, to standard output): the boundary-visible scope, cases, decisions and projections of every contract of an area, sorted by contract id, with a dr1 digest over the canonical JSON of the bundle without its digest. Contracts of schema 0.2 and 0.3 export the same entry shape; the digest of an entry is the digest the contract reports (dr1 or dr2b).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["area", "contracts", "digest", "drift", "kind"],
+  "properties": {
+    "area": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Area name: --area, else the name inferred from the area root, else the stem of the boundary document."
+    },
+    "contracts": {
+      "type": "array",
+      "description": "One entry per exported contract or boundary operation, sorted by id.",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^dr1:sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical JSON of the bundle without this field."
+    },
+    "drift": {
+      "type": "string",
+      "enum": ["0.2", "0.3"],
+      "description": "Schema version of the bundle envelope."
+    },
+    "kind": {
+      "const": "boundary"
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approval", "cases", "digest", "id", "scope"],
+      "properties": {
+        "approval": {
+          "type": "string",
+          "pattern": "^[a-z][a-z_]*$",
+          "description": "Approval state the contract reported when it was exported (for example current)."
+        },
+        "cases": {
+          "type": "object",
+          "description": "Cases without a status, keyed by case id, without their notes.",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "type": "object" }
+        },
+        "decisions": {
+          "type": "object",
+          "description": "Decision cards that carry a revisit_if or an owner, keyed by decision id, without their notes.",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "type": "object" }
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^dr(1|2b):sha256:[0-9a-f]{64}$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "param_specs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "projections": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^dr(1|2b):[0-9a-f]{12}$"
+        },
+        "scope": { "$ref": "#/$defs/scope" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["indirect", "reads", "writes"],
+      "properties": {
+        "indirect": {
+          "description": "none, or the indirect resources of the contract.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "out": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reads": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "surface": {
+          "type": "string"
+        },
+        "writes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

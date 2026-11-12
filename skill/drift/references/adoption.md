@@ -17,12 +17,15 @@ the four impacts with the approval request.
   resolves from a remote repository, such as CI or a mirror, cannot compile
   tagged tests until both are published there; when that is not possible,
   offer a local branch.
-- Gate: the `drift` CLI must be installed where the gate runs; with the
-  plugin, `mvn verify` fails when the gate is not green.
+- Gate: the `drift` CLI must be installed where the gate runs (if missing after
+  `npx skills add rad-ox/drift`, run `sh <skill-dir>/scripts/install-cli.sh` on
+  Linux/macOS or `powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>/scripts/install-cli.ps1`
+  on Windows to download, SHA-256-verify, and install the matching OS release);
+  with the plugin, `mvn verify` fails when the gate is not green.
 
 ## Steps
 
-1. Create `.drift/config.toml` (or initialize an external shadow area outside a read-only/shared repository with `drift init <owner> <repo> --state-dir <state-dir>` and `DRIFT_STATE_DIR=<state-dir>`, which writes `<state-dir>/.drift/config.toml` and `<state-dir>/shadow.toml` without touching the repository worktree or `.git`); it needs one table besides `[approval]`:
+1. Create `.drift/config.toml` (for an exported clean-room grant package, run `drift init <owner> <repo> --grant <grant-dir>` instead to copy `.drift/profiles`, `.drift/contracts`, and `.drift/grant.lock.json` with `[policy].grant_lock` pre-pinned; or initialize an external shadow area outside a read-only/shared repository with `drift init <owner> <repo> --state-dir <state-dir>` and `DRIFT_STATE_DIR=<state-dir>`, which writes `<state-dir>/.drift/config.toml` and `<state-dir>/shadow.toml` without touching the repository worktree or `.git`); it needs one table besides `[approval]`:
 
    ```toml
    drift = "0.2"
@@ -31,6 +34,11 @@ the four impacts with the approval request.
    [area]
    owner = "<owner>"
    ```
+
+   For multi-agent parallel waves and fast local benchmark reuse under `core@1`,
+   optionally add `[area] events = "<rel-events-dir>"` and `[policy]` settings
+   `companion_edits = "imports_only"`, `performance_reuse = "execution"`, and
+   `warn_ratio = 0.85`.
 
 2. Create one profile per kind of surface, `.drift/profiles/<name>@1.toml`
    (or compose base profiles with `extends = ["http@1", "ui@1"]` and add

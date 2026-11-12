@@ -4,6 +4,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.descriptor.PluginDescriptor;
@@ -38,6 +39,13 @@ abstract class DriftMojo extends AbstractMojo {
     @Parameter(property = "maven.test.skip", defaultValue = "false")
     boolean mavenTestSkip;
 
+    /** Policy when .drift/ directory is completely absent: auto (skip unadopted child in reactor), skip, or fail. */
+    @Parameter(property = "drift.missingArea", defaultValue = "auto")
+    String missingArea;
+
+    @Parameter(defaultValue = "${session}", readonly = true)
+    MavenSession mavenSession;
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     MavenProject project;
 
@@ -62,6 +70,25 @@ abstract class DriftMojo extends AbstractMojo {
         if (skipTests || mavenTestSkip) {
             getLog().warn("drift: tests are skipped, so no proof is produced and " + goal + " does not run");
             return true;
+        }
+        if (!Files.exists(area.toPath())) {
+            String policy = missingArea == null ? "auto" : missingArea.trim().toLowerCase();
+            if ("skip".equals(policy) || ("auto".equals(policy) && reactorHasAdoptedSibling())) {
+                getLog().info("drift: " + goal + " skipped (module has no .drift directory)");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean reactorHasAdoptedSibling() {
+        if (mavenSession == null || mavenSession.getProjects() == null || mavenSession.getProjects().size() <= 1) {
+            return false;
+        }
+        for (MavenProject p : mavenSession.getProjects()) {
+            if (p.getBasedir() != null && Files.isRegularFile(p.getBasedir().toPath().resolve(".drift").resolve("config.toml"))) {
+                return true;
+            }
         }
         return false;
     }

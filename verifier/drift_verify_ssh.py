@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
@@ -339,4 +340,22 @@ def parse_subject_manifest_core(text: str, decode_fn: Any, canon_fn: Any, sec_st
  if "subject_ref" in doc and sec_str_fn(doc,"subject_ref") != comp_ref:raise ValueError("subject_ref_mismatch")
  return {**c_obj,"subject_ref":comp_ref,**({"artifact_ref":aref} if aref else {})}
 
+
+def run_03_self_test(dv_mod: Any) -> None:
+ with tempfile.TemporaryDirectory() as td:
+  tp = Path(td)
+  (tp / "p03@1.toml").write_text('drift = "0.3"\nprofile = "p03@1"\n[schema.when]\nbalance = { type = "int", min = 0 }\n[schema.then]\nbalance = { type = "int", min = 0 }\n', "utf-8")
+  (tp / "c03.toml").write_text('drift = "0.3"\nid = "c03"\nintent = "C03."\n[use]\nprofile = "p03@1"\n[scope]\nwrites = []\nreads = []\nindirect = "none"\n[cases.ok]\nat = ["unit"]\nwhen.balance = 100\nthen.balance = { peer = { eq = "when.balance", balance = { add = ["when.balance"] } } }\n', "utf-8")
+  v03_u = dv_mod.verify_contract_toml(tp / "c03.toml", tp)
+  assert v03_u["digest"].startswith("dr2b:sha256:") and v03_u["approval"] == "absent" and v03_u["required_capabilities"] == ["rel-linear-balance/1"]
+  (tp / "c03.toml").write_text((tp / "c03.toml").read_text("utf-8") + f'[approval]\nbehavior_ref = "{v03_u["ref"]}"\nassurance_ref = "{v03_u["assurance_ref"]}"\nby = "o"\nat = 2026-11-09T18:25:00Z\n', "utf-8")
+  v03 = dv_mod.verify_contract_toml(tp / "c03.toml", tp)
+  assert v03["approval"] == "current" and v03["digest"] == v03_u["digest"]
+  ev03_ok = [{"test": "T#ok", "contract": "c03", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": v03["ref"], "schema": "0.3", "capabilities": ["rel-linear-balance/1"]}]
+  ev03_bad = [{**ev03_ok[0], "capabilities": []}]
+  assert dv_mod.evaluate_contract(v03, "current", ev03_ok, 0, 0, [])["ok"] and "events.invalid" in dv_mod.evaluate_contract(v03, "current", ev03_bad, 0, 0, [])["reasons"]
+  assert "contract.approval.unlisted" in dv_mod.evaluate_contract(v03, "current", ev03_ok, 0, 0, [], {"pack": "core@1", "approvers": ["alice"]})["reasons"]
+  v03_sec = {**v03, "profile_security": ["sast"], "profile_simulation": True}
+  r_sec_sim = dv_mod.evaluate_contract(v03_sec, "current", ev03_ok, 0, 0, [])["reasons"]
+  assert "security.missing" in r_sec_sim and "sim.missing" in r_sec_sim
 
