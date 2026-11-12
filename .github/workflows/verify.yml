@@ -9,14 +9,14 @@ jobs:
   verify-linux-x64:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
       - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
@@ -229,19 +229,20 @@ jobs:
             await d.check('found', d.buildOutput('found'));
           });
           EOF
-          drift review example/.drift/contracts/item-get.toml --events /tmp/drift-ci/self-stub --brief > /tmp/drift-ci/rev_stub.json || true
+          drift gate example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-ci/self-stub --explain --json > /tmp/drift-ci/gate_stub.json || true
           python3 - <<'PY'
           import json
           meta = json.load(open('/tmp/drift-ci/self-stub/js.meta.json'))
-          rev = json.load(open('/tmp/drift-ci/rev_stub.json'))
-          assert 'ci.mjs#self_stub' in meta.get('self_stubbed', []), meta
-          assert 'oracle.self_stubbed' in rev.get('signals', []), rev
+          gate = json.load(open('/tmp/drift-ci/gate_stub.json'))['contracts'][0]
+          assert meta.get('inputs', {}).get('ci.mjs#self_stub', {}).get('.drift/self-stub/item-get') == 'sha256:self-stub', meta
+          assert gate['assurance_card']['oracle_discrimination']['self_stubbed'] == 1, gate
+          assert any(t.get('case') == 'found' and t.get('class') == 'oracle.self_stubbed' for t in gate['triage']), gate
           PY
 
           mkdir -p /tmp/drift-ci/sec-req/.drift/profiles /tmp/drift-ci/sec-req/.drift/contracts
           cp example/.drift/config.toml /tmp/drift-ci/sec-req/.drift/config.toml
           cp example/.drift/profiles/http-json@1.toml /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
-          printf '\n[requires]\nsecurity = ["sast"]\n' >> /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
+          printf 'security = ["sast"]\n' >> /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
           cp example/.drift/contracts/item-get.toml /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml
           drift approve /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml --by items-team >/dev/null
           drift gate /tmp/drift-ci/sec-req/.drift/contracts --config /tmp/drift-ci/sec-req/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_sec.json || true
