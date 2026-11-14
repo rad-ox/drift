@@ -40,11 +40,8 @@ pub(crate) fn apply_mutant_to_view(
         .and_then(|v| v.as_object_mut())
         .ok_or_else(|| TestError::harness(format!("case '{}' missing '{}' table", cid, side)))?;
 
-    let k0 = &segs[0];
-    if segs.len() == 1 {
-        side_map.insert(k0.clone(), after.clone());
-    } else if segs.len() == 2 {
-        let k1 = &segs[1];
+    if segs.len() == 2 {
+        let (k0, k1) = (&segs[0], &segs[1]);
         if let Some(am) = after.as_object() {
             if side_map.contains_key(k0)
                 && side_map.contains_key(k1)
@@ -60,19 +57,21 @@ pub(crate) fn apply_mutant_to_view(
                 return Ok(cloned);
             }
         }
-        if let Some(rel_m) = side_map.get_mut(k0).and_then(|v| v.as_object_mut()) {
-            rel_m.insert(k1.clone(), after.clone());
-            return Ok(cloned);
-        }
-        return Err(TestError::harness(format!(
-            "cannot apply 2-segment mutant path '{}' on non-table key '{}'",
-            path, k0
-        )));
-    } else {
-        return Err(TestError::harness(format!(
-            "unsupported mutant path depth '{}'",
-            path
-        )));
+    }
+    let mut cur = side_map;
+    for seg in &segs[..segs.len() - 1] {
+        cur = cur
+            .get_mut(seg)
+            .and_then(|v| v.as_object_mut())
+            .ok_or_else(|| {
+                TestError::harness(format!(
+                    "cannot apply mutant path '{}' on non-table key '{}'",
+                    path, seg
+                ))
+            })?;
+    }
+    if let Some(last) = segs.last() {
+        cur.insert(last.clone(), after.clone());
     }
     Ok(cloned)
 }

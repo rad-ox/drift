@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rad-ox/drift/schemas/drift-pact-lock-0.3.schema.json",
+  "title": "DRIFT Bilateral Pact Lock Schema",
+  "description": "Normative schema for .drift/pacts/<id>/<rev>.lock.json (drift.pact-lock/1) emitted by `drift pact seal` and verified across Free, Pro, Enterprise, and `verifier/drift_verify.py`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "consumer",
+    "deploy_order",
+    "digest",
+    "obligations",
+    "pact_id",
+    "policy_ref",
+    "producer",
+    "revision",
+    "schema",
+    "seam_metrics",
+    "seams"
+  ],
+  "properties": {
+    "consumer": { "$ref": "#/$defs/party" },
+    "deploy_order": {
+      "type": "string",
+      "enum": ["initial", "none", "producer_first", "consumer_first", "two_step_expand_contract"]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^dr2p:sha256:[0-9a-f]{64}$"
+    },
+    "obligations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^dr2r:sha256:[0-9a-f]{64}$"
+      }
+    },
+    "pact_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "policy_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "producer": { "$ref": "#/$defs/party" },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "schema": {
+      "const": "drift.pact-lock/1"
+    },
+    "seam_metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "seams": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/seam" }
+    },
+    "supersedes": {
+      "type": "string",
+      "pattern": "^dr2p:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "revision": { "const": 1 } },
+        "required": ["revision"]
+      },
+      "then": {
+        "not": { "required": ["supersedes"] }
+      },
+      "else": {
+        "required": ["supersedes"]
+      }
+    }
+  ],
+  "$defs": {
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["area_id", "attested_max_direct_slices", "authorized_keys", "requires_security", "role"],
+      "properties": {
+        "area_id": { "type": "string", "minLength": 1 },
+        "attested_max_direct_slices": { "type": "integer", "minimum": 1 },
+        "authorized_keys": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requires_proof": {
+          "type": "string",
+          "enum": ["bound", "verified", "killed"]
+        },
+        "requires_security": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "role": {
+          "type": "string",
+          "enum": ["producer", "consumer"]
+        }
+      }
+    },
+    "seam": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clauses", "duties", "kind", "operation", "operations", "resource", "schema"],
+      "properties": {
+        "clauses": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "object" }
+        },
+        "duties": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["behavior.request", "behavior.event"]
+        },
+        "operation": { "type": "string", "minLength": 1 },
+        "operations": { "type": "object" },
+        "resource": { "type": "string", "minLength": 1 },
+        "schema": { "type": "object" }
+      }
+    }
+  }
+}

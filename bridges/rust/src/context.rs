@@ -222,13 +222,17 @@ pub(crate) fn build_projected_json(
         .and_then(|v| v.as_object())
         .ok_or_else(|| TestError::assertion(format!("case '{}' has no then table", case_id)))?;
     let proj_then = extract_then_projections(view);
+    let is_sum_rel = |e: &JsonValue| {
+        e.as_object().is_some_and(|m| {
+            m.contains_key("sum_fields")
+                || m.get("peer")
+                    .and_then(|p| p.as_object())
+                    .is_some_and(|p| p.contains_key("sum"))
+        })
+    };
     let mut built = BTreeMap::new();
     for (pred, expected) in then_map {
-        if is_relational_table(expected)
-            && expected
-                .as_object()
-                .is_some_and(|m| m.contains_key("sum_fields"))
-        {
+        if is_sum_rel(expected) {
             continue;
         }
         let default_ptr = format!("/{}", escape_pointer(pred));
@@ -237,11 +241,7 @@ pub(crate) fn build_projected_json(
         write_pointer(&mut built, &ptr, val);
     }
     for (pred, expected) in then_map {
-        if !is_relational_table(expected)
-            || !expected
-                .as_object()
-                .is_some_and(|m| m.contains_key("sum_fields"))
-        {
+        if !is_sum_rel(expected) {
             continue;
         }
         let default_ptr = format!("/{}", escape_pointer(pred));

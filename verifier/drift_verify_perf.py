@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 MAX_MEASUREMENT_BYTES = 4 * 1024 * 1024
-ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2r):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
+ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2a|dr2r|dr2x):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
 SNAPSHOT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 CONF_METHODS = frozenset(("bootstrap_bca", "student_t", "wilcoxon", "binomial_exact", "direct_observed"))
-BUDGET_METRICS = frozenset(("request_latency", "successful_throughput", "process_rss", "frame_time", "cold_start", "artifact_bytes", "work_units", "tick_alloc_bytes", "tick_alloc_count", "frame_hitch_ns"))
+BUDGET_METRICS = frozenset(("request_latency", "successful_throughput", "process_rss", "frame_time", "cold_start", "artifact_bytes", "work_units", "tick_alloc_bytes", "tick_alloc_count", "alloc_bytes_total", "alloc_count_total", "frame_hitch_ns"))
 BUDGET_AGGS = frozenset(("p99", "rate", "max_observed"))
 
 def extract_contract_budgets(raw: dict[str, Any], use_tbl: dict[str, Any] | None, dr1_digest_fn: Callable[[Any], str]) -> tuple[dict[str, dict[str, Any]], bool]:
@@ -222,7 +222,7 @@ def _eval_one_budget(bid: str, bm: dict[str, Any], cid: str, c_dig: str, bundle:
  if not _env_ok(proto["environment_keys"], env_def, base_rec["environment_obs"]): return done("not_comparable", "performance.environment_mismatch")
  b_item = next((br for br in base_rec["results"] if (br["metric"], br["unit"], br["aggregation"], br["evidence"]) == (metric, unit, agg, ev)), None)
  if b_item is None or b_item["failed_requests"] > 0: return done("missing", "performance.baseline_missing")
- if b_item["run_count"] < proto["min_runs"] or b_item["sample_count"] < proto["min_samples"]: return done("inconclusive", "performance.insufficient_evidence")
+ if b_item["run_count"] < proto["min_runs"] or b_item["sample_count"] < proto["min_samples"] or (ev == "statistical" and b_item["interval"]["confidence"] < min_conf): return done("inconclusive", "performance.insufficient_evidence")
  if b_item["estimate"] <= 0.0: return done("unsupported", "performance.unsupported")
  r_pt = (rec["estimate"] / b_item["estimate"] - 1.0) if op == "le" else (1.0 - rec["estimate"] / b_item["estimate"])
  if abs(comp["regression"] - r_pt) > 1e-9: out.pop("estimate", None); return done("invalid", "measurements.invalid")

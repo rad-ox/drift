@@ -225,7 +225,7 @@ def bridge_capabilities() -> dict[str, Any]:
     'capabilities': list(BRIDGE_CAPABILITIES),
     'runtime_baseline': 'python-3.14',
     'schema': 'drift.bridge-capabilities/1',
-    'version': '0.6.0',
+    'version': '0.7.0',
   }
 def require_capabilities(required: list[str] | tuple[str, ...]) -> None:
   if not isinstance(required, (list, tuple)):
@@ -418,7 +418,8 @@ def capture_worktree_snapshot(area: Path) -> str:
       elif tmp_idx.exists():
         tmp_idx.unlink()
       env = {**os.environ, 'GIT_INDEX_FILE': str(tmp_idx)}
-      subprocess.run(['git', '-C', str(top), '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', ':(exclude).drift-work', ':(exclude).build', ':(exclude)target'], env=env, capture_output=True, check=False)
+      ex = [f':(exclude){d}' for d in ('.drift-work', '.build', 'target') if subprocess.run(['git', '-C', str(top), 'check-ignore', '-q', '--', f'{d}/'], capture_output=True, check=False).returncode != 0]
+      subprocess.run(['git', '-C', str(top), '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', *ex], env=env, capture_output=True, check=False)
       tr_p = subprocess.run(['git', '-C', str(top), 'write-tree'], env=env, capture_output=True, text=True, check=False)
       tr = tr_p.stdout.strip()
       if tr_p.returncode == 0 and len(tr) in (40, 64):

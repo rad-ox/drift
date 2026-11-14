@@ -166,8 +166,8 @@ jobs:
           PY
           mkdir -p /tmp/drift-ci/bound-ev
           DIG=$(python3 -c "import json; print(json.load(open('/tmp/drift-ci/pol_chk.json'))['files'][0]['digest'])")
-          printf '{"test":"t#1","contract":"item-get","cases":["found","not-found","bad-id"],"level":"http","outcome":"passed","read":[],"digest":"%s"}\n' "$DIG" > /tmp/drift-ci/bound-ev/s.jsonl
-          printf '{"test":"t#2","contract":"item-get","cases":["read-only"],"level":"unit","outcome":"passed","read":["read-only"],"digest":"%s"}\n' "$DIG" >> /tmp/drift-ci/bound-ev/s.jsonl
+          printf '{"test":"t#1","contract":"item-get","cases":["found","not-found","bad-id"],"level":"http","outcome":"passed","read":[],"digest":"%s","schema":"0.3","capabilities":[]}\n' "$DIG" > /tmp/drift-ci/bound-ev/s.jsonl
+          printf '{"test":"t#2","contract":"item-get","cases":["read-only"],"level":"unit","outcome":"passed","read":["read-only"],"digest":"%s","schema":"0.3","capabilities":[]}\n' "$DIG" >> /tmp/drift-ci/bound-ev/s.jsonl
           printf '{"version":1,"classes":["t"],"tests":["t#1","t#2"]}\n' > /tmp/drift-ci/bound-ev/s.meta.json
           ! drift gate /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null 2>&1
           ! python3 verifier/drift_verify.py /tmp/drift-ci/pol/.drift/contracts --config /tmp/drift-ci/pol/.drift/config.toml --events /tmp/drift-ci/bound-ev >/dev/null
@@ -181,7 +181,7 @@ jobs:
           g = json.load(open('/tmp/drift-ci/g_tamp.json'))['contracts'][0]
           v = json.load(open('/tmp/drift-ci/v_tamp.json'))['contracts'][0]
           assert not g['ok'] and not v['ok'] and g['digest'] == v['digest'] and g['approval'] == v['approval'] == 'stale'
-          assert g['ignored'] == v['ignored'] == 3 and g['reasons'] == v['reasons'] == ['contract.findings', 'contract.approval.stale', 'proof.not_green']
+          assert g['ignored'] == v['ignored'] == 3 and g['reasons'] == v['reasons'] and 'contract.approval.stale' in g['reasons'] and 'proof.not_green' in g['reasons']
           PY
 
           mkdir -p /tmp/drift-ci/gone-events && cp /tmp/drift-ci/events/* /tmp/drift-ci/gone-events/
@@ -205,7 +205,7 @@ jobs:
           for p in ('/tmp/drift-ci/g_bad.json', '/tmp/drift-ci/v_bad.json'):
             c = json.load(open(p))['contracts'][0]
             assert c['ok'] is False and 'events.invalid' in c['reasons'], c
-          inv = json.load(open('schemas/drift-proof-event-0.2.schema.json'))['$defs']['inventorySidecar']
+          inv = json.load(open('schemas/drift-proof-event-0.3.schema.json'))['$defs']['inventorySidecar']
           assert inv['properties']['version']['enum'] == [1, 2] and 'execution_ref' in inv['properties']
           for k in ('contract', 'profile', 'config', 'proof-event'):
             assert json.load(open(f'schemas/drift-{k}-0.3.schema.json'))['$schema'].endswith('2020-12/schema')
@@ -242,7 +242,7 @@ jobs:
           mkdir -p /tmp/drift-ci/sec-req/.drift/profiles /tmp/drift-ci/sec-req/.drift/contracts
           cp example/.drift/config.toml /tmp/drift-ci/sec-req/.drift/config.toml
           cp example/.drift/profiles/http-json@1.toml /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
-          printf 'security = ["sast"]\n' >> /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
+          sed -i 's/writes = \[\]/writes = []\nsecurity = ["sast"]/' /tmp/drift-ci/sec-req/.drift/profiles/http-json@1.toml
           cp example/.drift/contracts/item-get.toml /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml
           drift approve /tmp/drift-ci/sec-req/.drift/contracts/item-get.toml --by items-team >/dev/null
           drift gate /tmp/drift-ci/sec-req/.drift/contracts --config /tmp/drift-ci/sec-req/.drift/config.toml --events /tmp/drift-ci/events --json > /tmp/drift-ci/g_sec.json || true

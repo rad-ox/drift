@@ -112,7 +112,10 @@ function captureWorktreeSnapshot(area, execFileSync, fs, path, process) {
     try {
       if (fs.existsSync(realIdx)) fs.copyFileSync(realIdx, tmpIdx); else fs.rmSync(tmpIdx, { force: true });
       const env = { ...process.env, GIT_INDEX_FILE: tmpIdx };
-      execFileSync('git', ['-C', top, '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', ':(exclude).drift-work', ':(exclude).build', ':(exclude)target'], { env, stdio: 'ignore' });
+      const ex = ['.drift-work', '.build', 'target'].filter((d) => {
+        try { execFileSync('git', ['-C', top, 'check-ignore', '-q', '--', `${d}/`], { stdio: 'ignore' }); return false; } catch { return true; }
+      }).map((d) => `:(exclude)${d}`);
+      execFileSync('git', ['-C', top, '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', ...ex], { env, stdio: 'ignore' });
       const tr = execFileSync('git', ['-C', top, 'write-tree'], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
       if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(tr)) return tr;
     } finally { fs.rmSync(tmpIdx, { force: true }); }

@@ -84,7 +84,7 @@ def _resolve_env() -> dict[str, str] | None:
     if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
-    base = {'adapter': 'drift.py@0.6.0', 'config': 'default', 'deps': 'none', 'drift': '0.6.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': 'drift.py@0.7.0', 'config': 'default', 'deps': 'none', 'drift': '0.7.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(_strip_bom(raw))
         if not isinstance(parsed, dict): raise ValueError('DRIFT_ENV must be a JSON object')

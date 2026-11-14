@@ -1,4 +1,4 @@
-drift = "0.2"
+drift = "0.3"
 id = "item-get"
 intent = "Return one item by id without changing any data."
 
@@ -10,6 +10,8 @@ surface = "GET /items/{id}"
 writes = []
 reads = ["items"]
 indirect = "none"
+
+[bind]
 code = ["src/main/java/example/items/ItemServer.java"]
 
 [cases.found]
@@ -36,6 +38,7 @@ when.request = "GET /items/1"
 then.status = 200
 
 [approval]
-ref = "dr1:5153b5fae73c"
+behavior_ref = "dr2b:68b3dad7894e"
+assurance_ref = "dr2a:da7f7bc1b076"
 by = "items-team"
 at = 2026-10-14T10:00:00Z

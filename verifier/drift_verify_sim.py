@@ -229,11 +229,14 @@ def _parse_comp_bundles_py(raw: Any) -> list[dict[str, Any]]:
  return out
 def load_composition_manifests_core(events_paths: list[Path], decode_fn: Any) -> tuple[list[dict[str, Any]], list[str]]:
  from drift_verify_mig import collect_receipt_files
- out,errs,allowed = [],[],{"schema","contract","active_producers","active_consumers","retained_events","rollback_targets","declared_coordinators","critical_paths"}
+ out,errs,allowed = [],[],{"schema","contract","active_producers","active_consumers","retained_events","rollback_targets","declared_coordinators","critical_paths","pact_refs"}
  for cf in collect_receipt_files(events_paths,".composition.json"):
   try:
    doc = decode_fn(cf.read_text(encoding="utf-8"))
    if not isinstance(doc,dict) or any(k not in allowed for k in doc) or doc.get("schema")!="drift.composition-manifest/1":raise ValueError("composition_schema")
+   pr_raw = doc.get("pact_refs",[])
+   if not isinstance(pr_raw,list):raise ValueError("pact_refs")
+   bad_pr = bool("pact_refs" in doc and (len(set(pr_raw))!=len(pr_raw) or any(not isinstance(x,str) or not re.fullmatch(r"dr2p:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})",x.strip()) for x in pr_raw)))
    cid = str(doc.get("contract","")).strip() if "contract" in doc else ""
    if "contract" in doc and not cid:raise ValueError("composition_contract")
    prods,cons,rbs = _parse_comp_bundles_py(doc.get("active_producers",[])),_parse_comp_bundles_py(doc.get("active_consumers",[])),_parse_comp_bundles_py(doc.get("rollback_targets",[]))
@@ -247,7 +250,7 @@ def load_composition_manifests_core(events_paths: list[Path], decode_fn: Any) ->
     stages = [{"area_id":str(st["area_id"]).strip(),"operation":str(st["operation"]).strip(),"p95_ms":st["p95_ms"],"idempotent":bool(st.get("idempotent",True)),"max_executions":st["max_executions"],"timeout_compensated":bool(st.get("timeout_compensated",True)),"confirmed_before_completion":bool(st.get("confirmed_before_completion",True))} for st in cp["stages"] if isinstance(st,dict) and str(st.get("area_id","")).strip() and str(st.get("operation","")).strip() and isinstance(st.get("p95_ms"),int) and not isinstance(st.get("p95_ms"),bool) and st["p95_ms"] >= 0 and isinstance(st.get("max_executions"),int) and not isinstance(st.get("max_executions"),bool) and st["max_executions"] >= 0]
     if len(stages)!=len(cp["stages"]):raise ValueError("stage")
     cpaths.append({"id":str(cp["id"]).strip(),"budget_ms":cp.get("budget_ms",0),"stages":stages})
-   out.append({"schema":"drift.composition-manifest/1","contract":cid,"active_producers":prods,"active_consumers":cons,"retained_events":ret_evs,"rollback_targets":rbs,"declared_coordinators":{k:v.strip() for k,v in coords_raw.items()},"critical_paths":cpaths})
+   out.append({"schema":"drift.composition-manifest/1","contract":cid,"active_producers":prods,"active_consumers":cons,"retained_events":ret_evs,"rollback_targets":rbs,"declared_coordinators":{k:v.strip() for k,v in coords_raw.items()},"critical_paths":cpaths,"bad_pact_ref":bad_pr})
   except Exception as exc:errs.append(f"{cf.name}: {exc}")
  return out,errs
 def evaluate_federated_composition_py(m: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +258,7 @@ def evaluate_federated_composition_py(m: dict[str, Any]) -> dict[str, Any]:
  def _add(r:str) -> None:
   if r and r not in reasons:reasons.append(r)
  if m.get("schema")!="drift.composition-manifest/1":_add("federation.invalid_manifest_schema")
+ if m.get("bad_pact_ref"):_add("federation.invalid_pact_ref")
  checked_pairs = 0
  def _check_pair(prod:dict[str,Any],cons:dict[str,Any],is_rb:bool) -> int:
   pairs,p_lbl,c_lbl = 0,f"{prod['area_id']}@{prod['version']}",f"{cons['area_id']}@{cons['version']}"

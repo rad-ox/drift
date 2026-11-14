@@ -8,7 +8,7 @@ import tomllib
 from decimal import Decimal as D
 from pathlib import Path
 from typing import Any, Callable
-from drift_verify_grant import tok_str_03 as _tok_str_03, unesc_lit_03 as _unesc_lit_03
+from drift_verify_grant import obs03, red03, tok_str_03 as _tok_str_03, unesc_lit_03 as _unesc_lit_03
 
 _RES03_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -102,7 +102,7 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
  prof_ref = str(use_tbl.get("profile", ""))
  use_params = {**(use_tbl["params"] if isinstance(use_tbl.get("params"), dict) else {}), **{k: v for k, v in use_tbl.items() if k not in ("profile", "concepts", "waive", "params")}}
  waived = use_tbl.get("waive") if isinstance(use_tbl.get("waive"), dict) else {}
- units, w_sch, t_sch, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, has_g, g_max, g_forb = {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, 0, []
+ units, w_sch, t_sch, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, has_g, g_max, g_forb, g_forb_t = {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], []
  p0 = profiles_dir / f"{prof_ref}.toml" if prof_ref else None
  if p0 and p0.is_file():
   prof_doc = _read_p03(p0)
@@ -129,11 +129,14 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
    for sc in (req.get("security") or ()):
     if str(sc) not in p_sec: p_sec.append(str(sc))
    if req.get("simulation") == "required": p_sim = True
+   if req.get("budgets") == "required": p_buds = True
    if isinstance(rg := req.get("guards"), dict):
     has_g = True
     if isinstance(rg.get("max_lines"), int) and rg["max_lines"] > 0: g_max = rg["max_lines"] if g_max == 0 or rg["max_lines"] < g_max else g_max
     for fi in (rg.get("forbid_imports") or ()):
      if str(fi) not in g_forb: g_forb.append(str(fi))
+    for ft in (rg.get("forbid_touched") or ()):
+     if str(ft) not in g_forb_t: g_forb_t.append(str(ft))
  norm_inv, p_deps, all_caps = {}, {}, set()
  for ik, iv in m_inv.items():
   ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, use_params)
@@ -145,12 +148,15 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
   norm_inv[ik] = {**norm_inv[ik], **ne} if ik in norm_inv else ne
   p_deps[f"then.{ik}"] = list(pr)
   all_caps.update(cp)
+ sw_set, sw_base = set(sc_writes), {sw.split("#", 1)[0] for sw in sc_writes}
  norm_cases: dict[str, dict[str, Any]] = {}
- for src_c in ({k: v for k, v in m_cases.items() if k not in waived}, raw.get("cases") or {}):
+ for is_inh, src_c in ((True, {k: v for k, v in m_cases.items() if k not in waived}), (False, raw.get("cases") or {})):
   for case_id, cm in src_c.items():
    if not isinstance(cm, dict):
     continue
    nc = dict(cm)
+   if is_inh and isinstance(nc.get("writes"), list) and nc["writes"]:
+    nc["writes"] = [w for w in nc["writes"] if isinstance(w, str) and (w in sw_set or (bw := w.split("#", 1)[0]) in sw_set or (w == bw and bw in sw_base))]
    if isinstance(cm.get("when"), dict):
     nw = {}
     for wk, wv in cm["when"].items():
@@ -163,11 +169,12 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
     nt = {}
     for tk, tv in cm["then"].items():
      ne, pr, cp = _norm_expr_03(tv, t_sch.get(tk), "then", units, use_params)
-     nt[tk] = {**norm_inv[tk], **ne} if tk in norm_inv else ne
+     nt[tk] = {**norm_inv[tk], **ne} if ("status" not in cm and tk in norm_inv) else ne
      p_deps.setdefault(f"then.{tk}", []).extend(pr)
      all_caps.update(cp)
-    for ik, iv in norm_inv.items():
-     nt.setdefault(ik, iv)
+    if "status" not in cm:
+     for ik, iv in norm_inv.items():
+      nt.setdefault(ik, iv)
     nc["then"] = nt
    norm_cases[case_id] = nc
  need_w, need_t, q = set(), set(norm_inv), [f"then.{ik}" for ik in norm_inv]
@@ -236,13 +243,14 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
     if pr.startswith("when.") and pr[5:] in w_sch: ss[pr] = _canon_pred_03(w_sch[pr[5:]])
     elif pr.startswith("then.") and pr[5:] in t_sch: ss[pr] = _canon_pred_03(t_sch[pr[5:]])
   case_digs[k] = d2_fn("dr2b:sha256:", "drift.case-behavior/2", {"contract": cid, "case_id": k, "case": cl_c, "schema": ss, "units": dict(units)})
- dig_assur, res_budgets, res_formal, res_cutover, res_risks, res_ctrls, f_rrefs = {}, {}, {}, {}, {}, {}, {}
+ dig_assur, res_budgets, res_formal, res_cutover, res_risks, res_ctrls, f_rrefs, eff_forb_t = {}, {}, {}, {}, {}, {}, {}, []
  if "guards" in assur or has_g:
   gm = assur.get("guards") if isinstance(assur.get("guards"), dict) else {}
   ml = gm.get("max_lines", g_max)
   fb = sorted(set(g_forb) | {str(x) for x in (gm.get("forbid_imports") or ()) if isinstance(x, str)})
+  eff_forb_t = sorted(set(g_forb_t) | {str(x) for x in (gm.get("forbid_touched") or ()) if isinstance(x, str)})
   tgts = sorted({str(x) for x in (gm.get("target") or ()) if isinstance(x, str)})
-  dig_assur["guards"] = {"target": tgts, **({"max_lines": ml} if isinstance(ml, int) and ml > 0 else {}), **({"forbid_imports": fb} if fb else {})}
+  dig_assur["guards"] = {"target": tgts, **({"max_lines": ml} if isinstance(ml, int) and ml > 0 else {}), **({"forbid_imports": fb} if fb else {}), **({"forbid_touched": eff_forb_t} if eff_forb_t else {})}
  if isinstance(assur.get("formal"), dict):
   df = {}
   for fid, fm in assur["formal"].items():
@@ -288,147 +296,17 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
    dc[ctrl_id] = cl
    res_ctrls[ctrl_id] = {**cl, "requirement_ref": rr}
   dig_assur["controls"] = dc
- req_pos = {**({"proof": p_proof} if p_proof else {}), **({"security": sorted(p_sec)} if p_sec else {}), **({"simulation": "required"} if p_sim else {})}
+ req_pos = {**({"proof": p_proof} if p_proof else {}), **({"security": sorted(p_sec)} if p_sec else {}), **({"simulation": "required"} if p_sim else {}), **({"budgets": "required"} if p_buds else {})}
  assur_dig = d2_fn("dr2a:sha256:", "drift.assurance/2", {"contract": cid, "requires": req_pos, "assurance": dig_assur})
  d_match = lambda r, fd: isinstance(r, str) and bool(re.fullmatch(rf"{fd[:5]}(?:sha256:[0-9a-f]{{64}}|[0-9a-f]{{12}})", r)) and (r == fd or r == ref_fn(fd))
  has_blk = has_blocker_fn({**raw, "budgets": assur.get("budgets"), "formal": assur.get("formal"), "cutover": assur.get("cutover")}, {"decisions": m_decs}) or contains_todo_fn(raw.get("bind")) or contains_todo_fn(raw.get("invariants")) or contains_todo_fn(assur)
  has_any_ref = isinstance(appr, dict) and any(appr.get(k) for k in ("behavior_ref", "assurance_ref", "ref", "digest"))
  cur_ok = isinstance(appr, dict) and set(appr) <= {"behavior_ref", "assurance_ref", "by", "at"} and d_match(appr.get("behavior_ref"), beh_dig) and d_match(appr.get("assurance_ref"), assur_dig)
- st = "blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent"))
+ st = "invalid" if (p_buds and not res_budgets) else ("blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent")))
  open_m = raw.get("open") if isinstance(raw.get("open"), dict) else {}
  own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d, dict)] if isinstance(raw.get("decisions"), dict) else []
  decs = [d for s in (raw.get("decisions"), m_decs) if isinstance(s, dict) for d in s.values() if isinstance(d, dict)]
  blk = lambda ph: any(isinstance(q, dict) and q.get("blocks") == ph for q in open_m.values()) or any(d.get("pick", "") == "" and d.get("decide_by") == ph for d in decs)
  roots = resolve_roots_fn(path)
- return {"drift": "0.3", "id": cid, "digest": beh_dig, "ref": ref_fn(beh_dig), "assurance_digest": assur_dig, "assurance_ref": ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), "profile_proof": p_proof, "profile_security": p_sec, "profile_simulation": p_sim, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": beh_cases, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": {k: re.sub(r"^/?[\w.-]+:(?=/)", "", p["ptr"]) for k, p in t_sch.items() if p.get("ptr")}, "units": units, "unit": {k: p["unit"] for k, p in t_sch.items() if p.get("unit")}, "w": sc_writes}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
+ return {"drift": "0.3", "id": cid, "digest": beh_dig, "ref": ref_fn(beh_dig), "assurance_digest": assur_dig, "assurance_ref": ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), "profile_proof": p_proof, "profile_security": p_sec, "profile_simulation": p_sim, "profile_budgets": p_buds, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": beh_cases, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": {k: re.sub(r"^/?[\w.-]+:(?=/)", "", p["ptr"]) for k, p in t_sch.items() if p.get("ptr")}, "units": units, "unit": {k: p["unit"] for k, p in t_sch.items() if p.get("unit")}, "w": sc_writes, "ft": eff_forb_t}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
 
-
-_OPS = {"eq", "min", "max", "in", "not_in", "len", "prefix", "suffix", "keys", "peer", "tol", "convert_from"}
-_ABS = object()
-_d = lambda x: D(repr(x)) if isinstance(x, float) else D(x)
-_nm = lambda x: isinstance(x, (int, float, D)) and not isinstance(x, bool)
-
-
-def _ob(v):
- if isinstance(v, list):
-  return [_ob(x) for x in v]
- if not isinstance(v, dict):
-  return v
- if "$t" in v:
-  t, x = v["$t"], v.get("v")
-  if t in ("absent", "null"):
-   return _ABS if t == "absent" else None
-  if t in ("i64", "u64"):
-   n = int(x) if isinstance(x, (int, str)) and not isinstance(x, bool) else int("x")
-   if not (-2**63 if t == "i64" else 0) <= n < (2**63 if t == "i64" else 2**64):
-    raise ValueError(t)
-   return n
-  if t == "dec" and isinstance(x, str) and re.fullmatch(r"[+-]?(?=\.?\d)\d*\.?\d*", x.strip()):
-   return D(x.strip())
-  if t in ("f32", "f64"):
-   return float(x)
-  if t == "bytes":
-   return bytes.fromhex(x)
-  raise ValueError(t)
- o = {}
- for k, x in v.items():
-  if k.startswith("$") and not k.startswith("$$") or k.lstrip("$") in o and k.startswith("$$"):
-   raise ValueError(k)
-  o[k[1:] if k.startswith("$$") else k] = _ob(x)
- return o
-
-
-def _env(e):
- if not isinstance(e, dict) or e.get("schema") != "drift.observation/1" or e.get("outcome", "returned") not in ("returned", "thrown", "timeout", "interrupted"):
-  raise ValueError("observation")
- return e.get("outcome", "returned"), _ob(e["payload"]) if "payload" in e else _ABS, e.get("presence", {}), e.get("frame", {})
-
-
-def obs03(d, cs, sch):
- if "observations" not in d: return {}
- if sch != "0.3" or not isinstance(d["observations"], dict) or any(k not in cs for k in d["observations"]): raise ValueError("observations")
- return {"observations": d["observations"], "_obs_dec": {k: _env(e) for k, e in d["observations"].items()}}
-
-
-def _cmp(a, b, cv=D(1)):
- a, b = _d(a), _d(b) * cv
- return None if a.is_nan() or b.is_nan() or not (_nm(a) and _nm(b)) else (a > b) - (a < b)
-
-
-def _eq(o, l, cv=D(1), tol=(0, 0)):
- if l is None or isinstance(l, bool):
-  return o is l
- if isinstance(l, str):
-  return o == l if not isinstance(o, D) else (re.fullmatch(r"[+-]?\d+\.?\d*", l) is not None and D(l) == o)
- if _nm(l):
-  return _nm(o) and abs(_d(o) - _d(l) * cv) <= tol[0] + tol[1] * abs(_d(l) * cv)
- if isinstance(l, list):
-  return isinstance(o, list) and len(o) == len(l) and all(map(_eq, o, l))
- return isinstance(l, dict) and isinstance(o, dict) and o.keys() == l.keys() and all(_eq(o[k], x) for k, x in l.items())
-
-
-def _fk(o, fs):
- return (isinstance(o, dict) and any(k in fs and v is not _ABS or _fk(v, fs) for k, v in o.items())) or (isinstance(o, list) and any(_fk(x, fs) for x in o))
-
-
-def _peer(pm, o, g):
- vs = [g(r) for r in [*(pm.get("sum") or []), *[pm[k] for k in ("le", "ge", "eq") if k in pm]]]
- if not all(map(_nm, [o, *vs])):
-  return "eq" in pm and len(pm) == 1 and o == g(pm["eq"])
- return not any(k in pm and ((c := _cmp(o, g(pm[k]))) is None or c * s > 0) for k, s in (("le", 1), ("ge", -1))) and ("eq" not in pm or _cmp(o, g(pm["eq"])) == 0) and ("sum" not in pm or _d(o) == sum(_d(g(r)) for r in pm["sum"]))
-
-
-def _cl(n, o, p, pres, un, pu, g):
- m, k, ki, pm = pres.get(p, pres.get("*", "exact")), n.get("keys"), n.get("in"), n.get("peer")
- if any(x not in _OPS for x in n) or m == "unobservable" or (o is _ABS and m != "exact") or (isinstance(pm, dict) and (any(x not in ("le", "ge", "eq", "sum") for x in pm) or "tol" in n)):
-  return "inconclusive"
- if o is _ABS or (_nm(o) and _d(o).is_nan()):
-  return "violated"
- cv = _d(un.get(f"{n['convert_from']}->{pu}", 1)) if n.get("convert_from") and pu else D(1)
- t = n.get("tol")
- tol = (_d(t.get("abs", 0)) * cv, _d(t.get("rel", 0))) if isinstance(t, dict) else (0, 0)
- if "eq" in n and (n["eq"] is None or o is None) and m != "exact":
-  return "inconclusive"
- for x in (o if isinstance(o, list) else [o]) if "min" in n or "max" in n else ():
-  if not (isinstance(o, list) and not _nm(x)) and any(b in n and ((c := _cmp(x, n[b], cv)) is None or c * s > 0) for b, s in (("min", -1), ("max", 1))):
-   return "violated"
- if ("eq" in n and not _eq(o, n["eq"], cv, tol)) or ("in" in n and not (isinstance(ki, list) and any(_eq(o, x, cv) for x in ki))) or ("not_in" in n and (not isinstance(n["not_in"], list) or any(_eq(o, x, cv) for x in n["not_in"]))):
-  return "violated"
- if (isinstance(n.get("len"), dict) and (not isinstance(o, (str, bytes, list, dict)) or len(o) < n["len"].get("min", 0) or len(o) > n["len"].get("max", len(o)))) or ("prefix" in n and not (isinstance(o, str) and o.startswith(n["prefix"]))) or ("suffix" in n and not (isinstance(o, str) and o.endswith(n["suffix"]))):
-  return "violated"
- if (isinstance(k, dict) and (not isinstance(o, dict) or ("allow" in k and m == "exact" and any(x not in k["allow"] and v is not _ABS for x, v in o.items())) or ("forbid" in k and _fk(o, k["forbid"])))) or (isinstance(pm, dict) and not _peer(pm, o, g)):
-  return "violated"
- return "inconclusive" if isinstance(k, dict) and m != "exact" else "passed"
-
-
-def _judge(c, cid, e, dec=None):
- out, pay, pres, fr = dec if dec is not None else _env(e)
- cm, cx = c["cases"][cid], c["obs"]
- ws, ps = fr.get("writes") or [], cm["writes"] if isinstance(cm.get("writes"), list) else cx["w"]
- if not isinstance(ws, list) or not all(isinstance(w, str) for w in ws):
-  return "inconclusive"
- if out != "returned" or any(not (w in ps or w.split("#")[0] in ps or "#" not in w and any(x.split("#")[0] == w for x in ps)) for w in ws):
-  return "violated"
- ptr = lambda k: cx["proj"].get(k, "/" + k.replace("~", "~0").replace("/", "~1"))
- def at(k):
-  v = pay
-  for s in ptr(k)[1:].split("/") if ptr(k) else ():
-   s = s.replace("~1", "/").replace("~0", "~")
-   v = v[s] if isinstance(v, dict) and s in v else (v[int(s)] if isinstance(v, list) and s.isdigit() and str(int(s)) == s and int(s) < len(v) else _ABS)
-  return v
- th = cm.get("then") or {}
- peers = {}
- if any(isinstance(n, dict) and "peer" in n for n in th.values()):
-  peers = {f"when.{k}": _ob(x["eq"]) for k, x in (cm.get("when") or {}).items() if list(x) == ["eq"]}
-  for k in {*th, *cx["proj"]}: peers[f"then.{k}"] = peers[k] = at(k)
- rs = {_cl(n, at(k), ptr(k), pres, cx["units"], cx["unit"].get(k, ""), lambda r: peers.get(r, _ABS)) for k, n in th.items()}
- return "violated" if "violated" in rs else ("inconclusive" if "inconclusive" in rs else "passed")
-
-
-def red03(c, ev):
- try:
-  dec_m = ev.get("_obs_dec") or {}
-  ev["red"] = {k for k, e in (ev.get("observations") or {}).items() if ev["outcome"] == "passed" and ("obs" not in c or _judge(c, k, e, dec_m.get(k)) != "passed")}
- except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
-  ev["red"] = set(ev["cases"])
- return ev

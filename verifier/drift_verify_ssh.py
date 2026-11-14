@@ -213,7 +213,7 @@ def apply_openssh_trust_verdicts(verdicts: list[dict], args, cfg_state: str = ""
 
 
 PARITY_KEYS = frozenset(("schema", "contract", "digest", "requirement_ref", "legacy_target", "candidate_target", "legacy_subject_ref", "candidate_subject_ref", "normalization_ref", "corpus_ref", "legacy_cases", "candidate_cases", "diverged_observations", "effect_violations", "frame_verified", "rollback_readback", "outcome"))
-ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2r):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
+ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2a|dr2r|dr2x):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
 
 
 def verify_contract_03_toml(raw: dict[str, Any], path: Path, profiles_dir: Path, canon_fn: Callable[[Any], str], ref_fn: Callable[[str], str], proof_rank_fn: Callable[[str], int], resolve_roots_fn: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:

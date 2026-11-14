@@ -5,8 +5,10 @@ campaign), or when execution is authorized. These rules move the first full
 feedback forward; they add no owner stop.
 
 - Feature, proof infrastructure and experiment are separate slices. Draft the
-  feature contract alone; plan the experiment as a later slice that starts
-  after the feature gate is green.
+  feature contract alone (declaring deterministic `[assurance]` resource or
+  symbol-exclusion bounds with the slice when cost or fast-path behavior
+  matters); plan exploratory campaigns as a later slice that starts after the
+  feature gate is green.
 - Bind tests before implementing and run them once: the expected reasons are
   failing tests, not missing events.
 - From the first integrated commit, start the area's full check (its CI

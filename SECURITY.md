@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest released `0.6.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
+Security fixes are provided for the latest released `0.7.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
 
 | Version | Supported |
 |---|---|
-| `0.6.x` | Yes |
-| `< 0.6.0` | No (upgrade to `0.6.x`) |
+| `0.7.x` | Yes |
+| `< 0.7.0` | No (upgrade to `0.7.x`) |
 
 ## Reporting a Vulnerability
 
@@ -30,6 +30,6 @@ Instead, report suspected vulnerabilities privately using one of the following c
 DRIFT is designed around fail-closed verification and zero-trust execution boundaries:
 
 - **Deterministic Offline Kernel**: Contract validation (`drift check`), formatting (`drift fmt`), diffing (`drift diff`), review (`drift review`), proof evaluation (`drift prove`), and gating (`drift gate`) execute offline without network access, ambient clock reads, or randomness.
-- **Independent Open Verifier (`verifier/drift_verify.py`)**: Every release ships a zero-dependency Python 3 reference verifier under the MIT License so teams and auditors can independently verify `dr1:sha256` (`0.2`) and `dr2b:`/`dr2a:`/`dr2r:` (`0.3`) contract digests, `.jsonl` proof events, `.observation.jsonl` lossless records, `.session.json` supervisor sessions, `.meta.json` test inventories, `.security.json` receipts, `drift.grant-lock/1` clean-room grant locks, and OpenSSH trust-root signatures (`--trust-root`) without trusting the precompiled CLI binary.
+- **Independent Open Verifier (`verifier/drift_verify.py`)**: Every release ships a zero-dependency Python 3 reference verifier under the MIT License so teams and auditors can independently verify `dr2b:`/`dr2a:`/`dr2r:`/`dr2x:` (`0.3`) contract digests (and `dr1:` area config digests), `.jsonl` proof events, `.observation.jsonl` lossless records, `.session.json` supervisor sessions, `.meta.json` test inventories (`forbid_touched`), `--measurements` budgets (`alloc_bytes_total` / `alloc_count_total`), `.security.json` receipts, `drift.grant-lock/1` clean-room grant locks, `drift.pact-lock/1` bilateral pact locks, and OpenSSH trust-root signatures (`--trust-root`) without trusting the precompiled CLI binary.
 - **Package Integrity (`SHA256SUMS`)**: Release archives and installers verify SHA-256 digests before installing or updating binaries, skills, hooks, or Maven artifacts.
 - **Bounded Opt-In Release Check**: The optional session-start release check (`hooks/release/`) is disabled unless explicitly enabled, reads no credentials, uploads no workspace data, enforces a strict 64 KB response cap and 3-second total timeout, and validates tags against a pinned `release-policy.json`.

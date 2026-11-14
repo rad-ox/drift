@@ -28,7 +28,7 @@ the four impacts with the approval request.
 1. Create `.drift/config.toml` (for an exported clean-room grant package, run `drift init <owner> <repo> --grant <grant-dir>` instead to copy `.drift/profiles`, `.drift/contracts`, and `.drift/grant.lock.json` with `[policy].grant_lock` pre-pinned; or initialize an external shadow area outside a read-only/shared repository with `drift init <owner> <repo> --state-dir <state-dir>` and `DRIFT_STATE_DIR=<state-dir>`, which writes `<state-dir>/.drift/config.toml` and `<state-dir>/shadow.toml` without touching the repository worktree or `.git`); it needs one table besides `[approval]`:
 
    ```toml
-   drift = "0.2"
+   drift = "0.3"
    kind = "config"
 
    [area]

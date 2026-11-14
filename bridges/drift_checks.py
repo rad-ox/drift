@@ -324,9 +324,10 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
         *(item for item in then_table.items() if item[0] not in state_first and item[0] not in unverif_last),
         *(item for item in then_table.items() if item[0] in unverif_last),
     ]
-    for key, exp in ordered_items:
+    for key, raw_exp in ordered_items:
+        exp = _uis.unwrap_03_eq(raw_exp)
         if isinstance(checks, Mapping) and callable(checks.get(key)):
-            invoke_verified_callback(checks[key], contract_id, case_id, key, _uis.unwrap_03_eq(exp))
+            invoke_verified_callback(checks[key], contract_id, case_id, key, exp)
             seen.add(key)
             continue
         if isinstance(v.get('adapter'), Mapping) and proj is None:

@@ -35,7 +35,7 @@ and bridges for 64-bit Windows from GitHub Releases. Additional options
     exit 0
 }
 
-$defaultVersion = '0.6.0'
+$defaultVersion = '0.7.0'
 $repo = if ($env:DRIFT_GITHUB_REPO) { $env:DRIFT_GITHUB_REPO } else { 'rad-ox/drift' }
 $localData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [IO.Path]::Combine([string]$HOME, 'AppData', 'Local') }
 $targetPrefix = if ($Prefix) { [IO.Path]::GetFullPath($Prefix) } else { [IO.Path]::Combine($localData, 'Programs', 'drift') }

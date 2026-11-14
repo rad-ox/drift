@@ -124,6 +124,15 @@
           "pack": {
             "const": "core@1"
           },
+          "pact_locks": {
+            "items": {
+              "pattern": "^dr2p:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
           "performance_reuse": {
             "enum": [
               "off",

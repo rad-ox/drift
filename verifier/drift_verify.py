@@ -8,19 +8,16 @@ from drift_verify_sim import evaluate_contract_simulation_impl,load_simulation_r
 from drift_verify_ssh import _has_approval_blocker,_is_unanchored_prose_source,apply_openssh_trust_verdicts,evaluate_contract_parity_impl,extract_contract_cutover,load_merged_profile_impl,load_parity_receipts_impl,verify_contract_03_toml
 from drift_verify_03 import obs03,red03
 from drift_verify_ra import evaluate_contract_ra_bundle,evaluate_detached_signatures_core,extract_contract_risks_and_controls,load_ra_receipts_core,run_ra_self_test
-from drift_verify_grant import evaluate_grant_verdicts_py,strip_outside_digest_impl,verify_config_toml_impl
+from drift_verify_grant import evaluate_grant_verdicts_py,strip_outside_digest_impl,validate_inventory_text_impl,verify_config_toml_impl
+from drift_verify_pact import evaluate_pact_verdicts_py
 SAFE_INT = (1 << 53) - 1
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 WORD_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 DIGEST_RE = re.compile(r"^(?:dr1:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})|dr2b:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
-PACK_REF_RE = re.compile(r"^dr1:[0-9a-f]{12}$")
 SNAPSHOT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-CLASS_TOKEN_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
-METHOD_TOKEN_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
+ENV_KEYS = frozenset(("toolchain","deps","config","runner","drift","adapter","policy"))
 OUTCOMES = {"passed","failed","skipped","disabled","interrupted","timeout"}
 EVENT_KEYS = {"test","contract","cases","level","outcome","read","digest","schema","capabilities","observations"}
-META_KEYS = {"version","classes","tests","snapshot","pack_ref","touched","self_stubbed","inputs","env","execution_ref","subject_ref","shadow_run"}
-ENV_KEYS = frozenset(("toolchain","deps","config","runner","drift","adapter","policy"))
 jcs_string = json.encoder.encode_basestring
 def jcs_number(val):
  if isinstance(val,int) and not isinstance(val,bool):
@@ -46,7 +43,7 @@ def canonical_json(obj):
 def dr1_digest(obj): return "dr1:sha256:" + hashlib.sha256(canonical_json(obj).encode("utf-8")).hexdigest()
 def dr1_ref(d):
  if d.startswith("dr1:sha256:"): return "dr1:" + d[11:23]
- for p in ("dr2b:sha256:","dr2a:sha256:","dr2r:sha256:","dr2x:sha256:","dr2g:sha256:"):
+ for p in ("dr2b:sha256:","dr2a:sha256:","dr2r:sha256:","dr2x:sha256:","dr2g:sha256:","dr2o:sha256:","dr2p:sha256:"):
   if d.startswith(p): return p[:5] + d[len(p):len(p)+12]
  return ""
 def digest_matches(ed, fd): return bool(fd) and (ed == fd or ed == dr1_ref(fd))
@@ -74,20 +71,7 @@ def validate_event_line(line):
  cs,rd,dig,sch,caps = doc["cases"],doc.get("read",[]),doc.get("digest",""),doc.get("schema",""),doc.get("capabilities",[])
  if not isinstance(doc["test"],str) or not doc["test"].strip() or not isinstance(doc["contract"],str) or not ID_RE.match(doc["contract"]) or not isinstance(cs,list) or not cs or len(set(cs)) != len(cs) or not all(isinstance(c,str) and ID_RE.match(c) for c in cs) or not isinstance(doc["level"],str) or not WORD_RE.match(doc["level"]) or doc["outcome"] not in OUTCOMES or not isinstance(rd,list) or len(set(rd)) != len(rd) or not all(isinstance(r,str) and r in cs for r in rd) or (dig != "" and (not isinstance(dig,str) or not DIGEST_RE.match(dig))) or (sch != "" and sch not in ("0.2","0.3")) or not isinstance(caps,list) or not all(isinstance(cp,str) and cp.strip() for cp in caps):raise ValueError("event")
  return {"test":doc["test"],"contract":doc["contract"],"cases":cs,"level":doc["level"],"outcome":doc["outcome"],"read":rd,"digest":dig,"schema":sch,"capabilities":caps,**obs03(doc,cs,sch)}
-def validate_inventory_text(text):
- doc = _decode_no_dup_keys(text)
- if not isinstance(doc,dict) or any(k not in META_KEYS for k in doc) or doc.get("version") not in (1,2) or isinstance(doc.get("version"),bool):raise ValueError("inv")
- ex_ref,s_ref = doc.get("execution_ref",""),doc.get("subject_ref","")
- if (doc["version"] == 2 and not re.fullmatch(r"sha256:[0-9a-f]{64}",str(ex_ref))) or (doc["version"] == 1 and "execution_ref" in doc) or ("subject_ref" in doc and not re.fullmatch(r"sha256:[0-9a-f]{64}",str(s_ref))):raise ValueError("ref")
- cls,tsts = doc.get("classes"),doc.get("tests")
- if not isinstance(cls,list) or not all(isinstance(x,str) and CLASS_TOKEN_RE.match(x) for x in cls) or cls != sorted(set(cls)):raise ValueError("cls")
- c_set = set(cls)
- if not isinstance(tsts,list) or not all(isinstance(x,str) and "#" in x for x in tsts) or tsts != sorted(set(tsts)) or any((p := t.split("#",1))[0] not in c_set or not METHOD_TOKEN_RE.match(p[1]) for t in tsts):raise ValueError("tst")
- t_set,snap,pref = set(tsts),doc.get("snapshot",""),doc.get("pack_ref","")
- if ("snapshot" in doc and (not isinstance(snap,str) or not SNAPSHOT_RE.match(snap))) or ("pack_ref" in doc and (not isinstance(pref,str) or not PACK_REF_RE.match(pref))) or ("touched" in doc and (not isinstance(tc := doc["touched"],list) or not all(isinstance(x,str) and x.strip() for x in tc) or tc != sorted(set(tc)) or any(tp.startswith("/") or "\\" in tp or any(s in ("",".","..") for s in tp.split("/")) for tp in tc))) or ("self_stubbed" in doc and (not isinstance(doc["self_stubbed"],list) or any(not isinstance(x,str) or x not in t_set for x in doc["self_stubbed"]))) or ("inputs" in doc and (not isinstance(ri := doc["inputs"],dict) or any(tid not in t_set or not isinstance(fm,dict) or any(not isinstance(fp,str) or not fp.strip() or not isinstance(ov,str) or not ov.strip() for fp,ov in fm.items()) for tid,fm in ri.items()))) or ("env" in doc and (not isinstance(re_e := doc["env"],dict) or set(re_e) != ENV_KEYS or any(not isinstance(ev,str) or not ev.strip() for ev in re_e.values()))):raise ValueError("inv")
- if "shadow_run" in doc:
-  from drift_shadow_junit import validate_shadow_run_dict; validate_shadow_run_dict(doc["shadow_run"])
- return {"classes":c_set,"tests":t_set,"snapshot":snap,"pack_ref":pref,"version":doc["version"],"execution_ref":ex_ref,"subject_ref":s_ref,"touched":set(doc.get("touched",[])),"shadow_run":doc.get("shadow_run")}
+def validate_inventory_text(text): return validate_inventory_text_impl(text, _decode_no_dup_keys)
 def validate_inventory_sidecar(path): return validate_inventory_text(path.read_text("utf-8"))
 def resolve_shadow_roots(path, state_dir=""):
  from drift_shadow_junit import resolve_shadow_roots_impl; return resolve_shadow_roots_impl(path,state_dir)
@@ -96,61 +80,10 @@ def _load_merged_profile(prof_ref, profiles_dir): return load_merged_profile_imp
 def _strip_outside_digest(cases, decs): strip_outside_digest_impl(cases, decs, _is_unanchored_prose_source)
 def verify_contract_toml(path, profiles_dir):
  raw = tomllib.loads(path.read_text("utf-8"))
- if raw.get("drift") == "0.3":return verify_contract_03_toml(raw,path,profiles_dir,canonical_json,dr1_ref,_proof_rank,resolve_shadow_roots)
- cid,appr,_ = raw.get("id",path.stem),raw.pop("approval",None),raw.pop("note",None)
- raw_sc = raw.get("scope") if isinstance(raw.get("scope"),dict) else {}
- sc_code,sc_reads,sc_writes = ([str(x) for x in raw_sc.get(k,[]) if isinstance(x,str)] if isinstance(raw_sc.get(k),list) else [] for k in ("code","reads","writes"))
- if isinstance(raw.get("scope"),dict):raw["scope"] = {k:v for k,v in raw["scope"].items() if k not in ("code","max_lines","forbid_imports")}
- cases,use_tbl = raw.get("cases",{}),raw.get("use")
- if isinstance(use_tbl,dict):use_tbl.pop("concepts",None)
- _strip_outside_digest(cases,raw.get("decisions"))
- for qm in (raw.get("open") or {}).values() if isinstance(raw.get("open"),dict) else ():
-  if isinstance(qm,dict):qm.pop("owner",None)
- prof_ref = use_tbl.get("profile","") if isinstance(use_tbl,dict) else ""
- prof = _load_merged_profile(prof_ref,profiles_dir)
- prof.pop("concepts",None)
- waived = use_tbl.get("waive",{}) if isinstance(use_tbl,dict) and isinstance(use_tbl.get("waive"),dict) else {}
- _strip_outside_digest(prof.get("cases",{}),prof.get("decisions"))
- sw_set,sw_base = set(sc_writes),{w.split("#",1)[0] for w in sc_writes}
- inh = {k:{**cm,**({"writes":[w for w in cm["writes"] if isinstance(w,str) and (w in sw_set or w.split("#",1)[0] in sw_set or ("#" not in w and w in sw_base))]} if isinstance(cm.get("writes"),list) else {})} for k,cm in (prof.get("cases") or {}).items() if k not in waived and isinstance(cm,dict)}
- eff = {**inh,**cases}
- own_inv,prof_inv = (set((d.get("invariants") or {}).keys()) if isinstance(d.get("invariants"),dict) else set() for d in (raw,prof))
- inv_k = sorted(own_inv | prof_inv)
- keys_of = lambda m,s:{k for cm in m.values() if isinstance(cm,dict) for k in cm.get(s,{})}
- own_w,own_t,used_w,used_t = keys_of(cases,"when"),keys_of(cases,"then") | own_inv,keys_of(eff,"when"),keys_of(eff,"then") | own_inv | prof_inv
- if isinstance(use_tbl,dict) and isinstance(uv := use_tbl.get("vocabulary"),dict):
-  nw,nt = [w for w in uv.get("when",[]) if w in own_w],[t for t in uv.get("then",[]) if t in own_t]
-  if nvoc := {**({"when":nw} if nw else {}),**({"then":nt} if nt else {})}:use_tbl["vocabulary"] = nvoc
-  else:use_tbl.pop("vocabulary",None)
- req_d = prof.get("requires") if isinstance(prof.get("requires"),dict) else {}
- p_proof,p_sec,p_sim = str(req_d.get("proof","")),([str(x) for x in req_d["security"]] if isinstance(req_d.get("security"),list) else []),req_d.get("simulation") == "required"
- if req_d:
-  if rt := {k:v for k,v in req_d.items() if k not in ("max_lines","forbid_imports")}:prof["requires"] = rt
-  else:prof.pop("requires",None)
- if "vocabulary" in prof:
-  prof["vocabulary"] = {"when":[w for w in prof["vocabulary"].get("when",[]) if w in used_w],"then":[t for t in prof["vocabulary"].get("then",[]) if t in used_t]}
- if isinstance(rp := prof.get("projections"),dict):
-  pw,pt = ({k:v for k,v in (rp.get(s) or {}).items() if k in u} if isinstance(rp.get(s),dict) else {} for s,u in (("when",used_w),("then",used_t)))
-  for k,v in rp.items():
-   if k not in ("when","then") and not isinstance(v,dict):
-    if k in used_t and k not in pt:pt[k] = v
-    elif k in used_w and k not in pw:pw[k] = v
-  if np := {**({"when":pw} if pw else {}),**({"then":pt} if pt else {})}:prof["projections"] = np
-  else:prof.pop("projections",None)
- budgets,has_b = extract_contract_budgets(raw,use_tbl,dr1_digest)
- formal,has_f = extract_contract_formal(raw,use_tbl,dr1_digest)
- cutover,has_c = extract_contract_cutover(raw,use_tbl,dr1_digest)
- risks,controls = extract_contract_risks_and_controls(raw,prof,use_tbl,dr1_digest)
- d_in = {"contract":raw,"profiles":({prof_ref:prof} if prof_ref else {})}
- if protos := [*(['formal-evidence/1'] if has_f else []),*(['parity-evidence/1'] if has_c else []),*(['performance-evidence/1'] if has_b else [])]:d_in["evidence_protocols"] = protos
- dig,has_ref = dr1_digest(d_in),isinstance(appr,dict) and bool(appr.get("ref"))
- st = "blocked" if _has_approval_blocker(raw,prof) else ("current" if has_ref and appr["ref"] == dr1_ref(dig) else ("stale" if has_ref else "absent"))
- open_m = raw.get("open") if isinstance(raw.get("open"),dict) else {}
- own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d,dict)] if isinstance(raw.get("decisions"),dict) else []
- decs = [d for s in (raw.get("decisions"),prof.get("decisions")) if isinstance(s,dict) for d in s.values() if isinstance(d,dict)]
- blk = lambda ph:any(isinstance(q,dict) and q.get("blocks") == ph for q in open_m.values()) or any(d.get("pick","") == "" and d.get("decide_by") == ph for d in decs)
- roots = resolve_shadow_roots(path)
- return {"drift":str(raw.get("drift","0.2")),"id":cid,"digest":dig,"ref":dr1_ref(dig),"approval":st,"approver":str(appr.get("by","")) if has_ref else "","profile_proof":p_proof,"profile_security":p_sec,"profile_simulation":p_sim,"scope_code":sc_code,"scope_reads":sc_reads,"scope_writes":sc_writes,"invariants":inv_k,"cases":eff,"budgets":budgets,"formal":formal,"cutover":cutover,"risks":risks,"controls":controls,"required_capabilities":list(raw.get("required_capabilities",[])),"area_root":roots["source_root"],"shadow_area_root":roots["area_root"],"open_cnt":len(open_m) + sum(1 for d in own_d if d.get("pick","") == ""),"exec_blk":blk("execution"),"rel_blk":blk("release") or any(isinstance(c,dict) and c.get("status") == "deferred" for c in eff.values())}
+ if raw.get("drift") != "0.3":
+  roots = resolve_shadow_roots(path)
+  return {"drift":str(raw.get("drift","")),"id":str(raw.get("id",path.stem)),"digest":"","ref":"","approval":"invalid","approver":"","profile_proof":"","profile_security":[],"profile_simulation":False,"scope_code":[],"scope_reads":[],"scope_writes":[],"invariants":[],"cases":{},"budgets":{},"formal":{},"cutover":{},"risks":{},"controls":{},"required_capabilities":[],"area_root":roots["source_root"],"shadow_area_root":roots["area_root"],"open_cnt":0,"exec_blk":False,"rel_blk":False}
+ return verify_contract_03_toml(raw,path,profiles_dir,canonical_json,dr1_ref,_proof_rank,resolve_shadow_roots)
 def load_proof_events(events_paths, area_root=None, target_run_id=""):
  from drift_shadow_junit import order_shadow_shards_py,shadow_inputs_fresh
  shards = [f for p in events_paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".jsonl") else []))]
@@ -254,7 +187,7 @@ def main(argv):
  ap = argparse.ArgumentParser(prog="drift_verify.py")
  ap.add_argument("targets",nargs="*",type=Path)
  for fl in ("--state-dir","--config","--profiles","--mutants","--measurements","--subject","--security-lock","--base","--attest","--attest-sig","--trust-root","--signatures","--signature-policy","--grant-lock"):ap.add_argument(fl,type=Path)
- for fl in ("--events","--mutation-events"):ap.add_argument(fl,type=Path,action="append")
+ for fl in ("--events","--mutation-events","--pact-lock"):ap.add_argument(fl,type=Path,action="append")
  ap.add_argument("--changed",action="append",default=[])
  for fl in ("--changed-none","--json"):ap.add_argument(fl,action="store_true")
  for fl in ("--subject-artifact","--subject-tree","--run-id","--verify-time","--phase"):ap.add_argument(fl,default="")
@@ -285,7 +218,8 @@ def main(argv):
  raw_v = [evaluate_contract(c,cfg_st,by_c.get(c["id"],[]),gone.get(c["id"],0),inc,ev_errs,pol,a.min_proof,a.phase,tot_open,evaluate_contract_mutations(c,m_man,lat_m,m_errs),perf_b,exp_sub,sec_recs,exp_snap,form_recs,ssub,man_srcs,par_recs,mig_recs,reuse_ok,base_by_id.get(c["id"]),bool(a.attest),sim_recs,ra_recs,comp_mans) for c in parsed]
  single_f = len(tgts) == 1 and tgts[0].is_file()
  raw_v,has_gsig = evaluate_grant_verdicts_py(raw_v,parsed,a,cfg_p,pol,roots["source_root"],_decode_no_dup_keys,canonical_json,digest_matches,_proof_rank,single_f)
- verdicts = raw_v if ((a.signatures or a.signature_policy or has_gsig) and not a.attest and not a.attest_sig) else apply_openssh_trust_verdicts(raw_v,a,cfg_st,cfg_dig,sh_h,sn_l,sn_ok,inc,m_man,perf_b,_decode_no_dup_keys,exp_sub)
+ raw_v,has_psig = evaluate_pact_verdicts_py(raw_v,parsed,c_files,p_dir,a,cfg_p,pol,roots["source_root"],_decode_no_dup_keys,canonical_json,jcs_string,jcs_number,digest_matches,_proof_rank,verify_contract_toml)
+ verdicts = raw_v if ((a.signatures or a.signature_policy or has_gsig or has_psig) and not a.attest and not a.attest_sig) else apply_openssh_trust_verdicts(raw_v,a,cfg_st,cfg_dig,sh_h,sn_l,sn_ok,inc,m_man,perf_b,_decode_no_dup_keys,exp_sub)
  verdicts = evaluate_detached_signatures_core(verdicts,parsed,a,cfg_dig,_decode_no_dup_keys,canonical_json,digest_matches)
  ok = bool(verdicts) and all(v["ok"] for v in verdicts)
  if a.json:print(json.dumps({"ok":ok,"contracts":verdicts},indent=2,sort_keys=True))

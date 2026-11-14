@@ -85,7 +85,7 @@ final class ExecutionContext {
     }
 
     private static boolean validPackRef(String value) {
-        return value.matches("dr1:[0-9a-f]{12}");
+        return value.matches("dr(?:1|2b):[0-9a-f]{12}");
     }
 
     private static boolean safePath(String path) {

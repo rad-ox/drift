@@ -584,12 +584,22 @@ pub fn synthesize_leaf_witness(
     built_root: &BTreeMap<String, JsonValue>,
     proj_then: &BTreeMap<String, String>,
 ) -> JsonValue {
-    if !is_relational_table(expected) {
-        return expected.clone();
+    if let Some(m) = expected.as_object() {
+        if m.len() == 1 {
+            if let Some(eq_v) = m.get("eq") {
+                return eq_v.clone();
+            }
+        }
     }
-    let Some(rel) = expected.as_object() else {
+    let Some(raw_rel) = expected.as_object() else {
         return expected.clone();
     };
+    let desugared = desugar_03_rel(raw_rel);
+    let desugared_val = JsonValue::Object(desugared.clone());
+    if !is_relational_table(&desugared_val) {
+        return expected.clone();
+    }
+    let rel = &desugared;
     let doc = JsonValue::Object(built_root.clone());
     if let Some(sf_v) = rel.get("sum_fields") {
         if let Some(arr) = sf_v.as_array() {

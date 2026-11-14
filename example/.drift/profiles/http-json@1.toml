@@ -1,10 +1,14 @@
-drift = "0.2"
+drift = "0.3"
 profile = "http-json@1"
 kit = "drift-junit"
 
-[vocabulary]
-when = ["request"]
-then = ["status", "name", "error"]
-
 [requires]
 writes = []
+
+[schema.when]
+request = { type = "string" }
+
+[schema.then]
+status = { type = "int" }
+name = { type = "string" }
+error = { type = "string" }

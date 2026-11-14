@@ -51,7 +51,7 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- const base = { adapter: 'drift.mjs@0.6.0', config: 'default', deps: 'none', drift: '0.6.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${process.versions.node}` };
+ const base = { adapter: 'drift.mjs@0.7.0', config: 'default', deps: 'none', drift: '0.7.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${process.versions.node}` };
  if (raw) {
   const parsed = parseJson(raw);
   if (!isObj(parsed)) err('DRIFT_ENV must be a JSON object');

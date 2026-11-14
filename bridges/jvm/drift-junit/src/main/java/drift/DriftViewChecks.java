@@ -312,7 +312,7 @@ final class DriftViewChecks {
             Map<String, String> thenProj = null;
             for (Map.Entry<String, Object> e : then.entrySet()) {
                 String key = e.getKey();
-                Object expected = e.getValue();
+                Object expected = (!Drift.isExplicitSchema02(contract) && e.getValue() instanceof Map<?, ?> m03 && m03.size() == 1 && m03.containsKey("eq")) ? m03.get("eq") : e.getValue();
                 Drift.mark(contract, id, key);
                 BiConsumer<Object, Map<String, Object>> custom = checks == null ? null : checks.get(key);
                 if (custom != null) {

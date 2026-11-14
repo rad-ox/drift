@@ -185,9 +185,9 @@ def run_sec_self_test_core(ck: dict[str, Any], digest_matches_fn: Any, eval_sec_
   assert c1 == c2 and "security.violated" in c1[0] and all(x.get("reason") == "security.conflicting_receipts" for x in c1[1])
   with tempfile.TemporaryDirectory() as td:
     tp = Path(td)
-    (tp / "p@1.toml").write_text('drift = "0.2"\nprofile = "p@1"\n[vocabulary]\nwhen = ["op"]\nthen = ["status", "inv_p"]\n[projections.then]\nstatus = "/status"\ninv_p = "/ip"\n[concepts."orders.c"]\nmeans = "Cancel order."\n', "utf-8")
+    (tp / "p@1.toml").write_text('drift = "0.3"\nprofile = "p@1"\n[schema.when]\nop = { type = "string" }\n[schema.then]\nstatus = { type = "int", ptr = "/status" }\ninv_p = { type = "int", ptr = "/ip" }\n[concepts."orders.c"]\nmeans = "Cancel order."\n', "utf-8")
     for fn_n, u_c in (("c1.toml", 'concepts = ["orders.c"]\n'), ("c2.toml", "")):
-      (tp / fn_n).write_text(f'drift = "0.2"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
+      (tp / fn_n).write_text(f'drift = "0.3"\nid = "c"\nintent = "C."\n[use]\nprofile = "p@1"\n{u_c}[scope]\nwrites = []\nreads = []\nindirect = "none"\n[invariants]\ninv_p = 1\n[cases.ok]\nwhen.op = "x"\nthen.status = 200\n', "utf-8")
     assert _dv.verify_contract_toml(tp / "c1.toml", tp)["digest"] == _dv.verify_contract_toml(tp / "c2.toml", tp)["digest"]
   from drift_verify_ssh import run_03_self_test; run_03_self_test(_dv)
 def parse_security_lock_core(text: str, decode_fn: Any, canon_fn: Any, sec_str_fn: Any, sec_cats: Any) -> dict[str, Any]:
@@ -238,7 +238,7 @@ def resolve_verifier_subject_cli(args: Any, decode_fn: Any, canon_fn: Any, parse
     bin_ref = args.subject_artifact if args.subject_artifact.startswith("sha256:") else ("sha256:" + hashlib.sha256(Path(args.subject_artifact).read_bytes()).hexdigest())
   if args.subject:
     st = args.subject.read_text("utf-8", errors="ignore")
-    if '"drift.subject-manifest/1"' in st:
+    if st.lstrip().startswith("{") and '"drift.subject-manifest/1"' in st:
       sm = parse_sub_fn(st, decode_fn, canon_fn)
       has_man, sub_ref, man_srcs, man_art = True, sm["subject_ref"], sm["sources"], sm.get("artifact_ref", "")
       if man_art and bin_ref and man_art != bin_ref: art_mismatch = True

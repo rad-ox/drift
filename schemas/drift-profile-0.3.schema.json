@@ -988,6 +988,12 @@
     "requires": {
       "additionalProperties": false,
       "properties": {
+        "budgets": {
+          "enum": [
+            "required",
+            "optional"
+          ]
+        },
         "env": {
           "type": "string"
         },
@@ -998,6 +1004,15 @@
             "forbid_imports": {
               "items": {
                 "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "forbid_touched": {
+              "items": {
+                "minLength": 3,
                 "type": "string"
               },
               "minItems": 1,
@@ -1076,7 +1091,17 @@
           "uniqueItems": true
         },
         "simulation": {
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "enum": [
+                "required",
+                "optional"
+              ]
+            }
+          ]
         },
         "surface": {
           "anyOf": [

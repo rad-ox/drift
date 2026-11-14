@@ -14,7 +14,7 @@ private static IllegalStateException err(String m) { return new IllegalStateExce
 public static Map<String, Object> bridgeCapabilities() {
  List<String> c = new ArrayList<String>(CAPABILITIES); Collections.sort(c);
  Map<String, Object> o = new LinkedHashMap<String, Object>();
- o.put("bridge", "drift-junit4-legacy"); o.put("capabilities", c); o.put("runtime_baseline", "java-8-legacy"); o.put("schema", "drift.bridge-capabilities/1"); o.put("version", "0.6.0"); return o;
+ o.put("bridge", "drift-junit4-legacy"); o.put("capabilities", c); o.put("runtime_baseline", "java-8-legacy"); o.put("schema", "drift.bridge-capabilities/1"); o.put("version", "0.7.0"); return o;
 }
 public static void requireCapabilities(Collection<String> r) {
  if (r == null) throw err("bridge.capability_unsupported:null");

@@ -356,7 +356,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.6.0',
+    version: '0.7.0',
   };
 }
 

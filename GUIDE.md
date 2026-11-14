@@ -18,7 +18,7 @@ a newer contract.
 
 Install DRIFT first with **[INSTALL.md](INSTALL.md)** ([Italiano](INSTALL.it.md)).
 
-Examples use contract/profile schema **`0.3`**, not a CLI release number. Existing `0.2` contracts remain supported. To migrate, run `drift fmt .drift --upgrade 0.3` on the whole area: it upgrades profiles and contracts together, removes their old approvals, and leaves configuration unchanged. Review and re-approve the upgraded contracts as the owner, then regenerate proofs; do not just change the `drift` string.
+All contracts, profiles, and configurations declare schema **`0.3`** (`drift = "0.3"`), which is the schema version rather than a CLI release number.
 
 ---
 
@@ -216,15 +216,15 @@ enforce = "release"
 ```
 
 - **Relational `then` tables (`0.3`)**: constrain numeric intervals (`min`, `max`), tolerances (`eq` with `tol.abs` / `tol.rel`), trajectories (`series`), lengths (`len.min`, `len.max`), finite sets (`in`, `not_in`), string affixes (`prefix`, `suffix`, `contains`), recursive payload keys (`keys.allow`, `keys.forbid`), cross-field comparisons (`peer.le`, `peer.ge`, `peer.eq`), affine sums (`peer.sum`), and double-entry conservation (`peer.balance`). Literal maps use `eq = { ... }`; scalar and array literals remain shorthand for `eq`.
-- **`[invariants]`, `[assurance.guards]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`, `checkLogSink`, and unobserved collector frames `{ "observed": false }`). `[assurance.guards]` declares static guards with `target` globs covering `bind.code`. Behaviour and assurance use independent `dr2b` / `dr2a` seals; `dr2r` identifies evidence requirements and `dr2x` execution contexts.
+- **`[invariants]`, `[assurance.guards]` & case `writes` frames**: `[invariants]` apply across all cases; `cases.<id>.writes` restricts which `scope.writes` resources a specific case may mutate (verified at runtime with `checkFrame` / `checks.frame`, `checkLogSink`, and unobserved collector frames `{ "observed": false }`). `[assurance.guards]` declares static guards with `target` globs covering `bind.code` and dynamic `forbid_touched` symbol/path guards verified against `.meta.json` `touched` traces. Behaviour and assurance use independent `dr2b` / `dr2a` seals; `dr2r` identifies evidence requirements and `dr2x` execution contexts.
 
 Additional assurance obligations, domain concepts, and runtime verification protocols evaluate cleanly through `drift prove`, `drift gate`, and `verifier/drift_verify.py`:
 
 | Capability | Contract / Config Keys | Runtime Receipts, Adapters & CLI Flags |
 |---|---|---|
-| **Performance & Security** | `[assurance.budgets.<id>]`, profile `[requires].security` | `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`); `*.security.json` (`--security-lock`) |
+| **Performance & Security** | `[assurance.budgets.<id>]`, profile `[requires].security` & `[requires].budgets` | `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`, `alloc_bytes_total`, `alloc_count_total`); `*.security.json` (`--security-lock`) |
 | **Regulated, Simulation & Formal** | `[assurance.risks]`, `[assurance.controls]`, `[assurance.formal.<id>]` | `*.study.json` & `*.evaluation.json` (plus detached `.sig.json`), `drift.sim-receipt/1` tick replay/rollback, and `*.formal.json` / `*.model.json` (`tlc`, `cbmc`, `alloy`, `spin`, Kani, `gappa` `arithmetic_model`, `stochastic_experiment`, QCEC `equivalence`, `observed_convergence`, `trajectory_stability`) |
-| **Domain Concepts & Cutover** | `.drift/config.toml` `[concepts]`, `[use].concepts`, `[cutover]` | `drift new --concept`, `@concept` recall, `drift case add --from-signal`, and cutover/DB migration receipts (`*.parity.json` `drift.parity-receipt/1`, `*.migration.json` `drift.migration-receipt/1`) |
+| **Domain Concepts & Cutover** | `.drift/config.toml` `[concepts]`, `[use].concepts`, `[cutover]` | `drift new --concept`, `@concept` recall, `drift case add --from-signal --deployment`, and cutover/DB migration receipts (`*.parity.json` `drift.parity-receipt/1`, `*.migration.json` `drift.migration-receipt/1`) |
 | **UI Surface Sequences** | Profile UI projections, `async-action-feedback@1`, `wizard-form@1` | `drift.ui-observation/1` (`collectPlaywrightSequence` / `observeUiSequence`, `evaluateScenarioMatrix`, and Web, Compose, or Windows UIA adapters) |
 | **Observations & Perimeter Seams** | `_frame` (`keys.allow` / `allowed_keys`), `.drift/seam-stub/` | Kernel-evaluated `drift.observation/1` (`ObsValue`: `int64`, `decimal`, `bytes`, COBOL copybook decode) & `drift.bridge-session/1`; `L0–L3` coupling (`sweep --flow`); `.meta.json` seam provenance (`oracle.unverified_seam`, `oracle.stale_seam_stub`), `checkSeamBounds` / `check_seam_bounds`, behavioral probes (idempotency, seam retry/query, rollback, BOLA), and `prove.seam_mutants` |
 | **Shadow Mode & Federation** | `<state-dir>/shadow.toml` | External `--state-dir` / `DRIFT_STATE_DIR` (read-only subject tree with `GIT_OPTIONAL_LOCKS=0`, `--unshadow`, `verifier/drift_shadow_junit.py`), `drift.composition-manifest/1`, and bidirectional `drift.boundary-bundle/1` (`offers`/`requires`) |
@@ -273,7 +273,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.6.0</version>
+    <version>0.7.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -283,7 +283,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.6.0</version>
+      <version>0.7.0</version>
       <executions>
         <execution>
           <goals>
@@ -322,7 +322,7 @@ In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` from 
 // build.sbt
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.6.0" % Test
+libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.7.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -466,7 +466,7 @@ While the primary bridges target the latest **LTS/stable** runtimes (`drift-juni
 
 ## Level 2: Incremental Selection, Blast Radius & Spec/Trace Scaffolding (`Pro`)
 
-As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `bind.code` (`scope.code` in `0.2`), `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, C++, C#, GDScript, PHP, COBOL, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
+As an area grows, running every test suite on every edit slows feedback. **DRIFT Pro** uses the `bind.code`, `scope.reads`, and `scope.writes` graph (across Java, Scala, JS/TS, Python, Rust, V, C++, C#, GDScript, PHP, COBOL, and Pug/Sass/CSS) to select only the tests and performance budgets affected by a change—and safely widens whenever ownership is uncertain:
 
 ```bash
 # List only the test files (or emit a structured drift.test-plan/1 plan) affected by modified source paths
@@ -494,6 +494,13 @@ drift export grant .drift/contracts --policy grant-policy.toml --dry-run
 drift export grant .drift/contracts --policy grant-policy.toml --out dist/orders-grant --ssh-sign ~/.ssh/grantor_ed25519
 drift init supplier-team ./supplier-repo --grant dist/orders-grant
 drift gate ./supplier-repo/.drift/contracts --events ./supplier-repo/events --grant-lock dist/orders-grant/.drift/grant.lock.json
+
+# Negotiate a balanced bilateral 0.3 integration pact between two peer repositories without exposing internal slices
+drift pact offer .drift/contracts --policy equalizer-policy.toml --pact-id orders-pact --counterparty checkout --role producer --area orders --out dist/orders.offer.json
+drift pact equalize --left dist/orders.offer.json --right dist/checkout.offer.json --policy equalizer-policy.toml --as md
+drift pact seal --left dist/orders.offer.json --right dist/checkout.offer.json --policy equalizer-policy.toml --out dist/orders-pact.lock.json
+drift init checkout-team ./checkout-repo --pact dist/orders-pact.lock.json
+drift gate ./checkout-repo/.drift/contracts --events ./checkout-repo/events --pact-lock dist/orders-pact.lock.json
 ```
 
 In Maven projects, `-Ddrift.changed=auto` captures a Git tree snapshot during `prepare` and reuses unchanged test shards automatically while keeping `gate` active.
@@ -504,10 +511,10 @@ In Maven projects, `-Ddrift.changed=auto` captures a Git tree snapshot during `p
 
 For critical services, add a `[policy]` section to `.drift/config.toml` and re-approve the configuration:
 
-The configuration keeps its independent `0.2` / `dr1` envelope even when contracts and profiles use `0.3`.
+The configuration declares `drift = "0.3"` and seals its canonical JSON with an independent `dr1` reference:
 
 ```toml
-drift = "0.2"
+drift = "0.3"
 kind = "config"
 
 [area]
@@ -525,8 +532,8 @@ With `pack = "core@1"`:
 3. Setting `proof = "killed"` requires every synthetic `then` (and `--when`) mutant generated by `drift mutants` to be killed by the bound tests, while `sweep --flow` audits cross-contract dataflow, FSM deadlocks, Saga compensations, duplicate delivery, AsyncAPI multi-epoch compatibility, and security/budget boundaries:
 
 ```bash
-# Audit area ownership, dataflow, FSM/Saga protocols, and AsyncAPI epoch compatibility
-drift sweep check .drift/contracts --root . --flow --asyncapi asyncapi.json --epoch-manifest epochs.json
+# Audit area ownership, dataflow, FSM/Saga protocols, AsyncAPI epochs, and multi-hop pact fleet conservation
+drift sweep check .drift/contracts --root . --flow --asyncapi asyncapi.json --epoch-manifest epochs.json --pacts dist/pacts
 
 # Generate contract mutants, execute in-process mutation tests, and emit an OpenSSH-signed attestation
 drift mutants .drift/contracts --out .drift-work/mutants.json
@@ -555,7 +562,6 @@ Add the following to `.vscode/settings.json` (with the **Even Better TOML** / Ta
   }
 }
 ```
-*(Use `drift-contract-0.2.schema.json`, `drift-profile-0.2.schema.json`, and `drift-config-0.2.schema.json` for `drift = "0.2"` areas.)*
 
 ---
 
@@ -568,7 +574,7 @@ Run `drift explain <CODE>` at any time for full details.
 | `DR-E004` | `COMMENT_UNSUPPORTED` | `#` comments are forbidden in DRIFT TOML files. Move prose into `intent`, `ask`, `note`, `why`, or `because`. |
 | `DR-E103` | `ID_MISMATCH` | The `id = "..."` field inside the file must match the filename stem (`<id>.toml`). |
 | `DR-E401` | `PROFILE_NOT_FOUND` | The profile named in `[use].profile` was not found in `.drift/profiles/`. |
-| `DR-E101` | `UNKNOWN_PREDICATE` | A case uses a predicate not declared in the profile's `[schema.when]` / `[schema.then]` (legacy `0.2`: `[vocabulary]` / `[use.vocabulary]`). |
+| `DR-E101` | `UNKNOWN_PREDICATE` | A case uses a predicate not declared in the profile's `[schema.when]` / `[schema.then]`. |
 | `DR-E601` | `APPROVAL_STALE` | The contract or config was edited after approval. Review with `drift review --brief` and run `drift approve --by <owner>`. |
 | `DR-E602` | `APPROVAL_BLOCKED` | The contract still has `indirect = "unknown"`, a `"todo"` value, or an unresolved `[open.<id>]` question blocking approval. |
 | `DR-E603` | `APPROVER_UNKNOWN` | The approver in `[approval].by` is not listed in `.drift/config.toml` `[policy].approvers`. |

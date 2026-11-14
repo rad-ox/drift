@@ -9,7 +9,7 @@ namespace Drift
 {
     public static class DriftBridge
     {
-        public const string VERSION = "drift.csharp@0.6.0";
+        public const string VERSION = "drift.csharp@0.7.0";
         public const string BRIDGE_RUNTIME_BASELINE = "dotnet-8.0";
 
         public static readonly IReadOnlyList<string> CAPABILITIES = new[]

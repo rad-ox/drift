@@ -54,7 +54,7 @@ body:
       description: Provide the exact command, minimal `.drift/contracts/*.toml` contract, `.jsonl` proof event, or test bridge snippet that reproduces the problem.
       placeholder: |
         ```toml
-        drift = "0.2"
+        drift = "0.3"
         id = "example-slice"
         ...
         ```

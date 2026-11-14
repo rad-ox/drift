@@ -427,9 +427,10 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
     ...Object.entries(thenTable).filter(([k]) => !STATE_FIRST.has(k) && !UNVERIF_LAST.has(k)),
     ...Object.entries(thenTable).filter(([k]) => UNVERIF_LAST.has(k)),
   ];
-  for (const [k, exp] of ordered) {
+  for (const [k, rawExp] of ordered) {
+    const exp = unwrap03Eq(rawExp);
     if (checks && typeof checks[k] === 'function') {
-      await invokeVerifiedCallback(checks[k], contractId, caseId, k, unwrap03Eq(exp), v);
+      await invokeVerifiedCallback(checks[k], contractId, caseId, k, exp, v);
       seen.add(k);
       continue;
     }

@@ -16,7 +16,7 @@
 
 namespace drift {
 
-inline constexpr const char* VERSION = "drift.cpp@0.6.0";
+inline constexpr const char* VERSION = "drift.cpp@0.7.0";
 inline constexpr const char* BRIDGE_RUNTIME_BASELINE = "cpp-20";
 
 inline const std::vector<std::string>& capabilities() {
@@ -33,7 +33,7 @@ inline const std::vector<std::string>& capabilities() {
 }
 
 inline std::string bridgeCapabilitiesJson() {
-    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.6.0","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
+    return R"({"schema":"drift.bridge-capabilities/1","bridge":"drift.cpp","version":"drift.cpp@0.7.0","runtime_baseline":"cpp-20","capabilities":["predicates","forbid_keys","not_in","tuning_invariants","case_frames","counterexample_replay","sim_receipt"]})";
 }
 
 inline void requireCapabilities(const std::vector<std::string>& required) {

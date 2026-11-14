@@ -4,7 +4,7 @@
 # installed standalone (e.g. via `npx skills add rad-ox/drift`).
 set -eu
 
-DEFAULT_VERSION="0.6.0"
+DEFAULT_VERSION="0.7.0"
 REPO="${DRIFT_GITHUB_REPO:-rad-ox/drift}"
 force=0
 custom_prefix=""

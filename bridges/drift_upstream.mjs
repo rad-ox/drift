@@ -9,16 +9,19 @@ import {
   writePointer,
 } from './drift_checks.mjs';
 import { tightenThenMapBySumResiduals } from './drift_cli.mjs';
+import { desugar03Rel } from './drift_ui_recovery.mjs';
 
 const isRelationalMap = (v) => isObj(v) && Object.keys(v).length > 0 && Object.keys(v).every((k) => REL_KEYS.has(k));
 const stripRes = (p) => splitResourcePointer(String(p || ''))[1];
 const relPeerRank = (v) => (!isRelationalMap(v) ? 0 : (Array.isArray(v.sum_fields) ? 2 + v.sum_fields.length : (('eq_field' in v || 'ge_field' in v || 'le_field' in v) ? 1 : 0)));
 
-function buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections) {
-  const thenMap = tightenThenMapBySumResiduals(whenMap, rawThenMap, whenProjections, thenProjections);
+const desugarMap = (m) => Object.fromEntries(Object.entries(m || {}).map(([k, v]) => [k, isObj(v) ? desugar03Rel(v) : v]));
+
+function buildPeerIndex(rawWhenMap, rawThenMap, whenProjections, thenProjections) {
+  const whenMap = desugarMap(rawWhenMap);
+  const thenMap = tightenThenMapBySumResiduals(whenMap, desugarMap(rawThenMap), whenProjections, thenProjections);
   const idx = new Map();
-  for (const [wk, rawWv] of Object.entries(whenMap || {})) {
-    const wv = isObj(rawWv) && Object.keys(rawWv).length === 1 && 'eq' in rawWv ? rawWv.eq : rawWv;
+  for (const [wk, wv] of Object.entries(whenMap)) {
     if (isRelationalMap(wv)) continue;
     idx.set(wk, wv);
     idx.set(`when.${wk}`, wv);
@@ -26,8 +29,7 @@ function buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections) {
     if (wp.startsWith('/')) idx.set(wp, wv);
   }
   const relEntries = [];
-  for (const [tk, rawTv] of Object.entries(thenMap || {})) {
-    const tv = isObj(rawTv) && Object.keys(rawTv).length === 1 && 'eq' in rawTv ? rawTv.eq : rawTv;
+  for (const [tk, tv] of Object.entries(thenMap || {})) {
     if (isRelationalMap(tv)) {
       relEntries.push([tk, tv]);
       continue;
@@ -64,23 +66,25 @@ function buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections) {
 function resolveStubPeer(ref, base, peerIdx, whenProjections, thenProjections) {
   if (!isStr(ref) || !ref.trim()) return { found: false, value: undefined };
   const s = ref.trim();
-  const bare = s.replace(/^\/+/u, '');
+  const qName = s.startsWith('then.') ? s.slice(5) : (s.startsWith('when.') ? s.slice(5) : s);
+  const pms = s.startsWith('then.') ? [thenProjections] : (s.startsWith('when.') ? [whenProjections] : [thenProjections, whenProjections]);
+  const bare = qName.replace(/^\/+/u, '');
   if (s.startsWith('/')) {
     const r = readPointer(base, s);
     if (r.found && !isRelationalMap(r.value)) return r;
   } else {
-    if (isObj(base) && s in base && !isRelationalMap(base[s])) return { found: true, value: base[s] };
-    for (const pm of [thenProjections, whenProjections]) {
-      if (s in pm) {
-        const r = readPointer(base, pm[s]);
+    if (isObj(base) && qName in base && !isRelationalMap(base[qName])) return { found: true, value: base[qName] };
+    for (const pm of pms) {
+      if (pm && qName in pm) {
+        const r = readPointer(base, stripRes(pm[qName]));
         if (r.found && !isRelationalMap(r.value)) return r;
       }
     }
     const r = readPointer(base, '/' + bare);
     if (r.found && !isRelationalMap(r.value)) return r;
   }
-  const tgt = stripRes(s.startsWith('/') ? s : (thenProjections?.[s] || whenProjections?.[s] || ('/' + bare)));
-  for (const cand of [s, bare, tgt]) {
+  const tgt = stripRes(s.startsWith('/') ? s : (thenProjections?.[qName] || whenProjections?.[qName] || ('/' + bare)));
+  for (const cand of [s, qName, bare, tgt]) {
     if (cand && peerIdx.has(cand)) return { found: true, value: peerIdx.get(cand) };
   }
   return { found: false, value: undefined };
@@ -137,7 +141,8 @@ function buildAffixString(val, len) {
   return `${pfx}${'x'.repeat(pad)}${sfx}`;
 }
 
-export function witnessValue(val, peerFn = null) {
+export function witnessValue(rawVal, peerFn = null) {
+  const val = isObj(rawVal) ? desugar03Rel(rawVal) : rawVal;
   if (isRelationalMap(val)) {
     const b = resolveRelPeerBounds(val, peerFn);
     if (b.eqFound) return cloneJson(b.eqVal);
@@ -178,7 +183,8 @@ export function witnessValue(val, peerFn = null) {
   return cloneJson(val);
 }
 
-export function witnessVariants(val, peerFn = null) {
+export function witnessVariants(rawVal, peerFn = null) {
+  const val = isObj(rawVal) ? desugar03Rel(rawVal) : rawVal;
   if (isRelationalMap(val)) {
     const b = resolveRelPeerBounds(val, peerFn);
     if (b.eqFound) return [cloneJson(b.eqVal)];
@@ -259,9 +265,8 @@ export function synthesizeViewOutput(view, caseId, base = {}, thenMap = null) {
   }
   const whenProjections = extractProjectionMap(view, 'when');
   const thenProjections = extractProjectionMap(view, 'then');
-  const whenMap = view?.cases?.[caseId]?.when || {};
-  const rawThen = tightenThenMapBySumResiduals(whenMap, view?.cases?.[caseId]?.then || {}, whenProjections, thenProjections);
-  const tbl = thenMap ? tightenThenMapBySumResiduals(whenMap, thenMap, whenProjections, thenProjections) : rawThen;
+  const whenMap = desugarMap(view?.cases?.[caseId]?.when);
+  const tbl = tightenThenMapBySumResiduals(whenMap, desugarMap(thenMap || view?.cases?.[caseId]?.then), whenProjections, thenProjections);
   let out = cloneJson(isObj(base) ? base : {});
   const peerIdx = buildPeerIndex(whenMap, tbl, whenProjections, thenProjections);
   const peerFn = (ref) => resolveStubPeer(ref, out, peerIdx, whenProjections, thenProjections);
@@ -322,7 +327,8 @@ export function resolveStubCaseId(view, idOrRes, caseIdOrWhen, base, errFn) {
     if (!isObj(cm) || 'status' in cm || !isObj(cm.when)) continue;
     let matched = 0;
     let compat = true;
-    for (const [wk, wv] of Object.entries(cm.when)) {
+    for (const [wk, rawWv] of Object.entries(cm.when)) {
+      const wv = isObj(rawWv) && Object.keys(rawWv).length === 1 && 'eq' in rawWv ? rawWv.eq : rawWv;
       const hit = lookupWhenInput(caseIdOrWhen, wk, whenProjections);
       if (!hit.found) continue;
       if (JSON.stringify(hit.value) !== JSON.stringify(wv)) {
@@ -374,8 +380,8 @@ export function synthesizeViewVariants(view, caseId, base = {}) {
   }
   const whenProjections = extractProjectionMap(view, 'when');
   const thenProjections = extractProjectionMap(view, 'then');
-  const whenMap = view?.cases?.[caseId]?.when || {};
-  const tbl = tightenThenMapBySumResiduals(whenMap, view?.cases?.[caseId]?.then || {}, whenProjections, thenProjections);
+  const whenMap = desugarMap(view?.cases?.[caseId]?.when);
+  const tbl = tightenThenMapBySumResiduals(whenMap, desugarMap(view?.cases?.[caseId]?.then), whenProjections, thenProjections);
   const peerIdx = buildPeerIndex(whenMap, tbl, whenProjections, thenProjections);
   const peerFn = (ref) => resolveStubPeer(ref, base, peerIdx, whenProjections, thenProjections);
   const keys = Object.keys(tbl).sort();

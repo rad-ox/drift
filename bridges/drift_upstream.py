@@ -87,18 +87,17 @@ def read_pointer(target: Any, raw_ptr: str) -> tuple[bool, Any]:
     return (True, cur)
 
 
-def _build_peer_index(when_map: Mapping[str, Any], raw_then_map: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> dict[str, Any]:
-    then_map = _tighten_then_by_sum_residuals(when_map, raw_then_map, wp, tp, rk)
+def _build_peer_index(raw_when_map: Mapping[str, Any], raw_then_map: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> dict[str, Any]:
+    when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in raw_when_map.items()}
+    then_map = _tighten_then_by_sum_residuals(when_map, {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in raw_then_map.items()}, wp, tp, rk)
     idx: dict[str, Any] = {}
-    for wk, raw_wv in when_map.items():
-        wv = raw_wv['eq'] if isinstance(raw_wv, Mapping) and len(raw_wv) == 1 and 'eq' in raw_wv else raw_wv
+    for wk, wv in when_map.items():
         if not _is_relational_map(wv, rk):
             idx[wk] = idx[f'when.{wk}'] = wv
             p = split_resource_pointer(wp.get(wk, ''))[1]
             if p.startswith('/'): idx[p] = wv
     rel_entries: list[tuple[str, Mapping[str, Any]]] = []
-    for tk, raw_tv in then_map.items():
-        tv = raw_tv['eq'] if isinstance(raw_tv, Mapping) and len(raw_tv) == 1 and 'eq' in raw_tv else raw_tv
+    for tk, tv in then_map.items():
         if _is_relational_map(tv, rk):
             rel_entries.append((tk, tv))
         else:
@@ -123,20 +122,23 @@ def _build_peer_index(when_map: Mapping[str, Any], raw_then_map: Mapping[str, An
 
 def _resolve_stub_peer(ref: Any, base: Any, peer_idx: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> tuple[bool, Any]:
     if not isinstance(ref, str) or not ref.strip(): return (False, None)
-    s, bare = ref.strip(), ref.strip().lstrip('/')
+    s = ref.strip()
+    qn = s[5:] if s.startswith(('then.', 'when.')) else s
+    pms = (tp,) if s.startswith('then.') else ((wp,) if s.startswith('when.') else (tp, wp))
+    bare = qn.lstrip('/')
     if s.startswith('/'):
         ok, val = read_pointer(base, s)
         if ok and not _is_relational_map(val, rk): return (True, val)
     else:
-        if isinstance(base, Mapping) and s in base and not _is_relational_map(base[s], rk): return (True, base[s])
-        for pm in (tp, wp):
-            if s in pm:
-                ok, val = read_pointer(base, pm[s])
+        if isinstance(base, Mapping) and qn in base and not _is_relational_map(base[qn], rk): return (True, base[qn])
+        for pm in pms:
+            if pm and qn in pm:
+                ok, val = read_pointer(base, split_resource_pointer(pm[qn])[1])
                 if ok and not _is_relational_map(val, rk): return (True, val)
         ok, val = read_pointer(base, '/' + bare)
         if ok and not _is_relational_map(val, rk): return (True, val)
-    tgt = split_resource_pointer(s if s.startswith('/') else (tp.get(s) or wp.get(s) or ('/' + bare)))[1]
-    for cand in (s, bare, tgt):
+    tgt = split_resource_pointer(s if s.startswith('/') else (tp.get(qn) or wp.get(qn) or ('/' + bare)))[1]
+    for cand in (s, qn, bare, tgt):
         if cand and cand in peer_idx: return (True, peer_idx[cand])
     return (False, None)
 
@@ -183,7 +185,11 @@ def witness_value(val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any], 
     return witness_variants(val, rk, clone_fn, peer_fn)[0]
 
 
-def witness_variants(val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None = None) -> list[Any]:
+from drift_ui_recovery import desugar_03_rel
+
+
+def witness_variants(raw_val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None = None) -> list[Any]:
+    val = desugar_03_rel(raw_val) if isinstance(raw_val, Mapping) else raw_val
     if _is_relational_map(val, rk):
         eq_ok, eq_v, lo, hi = _resolve_rel_bounds(val, peer_fn)
         if eq_ok: return [clone_fn(eq_v)]
@@ -238,9 +244,9 @@ def _is_homologous_key(a: str, b: str) -> bool:
 def synthesize_view_output(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None, then_map: Mapping[str, Any] | None, extract_proj_fn: Callable[[Mapping[str, Any], str], dict[str, str]], write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any], rk: frozenset[str]) -> Any:
     wp, tp = extract_proj_fn(view, 'when'), extract_proj_fn(view, 'then')
     case_m = (view.get('cases') or {}).get(case_id) or {}
-    when_map, raw_then_0 = case_m.get('when') or {}, case_m.get('then') or {}
-    raw_then = _tighten_then_by_sum_residuals(when_map, raw_then_0, wp, tp, rk)
-    tbl = _tighten_then_by_sum_residuals(when_map, then_map, wp, tp, rk) if then_map is not None else raw_then
+    when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in (case_m.get('when') or {}).items()}
+    src_then = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in ((then_map if then_map is not None else case_m.get('then')) or {}).items()}
+    tbl = _tighten_then_by_sum_residuals(when_map, src_then, wp, tp, rk)
     out = clone_fn(base if isinstance(base, Mapping) else {})
     peer_idx = _build_peer_index(when_map, tbl, wp, tp, rk)
     peer_fn = lambda ref: _resolve_stub_peer(ref, out, peer_idx, wp, tp, rk)
@@ -286,7 +292,8 @@ def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: 
         cm = cases[cid]
         if not isinstance(cm, Mapping) or 'status' in cm or not isinstance(cm.get('when'), Mapping): continue
         matched, compat = 0, True
-        for wk, wv in cm['when'].items():
+        for wk, raw_wv in cm['when'].items():
+            wv = raw_wv['eq'] if isinstance(raw_wv, Mapping) and len(raw_wv) == 1 and 'eq' in raw_wv else raw_wv
             ok, actual = _lookup_when_input(case_or_when, wk, wp)
             if ok:
                 if actual != wv or type(actual) is not type(wv): compat = False; break
@@ -316,7 +323,8 @@ def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: 
 def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None, extract_proj_fn: Callable[[Mapping[str, Any], str], dict[str, str]], write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any], rk: frozenset[str]) -> list[Any]:
     wp, tp = extract_proj_fn(view, 'when'), extract_proj_fn(view, 'then')
     case_m = (view.get('cases') or {}).get(case_id) or {}
-    when_map, raw_tbl = case_m.get('when') or {}, case_m.get('then') or {}
+    when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in (case_m.get('when') or {}).items()}
+    raw_tbl = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in (case_m.get('then') or {}).items()}
     tbl = _tighten_then_by_sum_residuals(when_map, raw_tbl, wp, tp, rk)
     peer_idx = _build_peer_index(when_map, tbl, wp, tp, rk)
     peer_fn = lambda ref: _resolve_stub_peer(ref, base, peer_idx, wp, tp, rk)

@@ -7,7 +7,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-release</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.0</version>
   <packaging>pom</packaging>
   <name>DRIFT release reactor</name>
 

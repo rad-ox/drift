@@ -4,7 +4,7 @@ import json, math
 from pathlib import Path
 from typing import Any, Callable
 
-VERSION = "drift_cobol.py@0.6.0"
+VERSION = "drift_cobol.py@0.7.0"
 BRIDGE_RUNTIME_BASELINE = "cobol-85-batch"
 CAPABILITIES = ["predicates", "projections", "forbid_keys", "not_in", "case_frames", "counterexample_replay", "copybook_marshal", "parity_receipt", "php_bridge_verifier"]
 
@@ -357,7 +357,7 @@ def emit_cobol_proof_shard(events_path: str | Path, cv: dict[str, Any], runs: li
         if cv.get("drift") == "0.3": ev.update({"schema": "0.3", "capabilities": ["rel-keys-guard/1", "rel-peer-sum/1", "rel-series/1", "rel-tol/1"]})
         lines.append(json.dumps(ev, separators=(",", ":")))
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    env = {"toolchain": BRIDGE_RUNTIME_BASELINE, "deps": "copybook-lock-1", "config": "cobc-batch-1", "runner": "drift-cobol", "drift": "0.6.0", "adapter": VERSION, "policy": "core@1", **(env_meta or {})}
+    env = {"toolchain": BRIDGE_RUNTIME_BASELINE, "deps": "copybook-lock-1", "config": "cobc-batch-1", "runner": "drift-cobol", "drift": "0.7.0", "adapter": VERSION, "policy": "core@1", **(env_meta or {})}
     p.with_suffix(".meta.json").write_text(json.dumps({"version": 1, "classes": classes, "tests": tests, "inputs": in_map, "env": env}, separators=(",", ":")) + "\n", encoding="utf-8")
 
 

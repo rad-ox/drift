@@ -24,7 +24,7 @@
     },
     "drift": {
       "type": "string",
-      "enum": ["0.2", "0.3"],
+      "const": "0.3",
       "description": "Schema version of the bundle envelope."
     },
     "kind": {

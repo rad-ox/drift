@@ -98,6 +98,9 @@
         },
         "simulation": {
           "const": "required"
+        },
+        "budgets": {
+          "const": "required"
         }
       }
     }

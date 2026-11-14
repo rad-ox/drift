@@ -77,7 +77,9 @@ final class GitSnapshot {
                 Path normEx = excluded.toAbsolutePath().normalize();
                 if (normEx.startsWith(topLevel) && !normEx.equals(topLevel)) {
                     String rel = topLevel.relativize(normEx).toString().replace('\\', '/');
-                    if (!rel.isBlank()) {
+                    String probe = Files.isRegularFile(normEx) ? rel : (rel.endsWith("/") ? rel : rel + "/");
+                    if (!rel.isBlank()
+                            && git(topLevel, Map.of(), List.of("check-ignore", "-q", "--", probe)).status != 0) {
                         excludes.add(":(exclude)" + rel);
                     }
                 }

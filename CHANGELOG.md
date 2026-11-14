@@ -2,14 +2,32 @@
 
 User-visible changes and capabilities by release.
 
+## 0.7.0
+
+- Release `0.7.0`.
+- Sync `0.3`-only docs, `forbid_touched`/`[requires].budgets`/`alloc_*` surfaces, and public changelog sanitization.
+- Add profile `[requires].budgets` posture and `dr2a:` `[assurance.guards].forbid_touched` dynamic symbol guards across kernel, grants, and `drift_verify.py`.
+- Add `alloc_bytes_total`/`alloc_count_total` budget metrics, 4x scaling measurement bundles, and regression kill-checks.
+- Add fail-closed worker containment, `parse_direct_diag` `fmt` closure, baseline confidence/`dr2*` verifier parity, and `budget-baseline-regressed`.
+- Drop legacy schema `0.2` support (`DR-E002` on `drift = "0.2"`), retire `fmt --upgrade` (`replaced_by = "fmt"`), and remove `0.2` schemas and verifier branches.
+- Warn on legacy `0.2` files in `doctor`, close `0.3` parity across `peer.eq`, `requires.security`, `emit_03`, and `drift_verify.py`, and migrate corpus/tests to `0.3`.
+- Switch `default_schema` (`version`), `init`, `openapi`/`asyncapi`/`wsdl`/`copybook`/`recall` scaffolds, `fmt --upgrade 0.3`, `pack_ref`, and attestations to `0.3`.
+- Outperform `0.2` across all 18 `0.3` engine rows via `PreInherited03` slots, `EqInternCache03`, streaming `emit_03`, sorted `ObsField` slices, and parallel `sweep`.
+- Parse nested `0.3` inline tables directly in `drift/model` (depth <= 32).
+- Add Enterprise `sweep --flow --pacts` fleet conservation laws, `composition-manifest/1` `pact_refs`, MIT `drift_verify.py` pact parity.
+- Add `0.3` bilateral contractual equalizer (`drift pact`, `init --pact`, `drift.pact-offer/1`, `drift.pact-lock/1`, `--pact-lock`).
+- Decode inline Avro records and Multi-Format Schema Objects in `--asyncapi`/`--epoch-manifest` with writer/reader-default rules, rejecting unknown `+json` formats.
+- Replace `crates-io-auth-action@v1` in `publish.yml` with annotation-clean OIDC exchange, `CARGO_REGISTRY_TOKEN` fallback, token revocation, and `setup-java@v6`.
+- Emit bare Java `#method` anchors in `sweep sync-scope` (accepting `#Class.method` in `check`), count `[invariants]` in `unused_vocab`, and omit unbounded OpenAPI params.
+- Require `--deployment` on `--from-signal`, allow stale `approve --reviewed`, replace `.sig` in `--ssh-sign`, enforce proof floors in `prove`, and clarify `eval --help`.
+- Skip gitignored `:(exclude)` paths in JVM/JS/Python snapshots for `-Ddrift.changed=auto` and expose `-Ddrift.mutants.{when,budget}` in `GateMojo`.
+- Fix public `verify.yml` Free-tier `gate --explain` self-stub check, `[requires]` profile append, and Node 24 `setup-java@v6`/`setup-node@v7`/`setup-python@v7` actions.
+
 ## 0.6.0
 
-- Replace `crates-io-auth-action@v1` in `publish.yml` with annotation-clean OIDC exchange, `CARGO_REGISTRY_TOKEN` fallback, token revocation, and `setup-java@v6`.
-- Fix public `verify.yml` Free-tier `gate --explain` self-stub check, `[requires]` profile append, and Node 24 `setup-java@v6`/`setup-node@v7`/`setup-python@v7` actions.
 - Release `0.6.0`.
 - Package `drift-notify-wsl.sh` and `notification` hook entries in release archives, sync `0.6` CLI docs, and harden public changelog sanitization.
 - Add `0.3` clean-room specification grants (`export grant`, `init --grant`, `drift.grant-lock/1`, `--grant-lock`, MIT `drift_verify.py` parity).
-- Consolidate 38 CLI and kernel micro-test files into 21 suites with symbol-exact contract bindings, cutting 38 V/C test compilations in make t.
 - Precompute Profile03 canonical schemas, projections, unit pairs, and scope requires, and share unmodified norm_cases in 0.3 digest/resolved views.
 - Cache dev/prod CLI builds separately (.build/drift.{dev,prod}), propagate PROD to sub-makes, and restage across mode/BUILD switches without recompiling.
 - Harden JS template/regex, Rust nested-comment/raw-string, and multi-line Python import/heal scanners, and optimize subsumed_code_glob_map to O(N*|U|).

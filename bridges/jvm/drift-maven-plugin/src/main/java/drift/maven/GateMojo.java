@@ -41,6 +41,14 @@ public final class GateMojo extends DriftMojo {
     @Parameter(property = "drift.mutants", defaultValue = "false")
     boolean mutants;
 
+    /** Includes {@code --when} branch mutants when {@code drift.mutants=true}. */
+    @Parameter(property = "drift.mutants.when", defaultValue = "false")
+    boolean mutantsWhen;
+
+    /** Optional mutant cap ({@code --budget N}) when {@code drift.mutants=true}. */
+    @Parameter(property = "drift.mutants.budget")
+    Integer mutantsBudget;
+
     /** Comma-separated changed source paths, rooted at the Maven module. */
     @Parameter(property = "drift.changed")
     String changed;
@@ -93,8 +101,18 @@ public final class GateMojo extends DriftMojo {
             mutantManifest = output.toPath().resolve("mutants.json");
             mutationEvents = output.toPath().resolve("mutation-events");
             getLog().info("drift: generating mutation manifest " + mutantManifest);
-            Cli.Result manifest = c.run(List.of("mutants", contracts().toString(), "--out",
-                    mutantManifest.toString()));
+            java.util.ArrayList<String> mutantArgs = new java.util.ArrayList<>(
+                    List.of("mutants", contracts().toString(), "--out", mutantManifest.toString()));
+            if (mutantsWhen) {
+                mutantArgs.add("--when");
+            }
+            if (mutantsBudget != null) {
+                mutantArgs.add("--budget");
+                mutantArgs.add(mutantsBudget.toString());
+                mutantArgs.add("--events");
+                mutantArgs.add(events().toString());
+            }
+            Cli.Result manifest = c.run(mutantArgs);
             log(manifest);
             if (manifest.status() != 0) {
                 throw new MojoFailureException("drift: could not generate the mutation manifest");

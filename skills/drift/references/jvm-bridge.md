@@ -12,8 +12,8 @@ Read when binding tests to a contract or running the gate on a JVM project.
 
 ## Dependency
 
-The release installer puts `io.github.rad-ox:drift-junit:0.6.0` and
-`io.github.rad-ox:drift-maven-plugin:0.6.0` (from `maven/` in the release package) into
+The release installer puts `io.github.rad-ox:drift-junit:0.7.0` and
+`io.github.rad-ox:drift-maven-plugin:0.7.0` (from `maven/` in the release package) into
 the current user's local Maven repository; neither is published to a remote
 repository. Contributors working in a DRIFT source checkout can run
 `make install` instead. If a build cannot resolve them, check that both use the
@@ -26,7 +26,7 @@ id, and reruns then collapse them.
 <dependency>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.0</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -37,7 +37,7 @@ id, and reruns then collapse them.
 <plugin>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-maven-plugin</artifactId>
-  <version>0.6.0</version>
+  <version>0.7.0</version>
   <executions>
     <execution>
       <goals>
@@ -186,7 +186,7 @@ pass `drift.resolved` and `drift.events` to the forked test JVM:
 ```scala
 scalaVersion := "3.9.0"
 resolvers += Resolver.mavenLocal
-libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.6.0" % Test
+libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.7.0" % Test
 Test / fork := true
 Test / javaOptions ++= Seq(
   s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
@@ -346,7 +346,7 @@ file digests in `.meta.json` `inputs` alongside optional `DRIFT_ENV` /
 - When `core@1` or `requires.proof = "killed"` is active, generate the mutant
   manifest with `drift mutants .drift/contracts --out "$OUT/mutants.json"
   [--when]`, run the test suite with `DRIFT_MUTANTS="$OUT/mutants.json"` and
-  `DRIFT_MUTATION_EVENTS="$OUT/mut-events"` (or `-Ddrift.mutants` and
+  `DRIFT_MUTATION_EVENTS="$OUT/mut-events"` (or `-Ddrift.mutants` / `-Ddrift.mutants.when` / `-Ddrift.mutants.budget` and
   `-Ddrift.mutationEvents` on the JVM), and pass `--mutants
   "$OUT/mutants.json" --mutation-events "$OUT/mut-events"` to `drift prove` or
   `drift gate`.

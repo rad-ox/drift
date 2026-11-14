@@ -11,7 +11,7 @@ use RuntimeException;
  */
 final class Drift
 {
-    public const VERSION = 'drift.php@0.6.0';
+    public const VERSION = 'drift.php@0.7.0';
     public const BRIDGE_RUNTIME_BASELINE = 'php-8.2-cli';
     public const CAPABILITIES = ['predicates', 'projections', 'forbid_keys', 'not_in', 'case_frames', 'counterexample_replay', 'in_process_mutants'];
     public const SUPPORTED_REL_KEYS = ['eq', 'in', 'not_in', 'min', 'max', 'len', 'min_len', 'max_len', 'non_empty', 'prefix', 'suffix', 'contains', 'forbid_keys', 'allowed_keys', 'le_field', 'ge_field', 'eq_field', 'sum_fields', 'monotonic', 'step_max_delta', 'sum_total', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion'];
@@ -364,7 +364,7 @@ final class Drift
             $lines[] = json_encode($ev, JSON_UNESCAPED_SLASHES);
         }
         file_put_contents($eventsPath, implode("\n", $lines) . "\n");
-        $meta = ['version' => 1, 'classes' => $classes, 'tests' => $tests, 'inputs' => $inputsMap, 'env' => array_merge(['toolchain' => self::BRIDGE_RUNTIME_BASELINE, 'deps' => 'composer-lock-0', 'config' => 'phpunit-1', 'runner' => 'phpunit', 'drift' => '0.6.0', 'adapter' => self::VERSION, 'policy' => 'core@1'], $envMeta)];
+        $meta = ['version' => 1, 'classes' => $classes, 'tests' => $tests, 'inputs' => $inputsMap, 'env' => array_merge(['toolchain' => self::BRIDGE_RUNTIME_BASELINE, 'deps' => 'composer-lock-0', 'config' => 'phpunit-1', 'runner' => 'phpunit', 'drift' => '0.7.0', 'adapter' => self::VERSION, 'policy' => 'core@1'], $envMeta)];
         file_put_contents((string)preg_replace('/\.jsonl$/', '.meta.json', $eventsPath), json_encode($meta, JSON_UNESCAPED_SLASHES) . "\n");
     }
 }

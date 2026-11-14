@@ -1,4 +1,4 @@
-drift = "0.2"
+drift = "0.3"
 kind = "config"
 
 [area]
@@ -10,6 +10,6 @@ approvers = ["items-team"]
 proof = "verified"
 
 [approval]
-ref = "dr1:69e6e39655e1"
+ref = "dr1:9bc33cb9d637"
 by = "items-team"
 at = 2026-10-14T10:00:00Z

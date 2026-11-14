@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.6.0'
-pub const bridge_version = '0.6.0'
+pub const adapter_id = 'drift_v.v@0.7.0'
+pub const bridge_version = '0.7.0'
 pub const bridge_runtime_baseline = 'v-0.5.2'
 pub const bridge_capabilities_list = ['allowed_keys', 'case_frames', 'counterexample_replay',
 	'forbid_keys', 'inventory_sidecar', 'mutants', 'not_in', 'predicates', 'projections',
@@ -95,7 +95,7 @@ fn resolve_env_map() !map[string]string {
 		'drift':     bridge_version
 		'policy':    'core@1'
 		'runner':    'v-test'
-		'toolchain': 'v@0.6.0'
+		'toolchain': 'v@0.7.0'
 	}
 	if raw != '' {
 		doc := json2.decode[json2.Any](raw) or { return error('DRIFT_ENV must be valid JSON') }
@@ -640,6 +640,18 @@ fn update_shard_and_meta(events_dir string, event_line string, cls string, canon
 	os.write_file(meta, json2.Any(meta_obj).json_str() + '\n')!
 }
 
+fn set_nested_mutant_map(cur map[string]json2.Any, segs []string, after json2.Any) map[string]json2.Any {
+	mut m := cur.clone()
+	if segs.len == 1 {
+		m[segs[0]] = after
+		return m
+	}
+	if sub := j_map(m[segs[0]] or { json2.Null{} }) {
+		m[segs[0]] = json2.Any(set_nested_mutant_map(sub, segs[1..], after))
+	}
+	return m
+}
+
 fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string, after json2.Any) map[string]json2.Any {
 	cloned_any := json2.decode[json2.Any](json2.Any(base_view).json_str()) or { return base_view }
 	mut cloned := (j_map(cloned_any) or { return base_view }).clone()
@@ -655,11 +667,8 @@ fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string,
 	mut cases_map := (cloned['cases'] or { return cloned }).as_map()
 	mut case_obj := (cases_map[cid] or { return cloned }).as_map()
 	mut side_map := (case_obj[side] or { return cloned }).as_map()
-	k0 := segs[0]
-	if segs.len == 1 {
-		side_map[k0] = after
-	} else if segs.len == 2 {
-		k1 := segs[1]
+	if segs.len == 2 {
+		k0, k1 := segs[0], segs[1]
 		if am := j_map(after) {
 			if k0 in side_map && k1 in side_map && k0 in am && k1 in am {
 				side_map[k0] = am[k0] or { json2.Null{} }
@@ -670,12 +679,8 @@ fn apply_mutant_to_view(base_view map[string]json2.Any, cid string, path string,
 				return cloned
 			}
 		}
-		if cur_rel := j_map(side_map[k0] or { json2.Null{} }) {
-			mut rel_m := cur_rel.clone()
-			rel_m[k1] = after
-			side_map[k0] = json2.Any(rel_m)
-		}
 	}
+	side_map = set_nested_mutant_map(side_map, segs, after)
 	case_obj[side] = json2.Any(side_map)
 	cases_map[cid] = json2.Any(case_obj)
 	cloned['cases'] = json2.Any(cases_map)
