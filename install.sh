@@ -196,8 +196,8 @@ is_skill() { [ -f "$1/SKILL.md" ] && grep -qE '^name: drift$' "$1/SKILL.md"; }
 unmerge_json_hook() { # file
 	[ -f "$1" ] || return 0
 	[ "$dry" = 0 ] || return 0
-	if command -v python3 >/dev/null 2>&1; then
-		python3 - "$1" <<'PY' || true
+	command -v python3 >/dev/null 2>&1 || return 1
+	python3 -I - "$1" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 try:
@@ -227,7 +227,6 @@ for k in list(hooks.keys()):
 if changed:
     p.write_text(json.dumps(doc, indent=2) + '\n', encoding='utf-8')
 PY
-	fi
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -242,7 +241,7 @@ if [ "$action" = uninstall ]; then
 			if [ -f "$path" ]; then
 				bname=${path##*/}
 				case $bname in
-				drift | drift-pro | drift-enterprise) remove "$path" "/$bname" ;;
+				drift | drift-pro | drift-enterprise | drift-ask-ui) remove "$path" "/$bname" ;;
 				esac
 				ok "removed $(tilde "$path")" "rimosso $(tilde "$path")"
 			fi
@@ -272,8 +271,11 @@ if [ "$action" = uninstall ]; then
 			;;
 		hook-merge)
 			if [ -f "$path" ]; then
-				unmerge_json_hook "$path"
-				ok "removed DRIFT hook entry from $(tilde "$path")" "rimossa la voce hook DRIFT da $(tilde "$path")"
+				if unmerge_json_hook "$path"; then
+					ok "removed DRIFT hook entry from $(tilde "$path")" "rimossa la voce hook DRIFT da $(tilde "$path")"
+				else
+					note "skipped removing DRIFT hook entry from $(tilde "$path") (python3 missing)" "rimozione voce hook DRIFT da $(tilde "$path") saltata (python3 assente)"
+				fi
 			fi
 			;;
 		maven)
@@ -419,7 +421,7 @@ old_skills='' old_bin='' old_mavens='' old_hooks='' old_hook_merges=''
 if [ -f "$manifest" ]; then
 	while IFS=$tab read -r kind path; do
 		case $kind in
-		bin) old_bin=$path ;;
+		bin) old_bins="${old_bins:-}$path$tab" ;;
 		skill) old_skills="$old_skills$path$tab" ;;
 		hook)
 			old_hooks="$old_hooks$path$tab"
@@ -485,8 +487,34 @@ for bname in drift drift-pro drift-enterprise; do
 	new_bins="$new_bins$bindir/$bname$tab"
 	ok "$bname $version → $(tilde "$bindir/$bname")" "$bname $version → $(tilde "$bindir/$bname")"
 done
-if [ -n "$old_bin" ] && [ "$old_bin" != "$bindir/drift" ] && [ -f "$old_bin" ]; then
-	remove "$old_bin" /drift
+if [ -f "$here/ui/drift-ask-ui" ]; then
+	if [ -e "$bindir/.drift-ask-ui.new" ] || [ -L "$bindir/.drift-ask-ui.new" ]; then
+		remove "$bindir/.drift-ask-ui.new" "/.drift-ask-ui.new"
+	fi
+	run cp "$here/ui/drift-ask-ui" "$bindir/.drift-ask-ui.new"
+	run chmod 0755 "$bindir/.drift-ask-ui.new"
+	run mv -f "$bindir/.drift-ask-ui.new" "$bindir/drift-ask-ui"
+	new_bins="$new_bins$bindir/drift-ask-ui$tab"
+	ok "drift-ask-ui → $(tilde "$bindir/drift-ask-ui")" "drift-ask-ui → $(tilde "$bindir/drift-ask-ui")"
+fi
+if [ -n "${old_bins:-}" ]; then
+	saved_ifs=$IFS
+	IFS=$tab
+	for b_old in $old_bins; do
+		[ -n "$b_old" ] || continue
+		case $tab$new_bins in
+		*"$tab$b_old$tab"*) ;;
+		*)
+			if [ -f "$b_old" ]; then
+				bname_old=${b_old##*/}
+				case $bname_old in
+				drift | drift-pro | drift-enterprise | drift-ask-ui) remove "$b_old" "/$bname_old" ;;
+				esac
+			fi
+			;;
+		esac
+	done
+	IFS=$saved_ifs
 fi
 
 run mkdir -p "$data"
@@ -507,6 +535,12 @@ if [ -d "$here/hooks" ]; then
 	[ ! -f "$here/hooks/drift-notify-wsl.sh" ] || run cp "$here/hooks/drift-notify-wsl.sh" "$data/hooks/"
 	run chmod 0755 "$data/hooks/drift-hook.sh"
 	[ ! -f "$data/hooks/drift-notify-wsl.sh" ] || run chmod 0755 "$data/hooks/drift-notify-wsl.sh"
+fi
+if [ -d "$here/ui" ]; then
+	remove "$data/ui" /ui
+	run mkdir -p "$data/ui"
+	run cp "$here/ui/drift-ask-ui" "$here/ui/drift_ui_deck.py" "$here/ui/drift_ui_deck.html" "$here/ui/drift-ask-ui.ps1" "$here/ui/drift-ask-ui.cmd" "$here/ui/DriftUiWin.cs" "$here/ui/app.manifest" "$data/ui/"
+	run chmod 0755 "$data/ui/drift-ask-ui" "$data/ui/drift_ui_deck.py"
 fi
 for f in install.sh VERSION INSTALL.md INSTALL.it.md SHA256SUMS; do
 	[ ! -f "$here/$f" ] || run cp "$here/$f" "$data/$f"
@@ -709,8 +743,12 @@ JSON
 		return 0
 		;;
 	esac
-	if [ "$dry" = 0 ] && command -v python3 >/dev/null 2>&1; then
-		python3 - "$1" "$data/hooks/drift-hook.sh" <<'PY'
+	if [ "$dry" = 0 ]; then
+		if ! command -v python3 >/dev/null 2>&1; then
+			note "skipped agent hook merge → $(tilde "$1") (python3 missing)" "merge hook dell'agente saltato → $(tilde "$1") (python3 assente)"
+			return 0
+		fi
+		python3 -I - "$1" "$data/hooks/drift-hook.sh" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 hook_sh = sys.argv[2]
@@ -747,7 +785,12 @@ PY
 
 stage_pi_extension() {
 	if [ -d "$data/hooks/release" ]; then
-		python3 "$here/configure-pi.py" "$here/hooks/drift-pi.ts" "$1" "$data/hooks/release"
+		if command -v python3 >/dev/null 2>&1; then
+			python3 -I "$here/configure-pi.py" "$here/hooks/drift-pi.ts" "$1" "$data/hooks/release"
+		else
+			cp "$here/hooks/drift-pi.ts" "$1"
+			note "Pi release check left unconfigured (python3 missing)" "controllo release Pi non configurato (python3 assente)"
+		fi
 	else
 		cp "$here/hooks/drift-pi.ts" "$1"
 	fi

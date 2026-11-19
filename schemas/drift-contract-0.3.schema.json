@@ -125,6 +125,22 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "metric": {
+                "const": "cpu_time_ns"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "limit": {
+                "type": "integer"
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -178,7 +194,8 @@
             "tick_alloc_count",
             "alloc_bytes_total",
             "alloc_count_total",
-            "frame_hitch_ns"
+            "frame_hitch_ns",
+            "cpu_time_ns"
           ]
         },
         "min_confidence": {
@@ -968,6 +985,11 @@
           "required": [
             "forbid_touched"
           ]
+        },
+        {
+          "required": [
+            "require_containment"
+          ]
         }
       ],
       "properties": {
@@ -992,6 +1014,17 @@
         "max_lines": {
           "minimum": 1,
           "type": "integer"
+        },
+        "require_containment": {
+          "items": {
+            "enum": [
+              "no_network",
+              "readonly_workspace"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
         },
         "target": {
           "items": {

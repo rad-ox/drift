@@ -1,0 +1,83 @@
+{
+  "$id": "https://github.com/rad-ox/drift/schemas/drift-shard-bundle-0.3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "type": "string"
+    },
+    "candidate_snapshot": {
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "type": "string"
+    },
+    "digest": {
+      "pattern": "^dr2s:sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "execution_ref": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "fence_seq": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pack_ref": {
+      "pattern": "^dr(?:1|2b):[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "receipts": {
+      "additionalProperties": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": "drift.shard-bundle/1"
+    },
+    "shards": {
+      "additionalProperties": {
+        "$ref": "#/$defs/shardDigestPair"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9._-]+$"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "candidate_snapshot",
+    "digest",
+    "execution_ref",
+    "fence_seq",
+    "pack_ref",
+    "schema",
+    "shards"
+  ],
+  "title": "DRIFT Shard Bundle Manifest 0.3",
+  "type": "object",
+  "$defs": {
+    "shardDigestPair": {
+      "additionalProperties": false,
+      "properties": {
+        "jsonl_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "meta_sha256": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "jsonl_sha256",
+        "meta_sha256"
+      ],
+      "type": "object"
+    }
+  }
+}

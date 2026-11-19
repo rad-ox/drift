@@ -9,7 +9,9 @@ import {
   writePointer,
 } from './drift_checks.mjs';
 import { tightenThenMapBySumResiduals } from './drift_cli.mjs';
+import { clearUpstreamCache, findTomlInDir, findUpstreamContract, maxSourceMtime, runCaseMutants } from './drift_probes.mjs';
 import { desugar03Rel } from './drift_ui_recovery.mjs';
+export { clearUpstreamCache, findTomlInDir, findUpstreamContract, runCaseMutants };
 
 const isRelationalMap = (v) => isObj(v) && Object.keys(v).length > 0 && Object.keys(v).every((k) => REL_KEYS.has(k));
 const stripRes = (p) => splitResourcePointer(String(p || ''))[1];
@@ -410,113 +412,12 @@ export function synthesizeViewVariants(view, caseId, base = {}) {
   return out;
 }
 
-const UP_CACHE = new Map();
-const PROF_MTIME_CACHE = new Map();
-
-export function clearUpstreamCache() {
-  UP_CACHE.clear();
-  PROF_MTIME_CACHE.clear();
-}
-
-export function findUpstreamContract(idOrRes, cwd, fs, path) {
-  let cur = path.resolve(cwd);
-  let upDir = '';
-  while (true) {
-    const cand = path.join(cur, '.drift', 'upstream');
-    if (fs.existsSync(cand) && fs.statSync(cand).isDirectory()) {
-      upDir = cand;
-      break;
-    }
-    const p = path.dirname(cur);
-    if (p === cur) break;
-    cur = p;
-  }
-  if (!upDir) return null;
-  let idx = UP_CACHE.get(upDir);
-  if (!idx) {
-    const byKey = new Map();
-    for (const fn of fs.readdirSync(upDir).sort()) {
-      if (!fn.endsWith('.json')) continue;
-      const fp = path.join(upDir, fn);
-      try {
-        const doc = JSON.parse(fs.readFileSync(fp, 'utf8').replace(/^\uFEFF/u, ''));
-        const area = isStr(doc?.area) ? doc.area : '';
-        const list = doc?.kind === 'boundary' && Array.isArray(doc.contracts)
-          ? doc.contracts
-          : (isObj(doc) && isStr(doc.id) ? [doc] : []);
-        for (const c of list) {
-          if (!isObj(c)) continue;
-          const hit = { view: c, file: fp };
-          if (isStr(c.id) && !byKey.has(c.id)) byKey.set(c.id, hit);
-          if (area && isStr(c.id) && !byKey.has(`${area}:${c.id}`)) byKey.set(`${area}:${c.id}`, hit);
-          const resList = [
-            ...(Array.isArray(c.scope?.out) ? c.scope.out : []),
-            ...(Array.isArray(c.scope?.writes) ? c.scope.writes : []),
-            ...(Array.isArray(c.scope?.reads) ? c.scope.reads : []),
-          ];
-          for (const r of resList) {
-            const rs = String(r);
-            const [base] = rs.split('#', 1);
-            if (!byKey.has(rs)) byKey.set(rs, hit);
-            if (base && !byKey.has(base)) byKey.set(base, hit);
-          }
-        }
-      } catch {}
-    }
-    idx = byKey;
-    UP_CACHE.set(upDir, idx);
-  }
-  if (idx.has(idOrRes)) return idx.get(idOrRes);
-  const [base] = String(idOrRes).split('#', 1);
-  return idx.get(base) || null;
-}
-
-function indexTomls(dir, out, fs, path) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory() && !e.isSymbolicLink()) indexTomls(full, out, fs, path);
-    else if (e.isFile() && e.name.endsWith('.toml') && !out.has(e.name.slice(0, -5))) out.set(e.name.slice(0, -5), full);
-  }
-}
-
-export function findTomlInDir(dir, id, tomlDirs, fs, path) {
-  if (!fs.existsSync(dir)) return '';
-  const direct = path.join(dir, `${id}.toml`);
-  if (fs.existsSync(direct) && fs.statSync(direct).isFile()) return direct;
-  let idx = tomlDirs.get(dir);
-  if (!idx) {
-    idx = new Map();
-    indexTomls(dir, idx, fs, path);
-    tomlDirs.set(dir, idx);
-  }
-  const cand = idx.get(id) || '';
-  return cand && fs.existsSync(cand) ? cand : '';
-}
-
-function maxSourceMtime(cur, toml, fs, path) {
-  let m = toml && fs.existsSync(toml) ? fs.statSync(toml).mtimeMs : 0;
-  const pDir = path.join(cur, '.drift', 'profiles');
-  let profMax = PROF_MTIME_CACHE.get(pDir);
-  if (profMax === undefined) {
-    profMax = 0;
-    if (fs.existsSync(pDir) && fs.statSync(pDir).isDirectory()) {
-      for (const fn of fs.readdirSync(pDir)) {
-        if (fn.endsWith('.toml')) {
-          try {
-            const pm = fs.statSync(path.join(pDir, fn)).mtimeMs;
-            if (pm > profMax) profMax = pm;
-          } catch {}
-        }
-      }
-    }
-    PROF_MTIME_CACHE.set(pDir, profMax);
-  }
-  return profMax > m ? profMax : m;
-}
+import { validateShadowStateDir } from './drift_probes.mjs';
 
 export function autoResolveView(id, state, fs, path, execFileSync, readJson, parseJson, targetJson = '') {
-  if (!targetJson && state.batch.has(id)) return state.batch.get(id);
-  let cur = targetJson ? path.dirname(targetJson) : process.cwd();
+  const sd = !targetJson ? validateShadowStateDir(process.cwd(), process.env, fs, path) : '';
+  if (!targetJson && state.batch.has(id) && !sd) return state.batch.get(id);
+  let cur = targetJson ? path.dirname(targetJson) : (sd || process.cwd());
   const home = process.env.HOME || process.env.USERPROFILE || '';
   const lCli = home ? path.join(home, '.local', 'bin', 'drift') : '';
   const appD = process.env.LOCALAPPDATA || (home ? path.join(home, 'AppData', 'Local') : '');
@@ -617,44 +518,4 @@ export function autoResolveView(id, state, fs, path, execFileSync, readJson, par
     cur = parent;
   }
   return targetJson ? null : (findUpstreamContract(id, process.cwd(), fs, path)?.view || null);
-}
-
-export async function runCaseMutants(mutCfg, mutOut, ctx, contract, passed, elapsed, performance, isAssertErr, withMutation, makeCtx, fn, fs) {
-  if (!mutCfg) return;
-  const targets = ctx.cases.flatMap((cid) => mutCfg.byCase.get(`${contract}\u0000${cid}`) || []);
-  if (!targets.length) return;
-  const budget = Math.max(250 * targets.length, 20 * targets.length * elapsed);
-  const mutStart = performance.now();
-  let over = false;
-  const lines = [];
-  for (const target of targets) {
-    let outcome = 'inconclusive';
-    if (!passed || over || (performance.now() - mutStart) > budget) {
-      if (passed) over = true;
-    } else {
-      let thrown = null;
-      let failed = false;
-      try {
-        await withMutation(target, async () => {
-          await fn(makeCtx(target));
-        });
-      } catch (e) {
-        failed = true;
-        thrown = e;
-      }
-      if ((performance.now() - mutStart) > budget) over = true;
-      else if (!failed) outcome = 'survived';
-      else if (isAssertErr(thrown)) outcome = 'killed';
-    }
-    lines.push(JSON.stringify({
-      manifest: mutCfg.manifestId,
-      contract: target.contract,
-      digest: target.digest,
-      mutant: target.id,
-      case: target.case,
-      outcome,
-      control: passed ? 'passed' : 'failed',
-    }));
-  }
-  fs.appendFileSync(mutOut, lines.join('\n') + '\n', 'utf8');
 }

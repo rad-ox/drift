@@ -21,12 +21,12 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.7.0";
-pub const BRIDGE_VERSION: &str = "0.7.0";
+pub const ADAPTER_ID: &str = "drift_rust@0.8.0";
+pub const BRIDGE_VERSION: &str = "0.8.0";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",
@@ -100,226 +100,11 @@ pub struct DriftContext {
     pub(crate) accessed_view: Cell<bool>,
 }
 
-pub fn canonical_rust_test_id(crate_name: &str, module_path: &str, fn_name: &str) -> String {
-    let clean_crate = crate_name.trim().replace('-', "_");
-    let clean_mod = module_path.trim().trim_matches(':');
-    let clean_fn = fn_name.trim();
-    if clean_mod.is_empty() || clean_mod == clean_crate {
-        format!("{}#{}", clean_crate, clean_fn)
-    } else if clean_mod.starts_with(&format!("{}::", clean_crate)) {
-        format!("{}#{}", clean_mod, clean_fn)
-    } else {
-        format!("{}::{}#{}", clean_crate, clean_mod, clean_fn)
-    }
-}
-
-pub fn canonical_test_id(test: &str) -> Result<(String, String, String), TestError> {
-    let trimmed = test.trim();
-    let Some(hash_idx) = trimmed.find('#') else {
-        return Err(TestError::harness(format!(
-            "test id '{}' must have form <class>#<method>",
-            test
-        )));
-    };
-    if hash_idx == 0 || hash_idx + 1 >= trimmed.len() {
-        return Err(TestError::harness(format!(
-            "test id '{}' must have form <class>#<method>",
-            test
-        )));
-    }
-    let cls = &trimmed[..hash_idx];
-    let mut mth = &trimmed[hash_idx + 1..];
-    for ch in ['(', '['] {
-        if let Some(idx) = mth.find(ch) {
-            mth = &mth[..idx];
-        }
-    }
-    let mth = mth.trim();
-    if cls.is_empty() || mth.is_empty() || cls.contains('#') || mth.contains('#') {
-        return Err(TestError::harness(format!("invalid test id '{}'", test)));
-    }
-    Ok((
-        cls.to_string(),
-        mth.to_string(),
-        format!("{}#{}", cls, mth),
-    ))
-}
-
-pub fn parse_list_terse_output(crate_name: &str, list_stdout: &str) -> (Vec<String>, Vec<String>) {
-    let clean_crate = crate_name.trim().replace('-', "_");
-    let mut classes = BTreeSet::new();
-    let mut tests = BTreeSet::new();
-    for raw_line in list_stdout.lines() {
-        let line = raw_line.trim();
-        let Some(test_path) = line.strip_suffix(": test") else {
-            continue;
-        };
-        let test_path = test_path.trim();
-        if test_path.is_empty() {
-            continue;
-        }
-        let (mod_part, fn_part) = match test_path.rfind("::") {
-            Some(idx) if idx > 0 && idx + 2 < test_path.len() => {
-                (&test_path[..idx], &test_path[idx + 2..])
-            }
-            _ => ("", test_path),
-        };
-        let cls = if mod_part.is_empty() {
-            clean_crate.clone()
-        } else if mod_part.starts_with(&format!("{}::", clean_crate)) || clean_crate.is_empty() {
-            mod_part.to_string()
-        } else {
-            format!("{}::{}", clean_crate, mod_part)
-        };
-        let tid = format!("{}#{}", cls, fn_part);
-        classes.insert(cls);
-        tests.insert(tid);
-    }
-    (classes.into_iter().collect(), tests.into_iter().collect())
-}
-
-pub fn discover_binary_tests(crate_name: &str, events_dir: &str) -> Result<(Vec<String>, Vec<String>), TestError> {
-    if env::var("DRIFT_IN_LIST_DISCOVERY").as_deref() == Ok("1") {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let exe = env::current_exe().map_err(|e| TestError::harness(e.to_string()))?;
-    let out = Command::new(&exe)
-        .args(["--list", "--format=terse"])
-        .env("DRIFT_IN_LIST_DISCOVERY", "1")
-        .output()
-        .map_err(|e| TestError::harness(format!("failed to run --list discovery: {}", e)))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let (classes, tests) = parse_list_terse_output(crate_name, &stdout);
-    let ev_dir = if !events_dir.trim().is_empty() {
-        events_dir.trim().to_string()
-    } else {
-        env::var("DRIFT_EVENTS").unwrap_or_default().trim().to_string()
-    };
-    if !ev_dir.is_empty() && (!classes.is_empty() || !tests.is_empty()) {
-        record_discovered_inventory(&ev_dir, &classes, &tests)?;
-    }
-    Ok((classes, tests))
-}
-
-fn find_drift_cli() -> String {
-    if let Ok(cli) = env::var("DRIFT_CLI") {
-        let t = cli.trim();
-        if !t.is_empty() {
-            return t.to_string();
-        }
-    }
-    if let Ok(mut dir) = env::current_dir() {
-        loop {
-            let cand = dir.join(".build").join("drift");
-            if cand.is_file() {
-                return cand.to_string_lossy().into_owned();
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-    "drift".to_string()
-}
-
-fn fallback_view_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, JsonValue>>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, JsonValue>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-fn load_contract_view(
-    contract_id: &str,
-    resolved_dir: &str,
-) -> Result<BTreeMap<String, JsonValue>, TestError> {
-    let rdir = if !resolved_dir.trim().is_empty() {
-        resolved_dir.trim().to_string()
-    } else {
-        env::var("DRIFT_RESOLVED")
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
-    // Fail-closed when DRIFT_RESOLVED / resolved_dir is explicitly configured.
-    if !rdir.is_empty() {
-        let p = Path::new(&rdir).join(format!("{}.json", contract_id));
-        let txt = fs::read_to_string(&p).map_err(|e| {
-            TestError::harness(format!(
-                "cannot read resolved view '{}': {}",
-                p.display(),
-                e
-            ))
-        })?;
-        let doc = parse_json(&txt).map_err(|e| {
-            TestError::harness(format!("invalid JSON in '{}': {}", p.display(), e))
-        })?;
-        return match doc {
-            JsonValue::Object(m) => Ok(m),
-            _ => Err(TestError::harness(format!(
-                "resolved view '{}' is not a JSON object",
-                p.display()
-            ))),
-        };
-    }
-
-    if let Ok(guard) = fallback_view_cache().lock() {
-        if let Some(cached) = guard.get(contract_id) {
-            return Ok(cached.clone());
-        }
-    }
-
-    let mut dir = env::current_dir().map_err(|e| TestError::harness(e.to_string()))?;
-    let mut toml_path: Option<PathBuf> = None;
-    loop {
-        let cand = dir
-            .join(".drift")
-            .join("contracts")
-            .join(format!("{}.toml", contract_id));
-        if cand.is_file() {
-            toml_path = Some(cand);
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    let toml_path = toml_path.ok_or_else(|| {
-        TestError::harness(format!("cannot locate contract '{}.toml'", contract_id))
-    })?;
-    let cli = find_drift_cli();
-    let out = Command::new(&cli)
-        .arg("show")
-        .arg(&toml_path)
-        .arg("--as")
-        .arg("json")
-        .output()
-        .map_err(|e| TestError::harness(format!("failed to invoke '{}': {}", cli, e)))?;
-    if !out.status.success() {
-        return Err(TestError::harness(format!(
-            "drift show failed for '{}': {}",
-            toml_path.display(),
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let doc = parse_json(&stdout).map_err(|e| {
-        TestError::harness(format!(
-            "invalid JSON from drift show '{}': {}",
-            toml_path.display(),
-            e
-        ))
-    })?;
-    let JsonValue::Object(map) = doc else {
-        return Err(TestError::harness(
-            "drift show output is not a JSON object".to_string(),
-        ));
-    };
-    if let Ok(mut guard) = fallback_view_cache().lock() {
-        guard.insert(contract_id.to_string(), map.clone());
-    }
-    Ok(map)
-}
-
+pub use probes::{
+    canonical_rust_test_id, canonical_test_id, discover_binary_tests, parse_list_terse_output,
+};
 pub(crate) use checks::load_contract_plan_stub;
+pub(crate) use probes::load_contract_view;
 
 fn resolve_env_map() -> Result<BTreeMap<String, String>, TestError> {
     let raw = env::var("DRIFT_ENV").unwrap_or_default().trim().to_string();
@@ -624,13 +409,35 @@ where
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let ev_dir = if !opts.events_dir.trim().is_empty() {
+    let ev_raw = if !opts.events_dir.trim().is_empty() {
         opts.events_dir.trim().to_string()
     } else {
         env::var("DRIFT_EVENTS")
             .unwrap_or_default()
             .trim()
             .to_string()
+    };
+    let ev_dir = if !ev_raw.is_empty() {
+        ev_raw
+    } else if opts.resolved_dir.trim().is_empty()
+        && env::var("DRIFT_RESOLVED").unwrap_or_default().trim().is_empty()
+    {
+        if let Ok(cwd) = env::current_dir() {
+            if let Some(sd) = probes::resolve_state_root(&cwd)? {
+                let d1 = sd.join(".drift").join("events");
+                if d1.is_dir() {
+                    d1.to_string_lossy().into_owned()
+                } else {
+                    sd.join(".drift-work").join("events").to_string_lossy().into_owned()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
     };
 
     let mut ctx = DriftContext {

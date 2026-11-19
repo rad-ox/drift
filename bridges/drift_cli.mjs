@@ -1,6 +1,6 @@
 // Single-command CLI runner and test-file selection for the DRIFT JavaScript bridge.
 
-import { ensureExportGeneration, runPrecheckTestLiterals } from './drift_ui_collector.mjs';
+import { ensureExportGeneration, runPrecheckTestLiterals, validateShadowStateDir } from './drift_ui_collector.mjs';
 import { tightenThenMapBySumResiduals } from './drift_ui_surface.mjs';
 export { tightenThenMapBySumResiduals };
 
@@ -159,6 +159,20 @@ export function precheckTestLiterals(testFiles, resDir, area, fs, path) {
   return runPrecheckTestLiterals(testFiles, resDir, area, fs, path);
 }
 
+export function resolveCliWorkPaths(cwd, env, fs, path) {
+  const sd = validateShadowStateDir(cwd, env, fs, path);
+  let area = cwd;
+  if (sd) {
+    const mf = path.join(sd, 'shadow.toml'), sr = fs.existsSync(mf) ? ((env.DRIFT_SOURCE_ROOT || '').trim() || (fs.readFileSync(mf, 'utf8').match(/^\s*source_root\s*=\s*"([^"]*)"/mu) || [])[1] || '') : '';
+    if (sr) area = fs.realpathSync(path.resolve(sd, sr));
+  } else while (!fs.existsSync(path.join(area, '.drift', 'contracts')) && path.dirname(area) !== area) area = path.dirname(area);
+  const stateArea = sd || area, workRoot = path.join(stateArea, '.drift-work');
+  const rk = ((env.DRIFT_RUN_ID || '').trim() || (env.DRIFT_PACK_REF || '').trim()).replace(/[^A-Za-z0-9._-]+/gu, '_').replace(/^_+|_+$/gu, '');
+  return { area, stateArea, workRoot, runRoot: rk ? path.join(workRoot, 'runs', rk) : workRoot, hasRunScope: Boolean(rk), isShadow: Boolean(sd && path.resolve(sd) !== path.resolve(area)) };
+}
+
+function writeAtomicUtf8(fs, p, s, pid) { const t = `${p}.tmp.${pid}`; fs.writeFileSync(t, s, 'utf8'); fs.renameSync(t, p); }
+
 export function runDriftCli(argv, execFileSync, fs, path, process) {
   let mode = 'gate', jsonOut = false, allGate = false, forceMut = false, mutWhen = false, mutBudget = '', baseRef = '', wantChanged = false;
   const changedPaths = [], targets = [];
@@ -177,9 +191,9 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
       if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) changedPaths.push(argv[++i]);
     } else if (a && !a.startsWith('-')) targets.push(a);
   }
-  let area = process.cwd();
-  while (!fs.existsSync(path.join(area, '.drift', 'contracts')) && path.dirname(area) !== area) area = path.dirname(area);
-  const cDir = path.join(area, '.drift', 'contracts');
+  const { area, stateArea, workRoot, runRoot, hasRunScope, isShadow } = resolveCliWorkPaths(process.cwd(), process.env, fs, path);
+  const sdArgs = isShadow ? ['--state-dir', stateArea] : [];
+  const cDir = path.join(stateArea, '.drift', 'contracts');
   if (!fs.existsSync(cDir)) throwError(`no .drift/contracts found from ${process.cwd()}`);
   if (!targets.length) for (const fn of fs.readdirSync(cDir).filter((f) => f.endsWith('.toml')).sort()) targets.push(path.basename(fn, '.toml'));
   if (!targets.length) throwError('usage: node drift.mjs [test|prove|gate] [<contract...>] [--base <ref>] [--changed [<file>]] [--prove|--gate] [--json]');
@@ -192,7 +206,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
       for (const ln of `${dOut}\n${uOut}`.split('\n')) { const p = ln.trim(); if (p && !p.startsWith('.drift-work/') && !seen.has(p)) { seen.add(p); changedPaths.push(p); } }
     } catch {}
   }
-  const resDir = path.join(area, '.drift-work', 'resolved'), evDir = path.join(area, '.drift-work', 'events');
+  const resDir = path.join(runRoot, 'resolved'), evDir = path.join(runRoot, 'events');
   fs.mkdirSync(resDir, { recursive: true });
   fs.mkdirSync(evDir, { recursive: true });
   const ids = [], idSet = new Set(), tomls = [], tomlSet = new Set(), relSrcs = [];
@@ -221,10 +235,11 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     } catch (e) { if (String(e?.message || '').includes('not found at')) throw e; }
     if (!ids.length) throwError(`contract "${relSrcs[0].raw}" not found at ${relSrcs[0].direct}`);
   }
-  const genDir = ensureExportGeneration(area, cli, ids, tomls, resDir, execFileSync, fs, path);
+  const genDir = ensureExportGeneration(stateArea, cli, ids, tomls, resDir, execFileSync, fs, path);
   let selFile = '', narrowedFiles = null, selectWidened = false, selectReasons = [];
   if (baseRef) {
-    const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, '--base', baseRef, '--events', evDir, '--files', '--json', ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []))];
+    const baseEvArgs = hasRunScope && fs.existsSync(path.join(workRoot, 'events')) ? ['--events', evDir, '--events', path.join(workRoot, 'events')] : ['--events', evDir];
+    const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, ...sdArgs, '--base', baseRef, ...baseEvArgs, '--files', '--json', ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []))];
     let selOut = '', selStatus = 0, selErr = '';
     try { selOut = execFileSync(cli, selArgs, { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) {
       selStatus = typeof e?.status === 'number' ? e.status : 2;
@@ -235,7 +250,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     let selObj = null;
     try { selObj = JSON.parse(selOut); } catch {}
     if (!isObj(selObj)) throwError(selErr || 'drift select returned invalid JSON');
-    fs.writeFileSync(selFile = path.join(area, '.drift-work', 'select.json'), selOut, 'utf8');
+    writeAtomicUtf8(fs, selFile = path.join(runRoot, 'select.json'), selOut, process.pid);
     if (selObj.all === false && Array.isArray(selObj.test_files)) narrowedFiles = selObj.test_files;
     else {
       selectWidened = true;
@@ -248,7 +263,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     for (const f of narrowedFiles) testFiles.add(f);
   } else {
     const byCid = new Map(ids.map((id) => [id, new Set()]));
-    for (const dir of [evDir, path.join(area, '.drift', 'events')]) {
+    for (const dir of [evDir, path.join(workRoot, 'events'), path.join(stateArea, '.drift', 'events')]) {
       if (!fs.existsSync(dir)) continue;
       for (const fn of fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')).sort()) {
         for (const line of fs.readFileSync(path.join(dir, fn), 'utf8').split('\n')) {
@@ -310,15 +325,15 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
       autoTouched = diffOut.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('.drift/') && !s.startsWith('.drift-work/')).join(',');
     } catch {}
   }
-  const cfgPath = path.join(area, '.drift', 'config.toml');
+  const cfgPath = path.join(stateArea, '.drift', 'config.toml');
   const needMut = forceMut
     || (fs.existsSync(cfgPath) && /proof\s*=\s*"killed"/u.test(fs.readFileSync(cfgPath, 'utf8')))
     || ids.some((id) => { const vf = path.join(resDir, `${id}.json`); return fs.existsSync(vf) && JSON.parse(fs.readFileSync(vf, 'utf8'))?.requires?.proof === 'killed'; });
-  const mutFile = path.join(area, '.drift-work', 'mutants.json'), mutEvDir = path.join(area, '.drift-work', 'mut-events');
+  const mutFile = path.join(runRoot, 'mutants.json'), mutEvDir = path.join(runRoot, 'mut-events');
   if (needMut) {
     fs.rmSync(mutEvDir, { recursive: true, force: true });
     fs.mkdirSync(mutEvDir, { recursive: true });
-    const mArgs = ['mutants', ...tomls, ...(baseRef ? ['--base', baseRef] : []), ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : [])), ...(mutWhen ? ['--when'] : []), ...(mutBudget ? ['--budget', mutBudget, '--events', evDir] : []), '--out', mutFile];
+    const mArgs = ['mutants', ...tomls, ...sdArgs, ...(baseRef ? ['--base', baseRef] : []), ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : [])), ...(mutWhen ? ['--when'] : []), ...(mutBudget ? ['--budget', mutBudget, '--events', evDir] : []), '--out', mutFile];
     try { execFileSync(cli, mArgs, { cwd: area, stdio: ['ignore', 'pipe', 'pipe'] }); } catch {}
   }
   let testStatus = 0;
@@ -347,6 +362,6 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     return testStatus;
   }
   const baseArgs = baseRef ? ['--base', baseRef, ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : ['--changed-none'])] : [];
-  const gateArgs = [mode, ...(allGate ? [cDir] : tomls), '--events', evDir, ...baseArgs, ...(needMut && fs.existsSync(mutFile) ? ['--mutants', mutFile, '--mutation-events', mutEvDir] : []), ...(jsonOut ? ['--json'] : [])];
+  const gateArgs = [mode, ...(allGate ? [cDir] : tomls), ...sdArgs, '--events', evDir, ...baseArgs, ...(needMut && fs.existsSync(mutFile) ? ['--mutants', mutFile, '--mutation-events', mutEvDir] : []), ...(jsonOut ? ['--json'] : [])];
   try { execFileSync(cli, gateArgs, { cwd: area, stdio: 'inherit' }); return 0; } catch (e) { return typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
 }

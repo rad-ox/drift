@@ -2,11 +2,56 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import os
+from pathlib import Path
+import re
 from typing import Any
 
 DEFAULT_VOLATILE_KEYS = frozenset(('request_id', 'timestamp', 'trace_id', 'audit_id'))
 DEFAULT_ALLOWED_SECOND_WRITES = frozenset(('AUDIT_LOG', 'audit_log', 'METRICS', 'metrics'))
 FRAME_ENTRY_KEYS = frozenset(('writes', 'operations', 'events', 'before', 'after', 'observed'))
+
+
+def validate_shadow_state_dir(cwd: Path, environ: Mapping[str, str]) -> str:
+  raw = environ.get('DRIFT_STATE_DIR', '').strip()
+  if not raw:
+    return ''
+  sd, rc = (Path(raw).resolve() if Path(raw).exists() else (cwd / raw).resolve()), cwd.resolve()
+  mf = sd / 'shadow.toml'
+  if mf.is_symlink():
+    raise ValueError('symlink shadow.toml')
+  if mf.exists():
+    txt = mf.read_text(encoding='utf-8')
+    m = re.search(r'^\s*source_root\s*=\s*"([^"]*)"', txt, re.M)
+    sr = environ.get('DRIFT_SOURCE_ROOT', '').strip() or (m.group(1) if m else '')
+    rs = (sd / sr).resolve() if sr else None
+    if '"drift.shadow-area/1"' not in txt or rs is None or sd == rs or rs in sd.parents or not (rc == rs or rs in rc.parents):
+      raise ValueError('state_dir mismatch')
+  return str(sd)
+
+
+def resolve_cli_work_paths(cwd: Path, environ: Mapping[str, str]) -> tuple[Path, Path, Path, Path, bool, bool]:
+  sd = validate_shadow_state_dir(cwd, environ)
+  area = cwd.resolve()
+  if sd:
+    sd_p, mf = Path(sd), Path(sd) / 'shadow.toml'
+    m = re.search(r'^\s*source_root\s*=\s*"([^"]*)"', mf.read_text(encoding='utf-8'), re.M) if mf.is_file() else None
+    sr = environ.get('DRIFT_SOURCE_ROOT', '').strip() or (m.group(1) if m else '')
+    area, state_area = ((sd_p / sr).resolve() if sr else area), sd_p
+  else:
+    while not (area / '.drift' / 'contracts').is_dir() and area.parent != area:
+      area = area.parent
+    state_area = area
+  wk = state_area / '.drift-work'
+  rk = re.sub(r'[^A-Za-z0-9._-]+', '_', (environ.get('DRIFT_RUN_ID', '').strip() or environ.get('DRIFT_PACK_REF', '').strip())).strip('_')
+  return area, state_area, wk, ((wk / 'runs' / rk) if rk else wk), bool(rk), bool(sd and state_area != area)
+
+
+def write_atomic_utf8(target: Path, text: str) -> None:
+  target.parent.mkdir(parents=True, exist_ok=True)
+  t = target.parent / f'{target.name}.tmp.{os.getpid()}'
+  t.write_text(text, encoding='utf-8')
+  t.replace(target)
 
 
 def is_frame_metadata_envelope(v: Any) -> bool:
@@ -103,48 +148,37 @@ def _unverified_or_raise(ctx: Any, case_id: str, strict: bool, reason: str, deta
   return {'observed': False, 'reason': reason}
 
 
-def run_idempotency_probe(
-  ctx: Any,
-  case_id: str,
-  obs: Any,
-  values_mismatch: Callable[[Any, Any], bool],
-  run_projection_fn: Callable[..., None] | None = None,
-) -> dict[str, Any]:
+def run_idempotency_probe(ctx: Any, case_id: str, obs: Any, values_mismatch: Callable[[Any, Any], bool], run_projection_fn: Callable[..., None] | None = None) -> dict[str, Any]:
   ctx._require_tagged(case_id)
-  pfx = f'{ctx.contract_id}.{case_id}'
-  strict = not isinstance(obs, Mapping) or obs.get('strict') is not False
+  pfx, strict = f'{ctx.contract_id}.{case_id}', not isinstance(obs, Mapping) or obs.get('strict') is not False
   if not isinstance(obs, Mapping):
-    return _unverified_or_raise(ctx, case_id, strict, 'idempotency.unobserved', 'collector reported unobserved state')
-  s1 = obs.get('stateAfterFirst', obs.get('state_after_first'))
-  s2 = obs.get('stateAfterSecond', obs.get('state_after_second'))
+    return _unverified_or_raise(ctx, case_id, strict, 'idempotency.unobserved', 'unobserved')
+  s1, s2 = obs.get('stateAfterFirst', obs.get('state_after_first')), obs.get('stateAfterSecond', obs.get('state_after_second'))
   has_state = s1 is not None and s2 is not None
   sw = obs.get('secondWrites', obs.get('second_writes'))
   second_writes = sw if isinstance(sw, Mapping) else None
   if has_state and values_mismatch(s1, s2):
-    raise AssertionError(f'{pfx}: idempotency.domain_state_mutated: stateAfterFirst and stateAfterSecond differ')
+    raise AssertionError(f'{pfx}: idempotency.domain_state_mutated')
   if second_writes is not None:
-    raw_allow = obs.get('allowedSecondWrites', obs.get('allowed_second_writes'))
-    allowed2 = {str(x) for x in raw_allow} if isinstance(raw_allow, (list, tuple)) else set(DEFAULT_ALLOWED_SECOND_WRITES)
+    ra = obs.get('allowedSecondWrites', obs.get('allowed_second_writes'))
+    a2 = {str(x) for x in ra} if isinstance(ra, (list, tuple)) else set(DEFAULT_ALLOWED_SECOND_WRITES)
     for res, wv in second_writes.items():
-      res_s = str(res)
-      base = res_s.partition('#')[0]
-      if res_s in allowed2 or base in allowed2:
+      rs = str(res)
+      if rs in a2 or rs.partition('#')[0] in a2:
         continue
       cnt = len(wv) if isinstance(wv, (list, tuple)) else wv
       if not _is_non_neg_int(cnt) or int(cnt) > 0:
-        raise AssertionError(f'{pfx}: idempotency.duplicate_write on resource "{res_s}": expected 0 writes on replay, observed {cnt}')
-  first_p, second_p = obs.get('first'), obs.get('second')
-  if isinstance(first_p, Mapping) and isinstance(second_p, Mapping):
-    raw_vol = obs.get('volatileKeys', obs.get('volatile_keys'))
-    vol = {str(x) for x in raw_vol} if isinstance(raw_vol, (list, tuple)) else set(DEFAULT_VOLATILE_KEYS)
-    for k, v1 in first_p.items():
+        raise AssertionError(f'{pfx}: idempotency.duplicate_write on "{rs}": {cnt}')
+  fp, sp = obs.get('first'), obs.get('second')
+  if isinstance(fp, Mapping) and isinstance(sp, Mapping):
+    rv = obs.get('volatileKeys', obs.get('volatile_keys'))
+    vol = {str(x) for x in rv} if isinstance(rv, (list, tuple)) else set(DEFAULT_VOLATILE_KEYS)
+    for k, v1 in fp.items():
       ks = str(k)
-      if ks in vol or ks == '_frame':
-        continue
-      if k in second_p and values_mismatch(v1, second_p[k]):
-        raise AssertionError(f'{pfx}: idempotency.response_diverged on key "{ks}"')
+      if ks not in vol and ks != '_frame' and k in sp and values_mismatch(v1, sp[k]):
+        raise AssertionError(f'{pfx}: idempotency.response_diverged on "{ks}"')
   if obs.get('observed') is False or (not has_state and second_writes is None):
-    return _unverified_or_raise(ctx, case_id, strict, 'idempotency.unobserved', 'missing state snapshots and secondWrites observations')
+    return _unverified_or_raise(ctx, case_id, strict, 'idempotency.unobserved', 'unobserved')
   if 'first' in obs and obs['first'] is not None and run_projection_fn is not None:
     run_projection_fn(ctx, case_id, obs['first'], obs.get('checks') if isinstance(obs.get('checks'), Mapping) else {})
   if hasattr(ctx, 'reads') and isinstance(ctx.reads, Mapping) and case_id in ctx.reads:
@@ -154,59 +188,42 @@ def run_idempotency_probe(
 
 def run_seam_probe(ctx: Any, case_id: str, obs: Any) -> dict[str, Any]:
   ctx._require_tagged(case_id)
-  pfx = f'{ctx.contract_id}.{case_id}'
-  strict = not isinstance(obs, Mapping) or obs.get('strict') is not False
+  pfx, strict = f'{ctx.contract_id}.{case_id}', not isinstance(obs, Mapping) or obs.get('strict') is not False
   if not isinstance(obs, Mapping):
-    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'seam collector is unobserved')
-  max_att = obs.get('maxAttempts', obs.get('max_attempts'))
-  has_retry = 'retryable' in obs or max_att is not None
-  has_timeout = obs.get('timedOut', obs.get('timed_out')) is True
-  max_q = obs.get('maxQueries', obs.get('max_queries'))
-  has_query = max_q is not None
-  att = obs.get('attempts')
-  if has_retry and _is_non_neg_int(att) and int(att) > 0:
+    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'unobserved')
+  ma, mq = obs.get('maxAttempts', obs.get('max_attempts')), obs.get('maxQueries', obs.get('max_queries'))
+  has_r, has_t, has_q, att = ('retryable' in obs or ma is not None), (obs.get('timedOut', obs.get('timed_out')) is True), (mq is not None), obs.get('attempts')
+  if has_r and _is_non_neg_int(att) and int(att) > 0:
     if obs.get('retryable') is False and int(att) > 1:
-      raise AssertionError(f'{pfx}: seam.non_retryable_retried: expected 1 attempt on terminal fault, observed {att}')
+      raise AssertionError(f'{pfx}: seam.non_retryable_retried')
     if obs.get('retryable') is True and int(att) < 2:
-      raise AssertionError(f'{pfx}: seam.retry_missing: expected >= 2 attempts on transient fault, observed {att}')
-    if max_att is not None and (not _is_non_neg_int(max_att) or int(att) > int(max_att)):
-      raise AssertionError(f'{pfx}: seam.max_attempts_exceeded: observed {att} > maxAttempts {max_att}')
-  if has_timeout:
-    lw_v = obs.get('lateWrites', obs.get('late_writes', 0))
-    if _is_non_neg_int(lw_v) and int(lw_v) > 0:
-      raise AssertionError(f'{pfx}: seam.timeout_late_write: expected 0 writes after timeout, observed {lw_v}')
-  if has_query:
-    q_v = obs.get('queries')
-    if _is_non_neg_int(q_v) and _is_non_neg_int(max_q) and int(q_v) > int(max_q):
-      raise AssertionError(f'{pfx}: seam.query_budget_exceeded: observed {q_v} > maxQueries {max_q}')
-  if obs.get('observed') is False or (not has_retry and not has_timeout and not has_query):
-    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'seam collector is unobserved')
-  if has_retry and (not _is_non_neg_int(att) or int(att) <= 0):
-    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'missing positive attempts count from seam spy')
-  if has_timeout and not _is_non_neg_int(obs.get('lateWrites', obs.get('late_writes', 0))):
-    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'invalid lateWrites observation')
-  if has_query and (not _is_non_neg_int(obs.get('queries')) or not _is_non_neg_int(max_q)):
-    return _unverified_or_raise(ctx, case_id, strict, 'queries.unobserved', 'missing non-negative queries count from SQL listener')
+      raise AssertionError(f'{pfx}: seam.retry_missing')
+    if ma is not None and (not _is_non_neg_int(ma) or int(att) > int(ma)):
+      raise AssertionError(f'{pfx}: seam.max_attempts_exceeded')
+  if has_t and _is_non_neg_int(obs.get('lateWrites', obs.get('late_writes', 0))) and int(obs.get('lateWrites', obs.get('late_writes', 0))) > 0:
+    raise AssertionError(f'{pfx}: seam.timeout_late_write')
+  if has_q and _is_non_neg_int(obs.get('queries')) and _is_non_neg_int(mq) and int(obs.get('queries')) > int(mq):
+    raise AssertionError(f'{pfx}: seam.query_budget_exceeded')
+  if obs.get('observed') is False or (not has_r and not has_t and not has_q) or (has_r and (not _is_non_neg_int(att) or int(att) <= 0)):
+    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'unobserved')
+  if has_t and not _is_non_neg_int(obs.get('lateWrites', obs.get('late_writes', 0))):
+    return _unverified_or_raise(ctx, case_id, strict, 'seam.unobserved', 'unobserved')
+  if has_q and (not _is_non_neg_int(obs.get('queries')) or not _is_non_neg_int(mq)):
+    return _unverified_or_raise(ctx, case_id, strict, 'queries.unobserved', 'unobserved')
   if hasattr(ctx, 'reads') and isinstance(ctx.reads, Mapping) and case_id in ctx.reads:
     ctx.reads[case_id].add('@probe:seam')
   return {'observed': True, 'reason': ''}
 
 
-def run_rollback_probe(
-  ctx: Any,
-  case_id: str,
-  obs: Any,
-  values_mismatch: Callable[[Any, Any], bool],
-) -> dict[str, Any]:
+def run_rollback_probe(ctx: Any, case_id: str, obs: Any, values_mismatch: Callable[[Any, Any], bool]) -> dict[str, Any]:
   ctx._require_tagged(case_id)
-  pfx = f'{ctx.contract_id}.{case_id}'
-  strict = not isinstance(obs, Mapping) or obs.get('strict') is not False
-  if isinstance(obs, Mapping) and 'before' in obs and 'after' in obs and obs['before'] is not None and obs['after'] is not None:
+  pfx, strict = f'{ctx.contract_id}.{case_id}', not isinstance(obs, Mapping) or obs.get('strict') is not False
+  if isinstance(obs, Mapping) and obs.get('before') is not None and obs.get('after') is not None:
     res = str(obs.get('resource') or 'primary')
     if values_mismatch(obs['before'], obs['after']) and obs.get('compensated') is not True:
-      raise AssertionError(f'{pfx}: rollback.dirty_partial_write on "{res}": before and after snapshots differ after downstream failure')
-  if not isinstance(obs, Mapping) or obs.get('observed') is False or 'before' not in obs or 'after' not in obs or obs['before'] is None or obs['after'] is None:
-    return _unverified_or_raise(ctx, case_id, strict, 'rollback.unobserved', 'missing before/after snapshot on primary resource')
+      raise AssertionError(f'{pfx}: rollback.dirty_partial_write on "{res}"')
+  if not isinstance(obs, Mapping) or obs.get('observed') is False or obs.get('before') is None or obs.get('after') is None:
+    return _unverified_or_raise(ctx, case_id, strict, 'rollback.unobserved', 'unobserved')
   if hasattr(ctx, 'reads') and isinstance(ctx.reads, Mapping) and case_id in ctx.reads:
     ctx.reads[case_id].add('@probe:rollback')
   return {'observed': True, 'reason': ''}
@@ -218,10 +235,9 @@ def check_bola_variant_pair(pfx: str, variant: Any) -> bool:
   b = variant.get('bola') if isinstance(variant.get('bola'), Mapping) else variant
   if 'actor_owner' not in b and 'resource_owner' not in b:
     return False
-  actor = str(b.get('actor_owner') or '').strip()
-  owner = str(b.get('resource_owner') or '').strip()
-  if not actor or not owner or actor == owner:
-    raise AssertionError(f'{pfx}: bola.invalid_fixture: cross-owner probe requires distinct non-empty actor_owner and resource_owner')
+  a, o = str(b.get('actor_owner') or '').strip(), str(b.get('resource_owner') or '').strip()
+  if not a or not o or a == o:
+    raise AssertionError(f'{pfx}: bola.invalid_fixture')
   return True
 
 
@@ -241,20 +257,18 @@ def _contains_str_leaf(val: Any, needle: str, depth: int = 0) -> bool:
 
 def run_log_sink_probe(ctx: Any, case_id: str, obs: Any) -> dict[str, Any]:
   ctx._require_tagged(case_id)
-  pfx = f'{ctx.contract_id}.{case_id}'
-  strict = not isinstance(obs, Mapping) or obs.get('strict') is not False
+  pfx, strict = f'{ctx.contract_id}.{case_id}', not isinstance(obs, Mapping) or obs.get('strict') is not False
   if not isinstance(obs, Mapping):
-    return _unverified_or_raise(ctx, case_id, strict, 'log_sink.unobserved', 'log sink collector is unobserved')
-  raw_sec = obs.get('secretValues', obs.get('secret_values'))
-  secrets = [s for s in (raw_sec if isinstance(raw_sec, (list, tuple)) else ()) if isinstance(s, str) and s.strip()]
+    return _unverified_or_raise(ctx, case_id, strict, 'log_sink.unobserved', 'unobserved')
+  rs = obs.get('secretValues', obs.get('secret_values'))
+  sec = [s for s in (rs if isinstance(rs, (list, tuple)) else ()) if isinstance(s, str) and s.strip()]
   logs = obs.get('logLines', obs.get('log_lines'))
-  has_logs = isinstance(logs, (str, list, tuple))
-  has_payload = 'payload' in obs and obs['payload'] is not None
-  for s in secrets:
-    if (has_logs and _contains_str_leaf(logs, s)) or (has_payload and _contains_str_leaf(obs['payload'], s)):
-      raise AssertionError(f'{pfx}: log_sink.secret_leaked: secret canary leaked in observed sink')
-  if obs.get('observed') is False or not secrets or (not has_logs and not has_payload):
-    return _unverified_or_raise(ctx, case_id, strict, 'log_sink.unobserved', 'missing secretValues or observed logLines/payload')
+  hl, hp = isinstance(logs, (str, list, tuple)), ('payload' in obs and obs['payload'] is not None)
+  for s in sec:
+    if (hl and _contains_str_leaf(logs, s)) or (hp and _contains_str_leaf(obs['payload'], s)):
+      raise AssertionError(f'{pfx}: log_sink.secret_leaked')
+  if obs.get('observed') is False or not sec or (not hl and not hp):
+    return _unverified_or_raise(ctx, case_id, strict, 'log_sink.unobserved', 'unobserved')
   if hasattr(ctx, 'reads') and isinstance(ctx.reads, Mapping) and case_id in ctx.reads:
     ctx.reads[case_id].add('@probe:log_sink')
   return {'observed': True, 'reason': ''}
@@ -339,28 +353,26 @@ def ensure_export_generation(area: Any, cli: str, ids: list[str], tomls: list[st
         warm_ok = all((gen_dir / f'{cid}.json').is_file() and hashlib.sha256((gen_dir / f'{cid}.json').read_bytes()).hexdigest() == m_files.get(cid) for cid in ids)
     except Exception:
       warm_ok = False
+  src_dir = gen_dir
   if not warm_ok:
     gen_root.mkdir(parents=True, exist_ok=True)
-    tmp_dir = gen_root / f'.tmp-{os.getpid()}'
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    show_p = subprocess.run([cli, 'show', *tomls, '--out', str(tmp_dir)], cwd=str(area_p), capture_output=True, text=True, check=False)
+    src_dir = gen_root / f'.tmp-{os.getpid()}'
+    shutil.rmtree(src_dir, ignore_errors=True)
+    src_dir.mkdir(parents=True, exist_ok=True)
+    show_p = subprocess.run([cli, 'show', *tomls, '--out', str(src_dir)], cwd=str(area_p), capture_output=True, text=True, check=False)
     if show_p.returncode != 0:
-      shutil.rmtree(tmp_dir, ignore_errors=True)
+      shutil.rmtree(src_dir, ignore_errors=True)
       raise RuntimeError((show_p.stderr or show_p.stdout or '').strip() or f'drift show failed with status {show_p.returncode}')
-    f_map = {cid: hashlib.sha256((tmp_dir / f'{cid}.json').read_bytes()).hexdigest() for cid in ids if (tmp_dir / f'{cid}.json').is_file()}
-    (tmp_dir / 'manifest.json').write_text(json.dumps({'schema': 'drift.export-generation/1', 'generation': gen_id, 'files': f_map}) + '\n', encoding='utf-8')
-    try:
-      if gen_dir.exists():
-        shutil.rmtree(gen_dir, ignore_errors=True)
-      tmp_dir.rename(gen_dir)
-    except Exception:
-      shutil.rmtree(tmp_dir, ignore_errors=True)
+    f_map = {cid: hashlib.sha256((src_dir / f'{cid}.json').read_bytes()).hexdigest() for cid in ids if (src_dir / f'{cid}.json').is_file()}
+    (src_dir / 'manifest.json').write_text(json.dumps({'schema': 'drift.export-generation/1', 'generation': gen_id, 'files': f_map}) + '\n', encoding='utf-8')
   (res_p / '.plans').mkdir(parents=True, exist_ok=True)
   for cid in ids:
-    gf, pf = gen_dir / f'{cid}.json', gen_dir / '.plans' / f'{cid}.plan.json'
+    gf, pf = src_dir / f'{cid}.json', src_dir / '.plans' / f'{cid}.plan.json'
     if gf.is_file(): shutil.copyfile(gf, res_p / f'{cid}.json')
     if pf.is_file(): shutil.copyfile(pf, res_p / '.plans' / f'{cid}.plan.json')
+  if src_dir != gen_dir:
+    try: src_dir.rename(gen_dir)
+    except OSError: shutil.rmtree(src_dir, ignore_errors=True)
   return gen_dir
 
 

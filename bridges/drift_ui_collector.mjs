@@ -7,6 +7,20 @@ const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 export { deriveObservedCapabilities, isPointCoveredByVisualOverlays };
 
+export function validateShadowStateDir(cwd, env, fs, path) {
+  const raw = (env.DRIFT_STATE_DIR || '').trim();
+  if (!raw) return '';
+  const sd = fs.existsSync(raw) ? fs.realpathSync(raw) : path.resolve(cwd, raw), mf = path.join(sd, 'shadow.toml');
+  if (fs.existsSync(mf)) {
+    if (fs.lstatSync(mf).isSymbolicLink()) throw new Error('symlink shadow.toml');
+    const txt = fs.readFileSync(mf, 'utf8'), sr = (env.DRIFT_SOURCE_ROOT || '').trim() || (txt.match(/^\s*source_root\s*=\s*"([^"]*)"/mu) || [])[1] || '';
+    const rc = fs.existsSync(cwd) ? fs.realpathSync(cwd) : path.resolve(cwd), rs = sr ? fs.realpathSync(path.resolve(sd, sr)) : '';
+    const sub = (a, b) => a === b || a.startsWith(b + path.sep);
+    if (!txt.includes('"drift.shadow-area/1"') || !rs || sub(sd, rs) || !sub(rc, rs)) throw new Error('state_dir mismatch');
+  }
+  return sd;
+}
+
 function extractSurfaceRoleState(root, roleSelectors) {
   const roles = {};
   if (!isObj(root)) return roles;
@@ -368,33 +382,31 @@ export function ensureExportGeneration(area, cli, ids, tomls, resDir, execFileSy
       }
     } catch { warmOk = false; }
   }
+  let srcDir = genDir;
   if (!warmOk) {
     fs.mkdirSync(genRoot, { recursive: true });
-    const tmpDir = path.join(genRoot, `.tmp-${process.pid}-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    srcDir = path.join(genRoot, `.tmp-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(srcDir, { recursive: true });
     try {
-      execFileSync(cli, ['show', ...tomls, '--out', tmpDir], { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      execFileSync(cli, ['show', ...tomls, '--out', srcDir], { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       const files = {};
       for (const id of ids) {
-        const tf = path.join(tmpDir, `${id}.json`);
+        const tf = path.join(srcDir, `${id}.json`);
         if (fs.existsSync(tf)) files[id] = fnv1aHex(fs.readFileSync(tf, 'utf8'));
       }
-      fs.writeFileSync(path.join(tmpDir, 'manifest.json'), JSON.stringify({ schema: 'drift.export-generation/1', generation: genId, files }) + '\n', 'utf8');
-      try {
-        if (fs.existsSync(genDir)) fs.rmSync(genDir, { recursive: true, force: true });
-        fs.renameSync(tmpDir, genDir);
-      } catch {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
+      fs.writeFileSync(path.join(srcDir, 'manifest.json'), JSON.stringify({ schema: 'drift.export-generation/1', generation: genId, files }) + '\n', 'utf8');
     } catch (e) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(srcDir, { recursive: true, force: true });
       const errMsg = String(e?.stderr || e?.stdout || e?.message || '').trim();
       throwError(errMsg || 'drift show failed');
     }
   }
   for (const id of ids) {
-    const gf = path.join(genDir, `${id}.json`), rf = path.join(resDir, `${id}.json`);
+    const gf = path.join(srcDir, `${id}.json`), rf = path.join(resDir, `${id}.json`);
     if (fs.existsSync(gf)) fs.copyFileSync(gf, rf);
+  }
+  if (srcDir !== genDir) {
+    try { fs.renameSync(srcDir, genDir); } catch { fs.rmSync(srcDir, { recursive: true, force: true }); }
   }
   return genDir;
 }

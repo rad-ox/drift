@@ -101,6 +101,28 @@
         },
         "budgets": {
           "const": "required"
+        },
+        "budget_metrics": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "request_latency",
+              "successful_throughput",
+              "process_rss",
+              "frame_time",
+              "cold_start",
+              "artifact_bytes",
+              "work_units",
+              "tick_alloc_bytes",
+              "tick_alloc_count",
+              "alloc_bytes_total",
+              "alloc_count_total",
+              "frame_hitch_ns",
+              "cpu_time_ns"
+            ]
+          }
         }
       }
     }

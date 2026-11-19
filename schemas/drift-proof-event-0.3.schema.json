@@ -132,6 +132,13 @@
             "pattern": "^[^# \\t\\r\\n/\\\\\\[\\]]+#[^# \\t\\r\\n\\[\\]]+$"
           }
         },
+        "containment": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["no_network", "readonly_workspace"]
+          }
+        },
         "inputs": {
           "type": "object",
           "additionalProperties": {

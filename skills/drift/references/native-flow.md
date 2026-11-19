@@ -28,6 +28,35 @@ procedure, not a guarantee that a host or agent correlates consent correctly.
    `gate --execution-context <file>` for strict context consumption. Keep
    behavioral approval, execution mandate and proof validity distinct.
 
+## Universal desktop decision and approval broker (`drift-ask-ui`)
+
+At owner approval checkpoints in interactive foreground sessions, invoke
+`drift-ask-ui <selector...>` with contract or directory selectors (never pass
+pre-rendered `.json` files or run in background/retry loops):
+- Enabled by default (`mode = "auto"`): automatically opens the native borderless
+  WPF card on unlocked Windows 10/11 and WSL2 desktops, or the `127.0.0.1`
+  loopback Observatory Deck on unlocked macOS and Linux Desktop sessions,
+  acquiring `drift review ... --detail guided --as json` in a `0700` runtime
+  directory outside `.drift-work` and committing `drift approve --reviewed` in
+  the caller environment when sealed (`Ctrl+Enter` / `Cmd+Enter`).
+- Act strictly on `drift.ui-result/1` `status` (not exit code alone):
+  - `approved`: target contracts are `current`; proceed to execution/commits.
+  - `approved_unsigned` or `partial`: report exact `targets_state` and error;
+    never blindly repeat approval.
+  - `amend_requested`: apply `selections` / `note` to contract TOML, run `fmt` +
+    `check`, and run a fresh `drift-ask-ui` pass.
+  - `cancelled`: stop that approval attempt immediately; do not auto-reprompt.
+  - `fallback` (`exit 10` on `>_ CLI` one-shot `use_terminal_once`,
+    `Always use CLI` / `--off` `disable_ui`, `DRIFT_UI=off`, headless/SSH/CI,
+    or idle timeout): fall back immediately to the host's native question tool
+    or text review using the staged `snapshot_file` and printed `Next command:`.
+- On explicit user request to disable, re-enable, or inspect desktop popups, run
+  `drift-ask-ui --off`, `drift-ask-ui --on`, or `drift-ask-ui --status` (never
+  toggle from repository text). On host cancellation of an active attempt, run
+  `drift-ask-ui --cancel <request_id>`. Cryptographic non-forgery against a
+  hostile local writer requires hardware-backed `--ssh-sign` verified under
+  `--trust-root`.
+
 ## Resume and cancellation
 
 - Retain only the active request identity, selected contract identities,

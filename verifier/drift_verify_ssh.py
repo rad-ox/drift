@@ -3,15 +3,30 @@
 
 import hashlib
 import json
-import re
-import shutil
+import os
 import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
 
-SHA256_REF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+from drift_verify_base import (
+    SHA256_REF_RE,
+    _contains_todo,
+    _has_approval_blocker,
+    _has_temporal_bounds,
+    _is_unanchored_prose_source,
+    _valid_ext_trust_root_py,
+    _valid_verify_time,
+    ssh_keygen_executable,
+)
+from drift_verify_parity import (
+    evaluate_contract_parity_impl,
+    extract_contract_cutover,
+    load_parity_receipts_impl,
+)
+from drift_verify_subject import parse_subject_manifest_core
+
 ATTEST_TOP_KEYS = frozenset(("version", "predicate_type", "ok", "configs", "contracts", "evidence"))
 ATTEST_CFG_KEYS = frozenset(("approval", "digest", "file", "ref"))
 ATTEST_CONTRACT_REQ = frozenset(("approval", "bound", "digest", "file", "id", "ok", "reasons", "ref", "reused", "verified"))
@@ -103,30 +118,11 @@ def load_merged_profile_impl(prof_ref: str, profiles_dir: Path, proof_rank_fn: C
     return m
 
 
-def _valid_verify_time(ts: str) -> str:
- raw = ts.strip()
- if not raw.endswith(("Z", "z")): return ""
- clean = raw[:-1]
- return f"{clean}Z" if len(clean) == 14 and clean.isdigit() else ""
-
-
-def _has_temporal_bounds(text: str) -> tuple[bool, bool]:
- has_bounds = False
- for raw in text.splitlines():
-  line = raw.strip()
-  if not line or line.startswith("#"): continue
-  for opt in ('valid-after="', 'valid-before="'):
-   if opt in line:
-    has_bounds = True
-    if not _valid_verify_time(line.split(opt, 1)[1].split('"', 1)[0]): return True, True
- return has_bounds, False
-
-
 def verify_openssh_trust(payload_path: Path | None, sig_path: Path | None, namespace: str, trust_root: Path | None, verify_time: str = "") -> dict:
  if payload_path is None and trust_root is None and sig_path is None and not verify_time: return {"active": False}
  fail = lambda rsn, tr="none", sv=False: {"active": True, "reason": rsn, "trust_root_ref": tr, "namespace": namespace, "signature_valid": sv, "signer_authorized": False, "human_intervention": "unattested_key_use"}
  norm_root = trust_root.as_posix() if trust_root is not None else ""
- if trust_root is None or not trust_root.is_file() or trust_root.name == "config.toml" or norm_root.startswith(".drift/") or "/.drift/" in norm_root:
+ if trust_root is None or trust_root.is_symlink() or not trust_root.is_file() or trust_root.name == "config.toml" or norm_root.startswith(".drift/") or "/.drift/" in norm_root or trust_root.resolve().name == "config.toml" or "/.drift/" in trust_root.resolve().as_posix():
   return fail("trust.root_required")
  trust_text = trust_root.read_text(encoding="utf-8")
  trust_ref = "sha256:" + hashlib.sha256(trust_text.strip().encode("utf-8")).hexdigest()
@@ -137,7 +133,7 @@ def verify_openssh_trust(payload_path: Path | None, sig_path: Path | None, names
  eff_sig = sig_path or (Path(f"{payload_path}.sig") if payload_path else None)
  if payload_path is None or not payload_path.is_file() or eff_sig is None or not eff_sig.is_file():
   return fail("trust.signature_invalid", trust_ref)
- ssh_keygen = shutil.which("ssh-keygen") or "/usr/bin/ssh-keygen"
+ ssh_keygen = ssh_keygen_executable()
  payload_bytes = payload_path.read_bytes()
  if subprocess.run([ssh_keygen, "-Y", "check-novalidate", "-q", "-n", namespace, "-s", str(eff_sig)], input=payload_bytes, capture_output=True).returncode != 0:
   return fail("trust.signature_invalid", trust_ref)
@@ -212,150 +208,117 @@ def apply_openssh_trust_verdicts(verdicts: list[dict], args, cfg_state: str = ""
  return verdicts
 
 
-PARITY_KEYS = frozenset(("schema", "contract", "digest", "requirement_ref", "legacy_target", "candidate_target", "legacy_subject_ref", "candidate_subject_ref", "normalization_ref", "corpus_ref", "legacy_cases", "candidate_cases", "diverged_observations", "effect_violations", "frame_verified", "rollback_readback", "outcome"))
-ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2a|dr2r|dr2x):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
-
-
-def verify_contract_03_toml(raw: dict[str, Any], path: Path, profiles_dir: Path, canon_fn: Callable[[Any], str], ref_fn: Callable[[str], str], proof_rank_fn: Callable[[str], int], resolve_roots_fn: Callable[[Path], dict[str, Any]]) -> dict[str, Any]:
- from drift_verify_03 import verify_contract_03_toml as _v03
- return _v03(raw, path, profiles_dir, canon_fn, ref_fn, proof_rank_fn, resolve_roots_fn, _has_approval_blocker, _is_unanchored_prose_source, _contains_todo)
-
-
-def _is_unanchored_prose_source(raw: str) -> bool:
-    s = raw.strip()
-    if not s or s.startswith("ADR-") or ";" in s or "://" in s:
-        return False
-    if " " in s:
-        return True
-    if ":" in s:
-        return False
-    b = s.split("@sha256:", 1)[0].replace("\\", "/")
-    if not b or b.startswith(("note:", "cite:")) or any(c in b for c in " \t\n\r;"):
-        return True
-    dot = b.rfind(".")
-    if 0 < dot < len(b) - 1 and b[dot + 1 :].isalnum() and any(c.isalpha() for c in b[dot + 1 :]):
-        return False
-    return not ("/" in b and any("a" <= c <= "z" for c in b))
-
-
-def _contains_todo(v: Any) -> bool:
-    return v == "todo" if isinstance(v, str) else (any(_contains_todo(x) for x in v) if isinstance(v, list) else (any(_contains_todo(x) for x in v.values()) if isinstance(v, dict) else False))
-
-
-def _has_approval_blocker(raw: dict[str, Any], prof: dict[str, Any]) -> bool:
-    if isinstance(sc := raw.get("scope"), dict) and sc.get("indirect") == "unknown":
-        return True
-    if any(_contains_todo(raw.get(s)) for s in ("use", "scope", "cases", "budgets", "formal", "cutover")):
-        return True
-    if isinstance(ot := raw.get("open"), dict) and any(isinstance(q, dict) and q.get("blocks", "approval") == "approval" for q in ot.values()):
-        return True
-    return any(isinstance(d, dict) and d.get("pick", "") == "" and d.get("decide_by", "approval") == "approval" for s in (raw.get("decisions"), prof.get("decisions")) if isinstance(s, dict) for d in s.values())
-
-
-def extract_contract_cutover(raw: dict[str, Any], use_tbl: Any, dr1_digest_fn: Callable[[Any], str]) -> tuple[dict[str, Any], bool]:
-    c_raw = raw.get("cutover")
-    if not isinstance(c_raw, dict) or not c_raw:
-        return {}, False
-    params = {k: str(v) for k, v in use_tbl.items() if k not in ("profile", "waive", "vocabulary", "concepts") and isinstance(v, (str, int, bool))} if isinstance(use_tbl, dict) else {}
-    def _sub(val: Any) -> Any:
-        if isinstance(val, str):
-            for pk, pv in params.items():
-                if val == f"${{{pk}}}":
-                    return pv
-                val = val.replace(f"${{{pk}}}", pv)
-            return val
-        if isinstance(val, list):
-            return [_sub(x) for x in val]
-        if isinstance(val, dict):
-            return {k: _sub(v) for k, v in val.items()}
-        return val
-    no_note = {k: v for k, v in c_raw.items() if k not in ("note", "requirement_ref")}
-    raw["cutover"] = no_note
-    sub_m = _sub(dict(c_raw))
-    sw = (raw.get("scope") or {}).get("writes") or []
-    if "rollback_readback" not in sub_m:
-        sub_m["rollback_readback"] = "required" if sw else "not_applicable"
-    if "enforce" not in sub_m:
-        sub_m["enforce"] = "release"
-    sub_no_note = {k: v for k, v in sub_m.items() if k not in ("note", "requirement_ref")}
-    sub_m["requirement_ref"] = dr1_digest_fn(sub_no_note)
-    return sub_m, True
-
-
-def load_parity_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str], Any]) -> tuple[list[dict[str, Any]], list[str]]:
- files = [f for p in events_paths for f in (sorted(p.glob("*.parity.json")) if p.is_dir() else ([p] if p.is_file() and p.name.endswith(".parity.json") else []))]
- out, errs, seen = [], [], set()
- str_keys = ("contract", "digest", "requirement_ref", "legacy_target", "candidate_target", "legacy_subject_ref", "candidate_subject_ref", "normalization_ref", "corpus_ref", "rollback_readback", "outcome")
- for pf in files:
-  if pf in seen:continue
-  seen.add(pf)
+def verify_ssh_sig_envelope_impl(payload: dict[str, Any], sig_text: str, trust_root: Path | None, verify_time: str, canonical_json_fn: Any) -> tuple[bool, str]:
+ if not _valid_ext_trust_root_py(trust_root):
+  return False, "trust.root_required"
+ has_temp, invalid_temp = _has_temporal_bounds(trust_root.read_text("utf-8"))
+ if invalid_temp or (has_temp and not verify_time):
+  return False, "trust.verify_time_required"
+ v_opt = _valid_verify_time(verify_time) if verify_time else ""
+ if verify_time and not v_opt:
+  return False, "trust.verify_time_required"
+ payload_bytes = canonical_json_fn(payload).encode("utf-8")
+ with tempfile.NamedTemporaryFile("w", suffix=".sig", encoding="utf-8", delete=False) as tf:
+  tf.write(sig_text if sig_text.endswith("\n") else sig_text + "\n")
+  tmp_sig = tf.name
+ try:
+  keygen = ssh_keygen_executable()
+  if subprocess.run([keygen, "-Y", "check-novalidate", "-q", "-n", "drift-signature@v1", "-s", tmp_sig], input=payload_bytes, capture_output=True).returncode != 0:
+   return False, "signature.invalid"
+  v_args = [keygen, "-Y", "verify", "-q", "-f", str(trust_root), "-I", str(payload["signer"]), "-n", "drift-signature@v1", "-s", tmp_sig, *(["-O", f"verify-time={v_opt}"] if v_opt else [])]
+  return (True, "") if subprocess.run(v_args, input=payload_bytes, capture_output=True).returncode == 0 else (False, "signature.invalid")
+ finally:
   try:
-   doc = decode_fn(pf.read_text(encoding="utf-8"))
-   if not isinstance(doc, dict) or set(doc) != PARITY_KEYS or doc.get("schema") != "drift.parity-receipt/1" or any(not isinstance(doc.get(k), str) or not doc[k].strip() for k in str_keys):raise ValueError("parity_keys")
-   s = {k: doc[k].strip() for k in str_keys}
-   cid, dig, rref, leg, cand, lref, cref, nref, cpref, rb, outc = (s[k] for k in str_keys)
-   fv = doc.get("frame_verified")
-   if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", cid) or not ARTIFACT_REF_RE.match(dig) or not ARTIFACT_REF_RE.match(rref) or leg == cand or not ARTIFACT_REF_RE.match(lref) or not ARTIFACT_REF_RE.match(cref) or not ARTIFACT_REF_RE.match(nref) or not ARTIFACT_REF_RE.match(cpref) or not isinstance(fv, bool) or rb not in ("verified", "not_applicable", "unverified", "failed") or outc not in ("passed", "failed"):raise ValueError("parity_fields")
-   lists = {}
-   for lk in ("legacy_cases", "candidate_cases", "diverged_observations", "effect_violations"):
-    arr = doc.get(lk)
-    if not isinstance(arr, list) or not all(isinstance(x, str) and x.strip() for x in arr):raise ValueError(lk)
-    lists[lk] = sorted({x.strip() for x in arr})
-   out.append({"schema": "drift.parity-receipt/1", **s, "frame_verified": fv, **lists})
-  except Exception as exc:errs.append(f"{pf.name}: {exc}")
- return out, errs
-def evaluate_contract_parity_impl(contract: dict[str, Any], parity_receipts: list[dict[str, Any]], phase: str, digest_matches_fn: Callable[[str, str], bool], expected_subject_ref: str = "", shard_subject_refs: set[str] | None = None, mig_checks: list[dict[str, Any]] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
- cm = contract.get("cutover") or {}
- if not cm:return [], []
- enforced_now = str(cm.get("enforce", "release")) == "always" or phase == "release"
- matching = [r for r in parity_receipts if r["contract"] == contract["id"] and digest_matches_fn(r["digest"], contract["digest"])]
- if not matching:return (["parity.missing"] if enforced_now else []), []
- if len(matching) > 1 and any(r != matching[0] for r in matching[1:]):return ["parity.conflicting_receipts"], [{**r, "effective_outcome": "failed", "reason": "parity.conflicting_receipts"} for r in matching]
- rec, raw_cases = matching[0], contract.get("cases") or {}
- active = sorted(cid for cid, c in raw_cases.items() if isinstance(c, dict) and "status" not in c)
- needs_frames = bool((contract.get("scope_writes") or []) or any(isinstance(c, dict) and "writes" in c for c in raw_cases.values()))
- allowed, sh_refs, m_list = set(cm.get("intentional_diffs") or []), shard_subject_refs or set(), mig_checks or []
- comp_ok = rec["legacy_subject_ref"] != rec["candidate_subject_ref"] and all(ac in rec["legacy_cases"] and ac in rec["candidate_cases"] for ac in active)
- sub_ok = (not expected_subject_ref or digest_matches_fn(rec["candidate_subject_ref"], expected_subject_ref)) and (not sh_refs or any(digest_matches_fn(rec["candidate_subject_ref"], s) for s in sh_refs))
- norm_ok = rec["legacy_target"] == cm.get("legacy_target") and rec["candidate_target"] == cm.get("candidate_target") and digest_matches_fn(rec["normalization_ref"], str(cm.get("normalization_ref", ""))) and digest_matches_fn(rec["corpus_ref"], str(cm.get("corpus_ref", ""))) and (not cm.get("requirement_ref") or digest_matches_fn(rec["requirement_ref"], cm["requirement_ref"]))
- obs_ok, eff_ok, rb_ok = all(d in allowed for d in rec["diverged_observations"]), not rec["effect_violations"] and (not needs_frames or rec["frame_verified"]), cm.get("rollback_readback", "not_applicable") != "required" or rec["rollback_readback"] == "verified"
- migs_ok = all(any(mr.get("migration_id") == mid and mr.get("effective_outcome") == "passed" and digest_matches_fn(str(mr.get("subject_ref", "")), rec["candidate_subject_ref"]) for mr in m_list) and not any(mr.get("migration_id") == mid and mr.get("effective_outcome") != "passed" for mr in m_list) for mid in (cm.get("migration_ids") or []))
- reasons = [tag for cond, tag in ((not comp_ok, "parity.incomplete_target"), (not sub_ok, "parity.subject_mismatch"), (not norm_ok, "parity.normalization_mismatch"), (not obs_ok, "parity.observation_mismatch"), (not eff_ok, "parity.effect_mismatch"), (not rb_ok, "parity.rollback_incompatible"), (not migs_ok, "parity.migration_unverified")) if cond]
- if rec["outcome"] != "passed" and not reasons:reasons.append("parity.observation_mismatch")
- eff_out = "passed" if not reasons and rec["outcome"] == "passed" else "failed"
- return reasons, [{**rec, "effective_outcome": eff_out, **({"reason": reasons[0]} if reasons else {})}]
-def parse_subject_manifest_core(text: str, decode_fn: Any, canon_fn: Any, sec_str_fn: Any, valid_rel_scope_fn: Any, sha256_re: Any) -> dict[str, Any]:
- import hashlib
- doc = decode_fn(text)
- if not isinstance(doc,dict) or any(k not in ("schema","subject_ref","artifact_ref","sources","lockfile_ref","toolchain","target","features","flags","harness","verifier_ref") for k in doc) or doc.get("schema") != "drift.subject-manifest/1":raise ValueError("subject_manifest")
- aref,lref,vref = (sec_str_fn(doc,"artifact_ref") if "artifact_ref" in doc else ""),sec_str_fn(doc,"lockfile_ref"),sec_str_fn(doc,"verifier_ref")
- tc,tgt,harn = sec_str_fn(doc,"toolchain"),sec_str_fn(doc,"target"),sec_str_fn(doc,"harness")
- if (aref and not sha256_re.match(aref)) or not sha256_re.match(lref) or not sha256_re.match(vref) or not valid_rel_scope_fn(harn) or "#" not in harn:raise ValueError("subject_manifest_fields")
- feats = [sec_str_fn({"x":x},"x") for x in doc.get("features",[])] if isinstance(doc.get("features",[]),list) else None
- flgs = [sec_str_fn({"x":x},"x") for x in doc.get("flags",[])] if isinstance(doc.get("flags",[]),list) else None
- srcs = doc.get("sources")
- if feats is None or flgs is None or not isinstance(srcs,dict) or not srcs or any(not valid_rel_scope_fn(sp) or "#" in sp or not isinstance(sh,str) or not sha256_re.match(sh) for sp,sh in srcs.items()):raise ValueError("subject_manifest_sources")
- c_obj = {"features":feats,"flags":flgs,"harness":harn,"lockfile_ref":lref,"schema":"drift.subject-manifest/1","sources":dict(srcs),"target":tgt,"toolchain":tc,"verifier_ref":vref}
- comp_ref = "sha256:" + hashlib.sha256(canon_fn(c_obj).encode("utf-8")).hexdigest()
- if "subject_ref" in doc and sec_str_fn(doc,"subject_ref") != comp_ref:raise ValueError("subject_ref_mismatch")
- return {**c_obj,"subject_ref":comp_ref,**({"artifact_ref":aref} if aref else {})}
+   os.remove(tmp_sig)
+  except OSError:
+   pass
 
 
-def run_03_self_test(dv_mod: Any) -> None:
- with tempfile.TemporaryDirectory() as td:
-  tp = Path(td)
-  (tp / "p03@1.toml").write_text('drift = "0.3"\nprofile = "p03@1"\n[schema.when]\nbalance = { type = "int", min = 0 }\n[schema.then]\nbalance = { type = "int", min = 0 }\n', "utf-8")
-  (tp / "c03.toml").write_text('drift = "0.3"\nid = "c03"\nintent = "C03."\n[use]\nprofile = "p03@1"\n[scope]\nwrites = []\nreads = []\nindirect = "none"\n[cases.ok]\nat = ["unit"]\nwhen.balance = 100\nthen.balance = { peer = { eq = "when.balance", balance = { add = ["when.balance"] } } }\n', "utf-8")
-  v03_u = dv_mod.verify_contract_toml(tp / "c03.toml", tp)
-  assert v03_u["digest"].startswith("dr2b:sha256:") and v03_u["approval"] == "absent" and v03_u["required_capabilities"] == ["rel-linear-balance/1"]
-  (tp / "c03.toml").write_text((tp / "c03.toml").read_text("utf-8") + f'[approval]\nbehavior_ref = "{v03_u["ref"]}"\nassurance_ref = "{v03_u["assurance_ref"]}"\nby = "o"\nat = 2026-11-09T18:25:00Z\n', "utf-8")
-  v03 = dv_mod.verify_contract_toml(tp / "c03.toml", tp)
-  assert v03["approval"] == "current" and v03["digest"] == v03_u["digest"]
-  ev03_ok = [{"test": "T#ok", "contract": "c03", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": v03["ref"], "schema": "0.3", "capabilities": ["rel-linear-balance/1"]}]
-  ev03_bad = [{**ev03_ok[0], "capabilities": []}]
-  assert dv_mod.evaluate_contract(v03, "current", ev03_ok, 0, 0, [])["ok"] and "events.invalid" in dv_mod.evaluate_contract(v03, "current", ev03_bad, 0, 0, [])["reasons"]
-  assert "contract.approval.unlisted" in dv_mod.evaluate_contract(v03, "current", ev03_ok, 0, 0, [], {"pack": "core@1", "approvers": ["alice"]})["reasons"]
-  v03_sec = {**v03, "profile_security": ["sast"], "profile_simulation": True}
-  r_sec_sim = dv_mod.evaluate_contract(v03_sec, "current", ev03_ok, 0, 0, [])["reasons"]
-  assert "security.missing" in r_sec_sim and "sim.missing" in r_sec_sim
+def evaluate_detached_signatures_impl(verdicts: list[dict[str, Any]], parsed_contracts: list[dict[str, Any]], args: Any, cfg_dig: str, decode_fn: Any, canonical_json_fn: Any, digest_matches_fn: Any, collect_files_fn: Any, verify_sig_fn: Any, sig_env_keys: Any, sig_payload_keys: Any) -> list[dict[str, Any]]:
+ sig_paths = list(args.events or []) + ([args.signatures] if getattr(args, "signatures", None) else [])
+ sig_files, sig_pol_file = collect_files_fn(sig_paths, ".sig.json"), getattr(args, "signature_policy", None)
+ if not sig_files and not sig_pol_file:
+  return verdicts
+ envelopes = []
+ for sf in sig_files:
+  doc = decode_fn(sf.read_text("utf-8"))
+  if not isinstance(doc, dict) or set(doc) != sig_env_keys or doc.get("schema") != "drift.signature-envelope/1":
+   raise ValueError("sig_env")
+  pl, sig_arm = doc.get("payload"), str(doc.get("signature", "")).strip()
+  if not isinstance(pl, dict) or set(pl) != sig_payload_keys or pl.get("schema") != "drift.signature-payload/1" or not sig_arm.startswith("-----BEGIN SSH SIGNATURE-----"):
+   raise ValueError("sig_payload")
+  norm_pl = {k: str(pl[k]).strip() for k in sig_payload_keys}
+  if any(not norm_pl[k] for k in sig_payload_keys) or norm_pl["target_kind"] not in ("contract", "review_snapshot", "attestation", "pact_lock", "shard_bundle"):
+   raise ValueError("sig_fields")
+  envelopes.append((norm_pl, sig_arm))
+ pol_spec = {"active": False, "required_meanings": [], "min_signers": 1, "distinct_signers": True, "enforce": "release"}
+ if sig_pol_file:
+  if not sig_pol_file.is_file():
+   raise ValueError("missing_sig_policy")
+  pdoc = decode_fn(sig_pol_file.read_text("utf-8"))
+  if not isinstance(pdoc, dict) or pdoc.get("schema") != "drift.signature-policy/1":
+   raise ValueError("invalid_sig_policy")
+  enf = str(pdoc.get("enforce", "release")).strip()
+  pol_spec = {"active": True, "required_meanings": [str(x).strip() for x in (pdoc.get("required_meanings") or []) if str(x).strip()], "min_signers": max(1, int(pdoc.get("min_signers", 1))), "distinct_signers": bool(pdoc.get("distinct_signers", True)), "enforce": (enf if enf in ("execution", "release") else "release")}
+ if not pol_spec["active"] and not any(pl["target_kind"] == "contract" and pl["meaning"] != "break_glass" for pl, _ in envelopes):
+  return verdicts
+ by_id, phase = {c["id"]: c for c in parsed_contracts}, (getattr(args, "phase", "") or "")
+ enforced_now = phase == "release" or (pol_spec["active"] and pol_spec["enforce"] == "execution")
+ for v in verdicts:
+  c = by_id.get(v["id"], {})
+  if not enforced_now and not envelopes:
+   v["signature_verification"] = {"ok": True, "reasons": [], "signatures": [], "status": "pending_release", "total": 0}
+   continue
+  ctrls_m = c.get("controls") or {}
+  exp_ctx = next((str(ctrls_m[k].get("context_ref", "")).strip() for k in sorted(ctrls_m) if isinstance(ctrls_m[k], dict) and str(ctrls_m[k].get("context_ref", "")).strip()), "")
+  eval_sigs, rsn, valid_signers, cov_meanings, valid_cnt = [], [], {}, set(), 0
+  has_own_env = any(pl["target_kind"] == "contract" and pl["meaning"] != "break_glass" and (digest_matches_fn(pl["target_ref"], v["digest"]) or pl["target_ref"] == v["digest"]) for pl, _ in envelopes)
+  for pl, sig_txt in envelopes:
+   if pl["target_kind"] != "contract" or pl["meaning"] == "break_glass" or (has_own_env and not digest_matches_fn(pl["target_ref"], v["digest"]) and pl["target_ref"] != v["digest"]):
+    continue
+   ok, s_rsn = verify_sig_fn(pl, sig_txt, getattr(args, "trust_root", None), getattr(args, "verify_time", ""), canonical_json_fn)
+   if pl["signer"].startswith("runner:"):
+    ok, s_rsn = False, "signature.unauthorized_role"
+   elif ok and ((not digest_matches_fn(pl["target_ref"], v["digest"]) and pl["target_ref"] != v["digest"]) or (cfg_dig and not digest_matches_fn(pl["policy_ref"], cfg_dig) and pl["policy_ref"] != cfg_dig) or (exp_ctx and pl["context_ref"] not in ("none", exp_ctx))):
+    ok, s_rsn = False, "signature.target_mismatch"
+   if ok:
+    valid_cnt += 1
+    valid_signers[pl["signer"]] = valid_signers.get(pl["signer"], 0) + 1
+    cov_meanings.add(pl["meaning"])
+   elif s_rsn and s_rsn not in rsn:
+    rsn.append(s_rsn)
+   eval_sigs.append({**{k: pl[k] for k in ("context_ref", "meaning", "policy_ref", "signed_at", "signer", "target_kind", "target_ref")}, "valid": ok, **({"reason": s_rsn} if s_rsn else {})})
+  if pol_spec["active"]:
+   for tag, cond in (("signature.duplicate_signer", pol_spec["distinct_signers"] and any(cnt > 1 for cnt in valid_signers.values())), ("signature.meaning_missing", any(m not in cov_meanings for m in pol_spec["required_meanings"])), ("signature.quorum_unmet", (len(valid_signers) if pol_spec["distinct_signers"] else valid_cnt) < pol_spec["min_signers"])):
+    if cond and tag not in rsn:
+     rsn.append(tag)
+  elif valid_cnt == 0 and "signature.invalid" not in rsn:
+   rsn.append("signature.invalid")
+  if enforced_now:
+   for r in rsn:
+    if r not in v["reasons"]:
+     v["reasons"].append(r)
+   v["ok"] = not v["reasons"] and valid_cnt > 0
+  v["signature_verification"] = {"ok": not rsn and valid_cnt > 0, "reasons": ([] if not enforced_now else rsn), "signatures": eval_sigs, "status": ("verified" if not rsn and valid_cnt > 0 else ("pending_release" if not enforced_now else "violated")), "total": len(eval_sigs)}
+ return verdicts
+
+
+__all__ = [
+    "_contains_todo",
+    "_has_approval_blocker",
+    "_has_temporal_bounds",
+    "_is_unanchored_prose_source",
+    "_valid_verify_time",
+    "apply_openssh_trust_verdicts",
+    "evaluate_contract_parity_impl",
+    "evaluate_detached_signatures_impl",
+    "extract_contract_cutover",
+    "load_merged_profile_impl",
+    "load_parity_receipts_impl",
+    "parse_subject_manifest_core",
+    "validate_and_match_attestation",
+    "verify_openssh_trust",
+    "verify_ssh_sig_envelope_impl",
+]
+
 

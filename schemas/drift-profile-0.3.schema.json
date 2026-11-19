@@ -988,6 +988,28 @@
     "requires": {
       "additionalProperties": false,
       "properties": {
+        "budget_metrics": {
+          "items": {
+            "enum": [
+              "request_latency",
+              "successful_throughput",
+              "process_rss",
+              "frame_time",
+              "cold_start",
+              "artifact_bytes",
+              "work_units",
+              "tick_alloc_bytes",
+              "tick_alloc_count",
+              "alloc_bytes_total",
+              "alloc_count_total",
+              "frame_hitch_ns",
+              "cpu_time_ns"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
         "budgets": {
           "enum": [
             "required",
@@ -1022,6 +1044,17 @@
             "max_lines": {
               "minimum": 1,
               "type": "integer"
+            },
+            "require_containment": {
+              "items": {
+                "enum": [
+                  "no_network",
+                  "readonly_workspace"
+                ]
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
             }
           },
           "type": "object"

@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.7.0'
-pub const bridge_version = '0.7.0'
+pub const adapter_id = 'drift_v.v@0.8.0'
+pub const bridge_version = '0.8.0'
 pub const bridge_runtime_baseline = 'v-0.5.2'
 pub const bridge_capabilities_list = ['allowed_keys', 'case_frames', 'counterexample_replay',
 	'forbid_keys', 'inventory_sidecar', 'mutants', 'not_in', 'predicates', 'projections',
@@ -33,12 +33,14 @@ pub:
 	cases          []string
 	level          string
 pub mut:
-	view         map[string]json2.Any
-	plan         map[string]json2.Any
-	read_keys    map[string]map[string]bool
-	inputs       map[string]string
-	self_stubbed bool
-	in_mutation  bool
+	view            map[string]json2.Any
+	plan            map[string]json2.Any
+	read_keys       map[string]map[string]bool
+	inputs          map[string]string
+	touched_symbols []string
+	observations    map[string]json2.Any
+	self_stubbed    bool
+	in_mutation     bool
 }
 
 pub fn normalize_crlf_bytes(raw []u8) []u8 {
@@ -95,7 +97,7 @@ fn resolve_env_map() !map[string]string {
 		'drift':     bridge_version
 		'policy':    'core@1'
 		'runner':    'v-test'
-		'toolchain': 'v@0.7.0'
+		'toolchain': 'v@0.8.0'
 	}
 	if raw != '' {
 		doc := json2.decode[json2.Any](raw) or { return error('DRIFT_ENV must be valid JSON') }
@@ -149,6 +151,7 @@ fn load_contract_plan(contract_id string, resolved_dir string, view map[string]j
 }
 
 fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2.Any {
+	sd := resolve_state_dir(os.getwd())!
 	rdir := if resolved_dir != '' { resolved_dir } else { os.getenv('DRIFT_RESOLVED').trim_space() }
 	if rdir != '' {
 		p := os.join_path(rdir, '${contract_id}.json')
@@ -156,7 +159,7 @@ fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2
 		doc := json2.decode[json2.Any](txt) or { return error('invalid JSON in ${p}') }
 		return j_map(doc) or { error('resolved view ${p} is not a JSON object') }
 	}
-	mut dir := os.getwd()
+	mut dir := if sd != '' { sd } else { os.getwd() }
 	mut toml_path := ''
 	for {
 		cand := os.join_path(dir, '.drift', 'contracts', '${contract_id}.toml')
@@ -165,7 +168,7 @@ fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2
 			break
 		}
 		parent := os.dir(dir)
-		if parent == dir {
+		if parent == dir || sd != '' {
 			break
 		}
 		dir = parent
@@ -173,7 +176,8 @@ fn load_contract_view(contract_id string, resolved_dir string) !map[string]json2
 	if toml_path == '' {
 		return error('cannot locate contract ${contract_id}.toml')
 	}
-	res := os.execute('"${find_drift_cli()}" show "${toml_path}" --as json')
+	sd_flag := if sd != '' { ' --state-dir "${sd}"' } else { '' }
+	res := os.execute('"${find_drift_cli()}" show "${toml_path}"${sd_flag} --as json')
 	if res.exit_code != 0 {
 		return error('drift show failed for ${toml_path}: ${res.output}')
 	}
@@ -582,8 +586,12 @@ fn update_shard_and_meta(events_dir string, event_line string, cls string, canon
 	os.mkdir_all(events_dir)!
 	shard := os.join_path(events_dir, 'v-shard.jsonl')
 	meta := os.join_path(events_dir, 'v-shard.meta.json')
-	existing := if os.is_file(shard) { os.read_file(shard) or { '' } } else { '' }
-	os.write_file(shard, existing + event_line + '\n')!
+	mut shard_f := os.open_append(shard)!
+	shard_f.write_string(event_line + '\n') or {
+		shard_f.close()
+		return err
+	}
+	shard_f.close()
 
 	mut classes := [cls]
 	mut tests := [canon_test]
@@ -707,8 +715,8 @@ fn run_in_process_mutants(opts RunOptions, base_view map[string]json2.Any, cb fn
 	}) or { return }
 	contracts_arr := j_arr(doc['contracts'] or { return }) or { return }
 	os.mkdir_all(mut_dir)!
-	out_file := os.join_path(mut_dir, 'v-mutants.jsonl')
-	mut lines := if os.is_file(out_file) { os.read_file(out_file) or { '' } } else { '' }
+	out_file := os.join_path(mut_dir, 'v-${os.getpid()}-mutants.jsonl')
+	mut new_lines := ''
 	_, _, canon_test := canonical_test_id(opts.test)!
 	for c_item in contracts_arr {
 		cm := j_map(c_item) or { continue }
@@ -747,10 +755,17 @@ fn run_in_process_mutants(opts RunOptions, base_view map[string]json2.Any, cb fn
 				'outcome':  json2.Any(if killed { 'killed' } else { 'survived' })
 				'control':  json2.Any('passed')
 			}
-			lines += json2.Any(ev).json_str() + '\n'
+			new_lines += json2.Any(ev).json_str() + '\n'
 		}
 	}
-	os.write_file(out_file, lines)!
+	mut mf := os.open_append(out_file)!
+	if new_lines != '' {
+		mf.write_string(new_lines) or {
+			mf.close()
+			return err
+		}
+	}
+	mf.close()
 }
 
 pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
@@ -765,11 +780,13 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	} else {
 		(view['digest'] or { json2.Any('') }).str()
 	}
-	ev_dir := if opts.events_dir != '' {
+	ev_raw := if opts.events_dir != '' {
 		opts.events_dir
 	} else {
 		os.getenv('DRIFT_EVENTS').trim_space()
 	}
+	sd := resolve_state_dir(os.getwd())!
+	ev_dir := if ev_raw != '' { ev_raw } else { default_state_events_dir(sd) }
 	mut ctx := DriftContext{
 		contract_id:    opts.contract
 		test_id:        opts.test
@@ -814,6 +831,28 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 			}
 			ev['schema'] = json2.Any('0.3')
 			ev['capabilities'] = json2.Any(supported_03.map(json2.Any(it)))
+			if ctx.observations.len > 0 {
+				mut syms := ctx.touched_symbols.clone()
+				if syms.len > 1 {
+					syms.sort()
+				}
+				obs_outcome := if outcome == 'passed' { 'returned' } else { 'thrown' }
+				mut obs_out := map[string]json2.Any{}
+				mut ckeys := ctx.observations.keys()
+				ckeys.sort()
+				for ck in ckeys {
+					mut env_m := {
+						'outcome': json2.Any(obs_outcome)
+						'payload': ctx.observations[ck] or { json2.Any(map[string]json2.Any{}) }
+						'schema':  json2.Any('drift.observation/1')
+					}
+					if syms.len > 0 {
+						env_m['touched_symbols'] = json2.Any(syms.map(json2.Any(it)))
+					}
+					obs_out[ck] = json2.Any(env_m)
+				}
+				ev['observations'] = json2.Any(obs_out)
+			}
 		}
 		update_shard_and_meta(ev_dir, json2.Any(ev).json_str(), cls, canon_test, ctx.inputs,
 			ctx.self_stubbed)!
@@ -823,6 +862,19 @@ pub fn run_drift_case(opts RunOptions, cb fn (mut DriftContext) !) !string {
 	}
 	run_in_process_mutants(opts, view, cb)!
 	return outcome
+}
+
+pub fn (mut ctx DriftContext) record_touched_symbol(sym string) {
+	s := sym.trim_space()
+	if s != '' && s !in ctx.touched_symbols {
+		ctx.touched_symbols << s
+	}
+}
+
+pub fn (mut ctx DriftContext) record_observation(case_id string, payload json2.Any) {
+	if case_id != '' {
+		ctx.observations[case_id] = payload
+	}
 }
 
 pub fn require_capabilities(required []string) ! {

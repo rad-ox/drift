@@ -37,6 +37,65 @@
         "at"
       ],
       "type": "object"
+    },
+    "runnerProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "compile_scope": {
+          "enum": [
+            "compile_and_run",
+            "runtime_filter_only"
+          ]
+        },
+        "cwd": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "filter_mode": {
+          "enum": [
+            "append_after_double_dash",
+            "append",
+            "mvn_dtest",
+            "rust_test_exact",
+            "none"
+          ]
+        },
+        "match": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "widen_argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "type": "object"
     }
   },
   "$id": "urn:drift:schemas:config:0.3",
@@ -133,6 +192,12 @@
             "type": "array",
             "uniqueItems": true
           },
+          "patch_scope": {
+            "enum": [
+              "optional",
+              "required"
+            ]
+          },
           "performance_reuse": {
             "enum": [
               "off",
@@ -177,6 +242,9 @@
               "killed"
             ]
           },
+          "require_signed_approval": {
+            "type": "boolean"
+          },
           "security": {
             "items": {
               "enum": [
@@ -205,6 +273,14 @@
               }
             ]
           },
+          "uncovered": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
           "warn_ratio": {
             "exclusiveMaximum": 1,
             "exclusiveMinimum": 0,
@@ -217,6 +293,13 @@
           "proof"
         ]
       },
+      "type": "object"
+    },
+    "runners": {
+      "additionalProperties": {
+        "$ref": "#/$defs/runnerProfile"
+      },
+      "minProperties": 1,
       "type": "object"
     }
   },

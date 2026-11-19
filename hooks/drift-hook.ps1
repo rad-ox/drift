@@ -61,6 +61,29 @@ foreach ($cand in $candidates) {
 }
 if (-not $driftExe) { exit 0 }
 
+if ($driftExe -match '\.exe$') {
+    $sub = ''
+    $env:DRIFT_HOOK_DIR = $PSScriptRoot
+    $env:DRIFT_HOOK_EVENT = $Mode
+    Remove-Item Env:DRIFT_HOOK_AUTO -ErrorAction SilentlyContinue
+    if (-not $Mode) {
+        $sub = 'session'
+        $env:DRIFT_HOOK_AUTO = '1'
+    } elseif ($Mode -match '^(?i)(session|start|sessionstart|startup|resume|before_agent_start|beforeagentstart)$') {
+        $sub = 'session'
+    } elseif ($Mode -match '^(?i)(prompt|userpromptsubmit|userpromptsubmitted)$') {
+        $sub = 'prompt'
+    } elseif ($Mode -match '^(?i)(stop|agentstop|agent_stop|afteragent|after_agent|stopfailure|stop_failure)$') {
+        $sub = 'stop'
+    } elseif ($Mode -match '^(?i)(notify|notification)$') {
+        $sub = 'notify'
+    } else {
+        exit 0
+    }
+    $payloadText | & $driftExe hook $sub
+    exit $LASTEXITCODE
+}
+
 $eventName = ''
 if ($payload) {
     if ($payload.PSObject.Properties['hook_event_name'] -and $payload.hook_event_name) {
@@ -143,7 +166,7 @@ if ($norm -in @('sessionstart', 'startup', 'resume', 'beforeagentstart')) {
             (Test-Path -LiteralPath ([IO.Path]::Combine([string]$HOME, '.agents', 'skills', 'drift-pro')))) {
             $driftSkill = 'drift-pro'
         }
-        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $driftSkill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = `"execution`" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+        $msg = "$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $driftSkill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'contextSlice @:, editSlice @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = `"execution`" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready --active. Never piggyback new feature assertions onto existing approved cases."
     }
     $out = @{ additionalContext = $msg } | ConvertTo-Json -Compress
     Write-Output $out

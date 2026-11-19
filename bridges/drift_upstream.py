@@ -349,9 +349,10 @@ def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mappin
 
 
 def discover_events_dir(cwd: Path, environ: Mapping[str, str]) -> str:
-    sd = environ.get('DRIFT_STATE_DIR', '').strip()
+    from drift_probes import validate_shadow_state_dir
+    sd = validate_shadow_state_dir(cwd, environ)
     if sd:
-        sd_p = Path(sd).resolve()
+        sd_p = Path(sd)
         for sub in ('.drift', '.drift-work'):
             cand = sd_p / sub / 'events'
             if cand.is_dir():

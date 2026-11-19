@@ -11,6 +11,49 @@ set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 mode=${1:-}
 
+# Fast single-process delegation to native `drift hook` when drift_bin is a compiled binary.
+drift_bin=${DRIFT_CLI:-}
+if [ -z "$drift_bin" ] || [ ! -x "$drift_bin" ]; then
+	for cand in "$here/../../../bin/drift" "$here/../bin/drift" "$here/../../bin/drift" "$HOME/.local/bin/drift" "$(command -v drift 2>/dev/null || true)"; do
+		if [ -n "$cand" ] && [ -x "$cand" ]; then
+			case $cand in
+			*.exe) continue ;;
+			esac
+			drift_bin=$cand
+			break
+		fi
+	done
+fi
+if [ -n "$drift_bin" ] && [ -x "$drift_bin" ]; then
+	hdr=""
+	IFS= read -r hdr <"$drift_bin" 2>/dev/null || true
+	case $hdr in
+	'#!'*) ;;
+	*)
+		case $mode in
+		session | start | SessionStart | sessionStart | startup | resume | before_agent_start | beforeAgentStart)
+			DRIFT_HOOK_DIR="$here" DRIFT_HOOK_EVENT="$mode" exec "$drift_bin" hook session
+			;;
+		prompt | userPromptSubmit | UserPromptSubmit | userPromptSubmitted)
+			DRIFT_HOOK_DIR="$here" DRIFT_HOOK_EVENT="$mode" exec "$drift_bin" hook prompt
+			;;
+		stop | Stop | agentStop | agent_stop | afterAgent | after_agent | stopFailure | StopFailure | stop_failure)
+			DRIFT_HOOK_DIR="$here" DRIFT_HOOK_EVENT="$mode" exec "$drift_bin" hook stop
+			;;
+		notify | notification | Notification)
+			DRIFT_HOOK_DIR="$here" DRIFT_HOOK_EVENT="$mode" exec "$drift_bin" hook notify
+			;;
+		"")
+			DRIFT_HOOK_DIR="$here" DRIFT_HOOK_AUTO=1 exec "$drift_bin" hook session
+			;;
+		*)
+			exit 0
+			;;
+		esac
+		;;
+	esac
+fi
+
 payload=""
 if [ ! -t 0 ]; then
 	payload=$(cat 2>/dev/null || true)
@@ -238,7 +281,7 @@ contracts_dir=$area/.drift/contracts
 release_notice() {
 	[ "${DRIFT_UPDATE_CHECK:-}" != 0 ] && [ -d "$here/release" ] || return 0
 	if [ -f "$here/release/check.py" ] && command -v python3 >/dev/null 2>&1; then
-		python3 "$here/release/check.py" "$drift_bin"
+		python3 -I "$here/release/check.py" "$drift_bin"
 	else
 		printf '%s\n' 'drift: release check unavailable (Python or component missing); continuing without an update verdict.' >&2
 	fi
@@ -311,7 +354,7 @@ sessionstart | startup | resume | beforeagentstart)
 		elif [ -d "${HOME:-}/.copilot/skills/drift-pro" ] || [ -d "${HOME:-}/.agents/skills/drift-pro" ]; then
 			drift_skill="drift-pro"
 		fi
-		msg="$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $drift_skill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = \"execution\" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready. Never piggyback new feature assertions onto existing approved cases."
+		msg="$summary For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. When changing code or contracts, follow the $drift_skill skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'contextSlice @:, editSlice @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. (1) Behaviour unchanged on covered code (bugfix/refactor/test hardening): 0 human stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. (2) New or changed behaviour across multiple slices (Wave): use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = \"execution\" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, then execute all slices in parallel via drift plan --pack ready --active. Never piggyback new feature assertions onto existing approved cases."
 	fi
 	printf '{"additionalContext":"%s"}\n' "$(json_escape "$msg")"
 	exit 0

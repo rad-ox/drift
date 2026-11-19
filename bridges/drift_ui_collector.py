@@ -239,3 +239,108 @@ def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, 
             seen.add(pred)
     return True
 
+
+def build_env_dict(adapter_id: str, raw: str, strip_bom: Callable[[str], str], env_keys: tuple[str, ...]) -> dict[str, str]:
+    import json
+    import platform
+    base = {'adapter': adapter_id, 'config': 'default', 'deps': 'none', 'drift': '0.8.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    if raw:
+        parsed = json.loads(strip_bom(raw))
+        if not isinstance(parsed, dict):
+            raise ValueError('DRIFT_ENV must be a JSON object')
+        for k, v in parsed.items():
+            if k not in env_keys or not isinstance(v, str) or not v.strip():
+                raise ValueError(f'invalid DRIFT_ENV key "{k}"')
+            base[k] = v.strip()
+    return base
+
+
+def load_view_doc(contract_id: str, views: dict[str, dict[str, Any]], environ: Mapping[str, str], auto_resolve_fn: Callable[..., dict[str, Any] | None], attach_plan_fn: Callable[..., dict[str, Any]], read_json_fn: Callable[[Path], Any]) -> dict[str, Any]:
+    if contract_id in views:
+        return views[contract_id]
+    res = environ.get('DRIFT_RESOLVED', '').strip()
+    if not res:
+        doc = auto_resolve_fn(contract_id)
+        if doc is None:
+            raise RuntimeError(f'DRIFT_RESOLVED is not set and contract "{contract_id}" could not be auto-resolved from .drift/')
+        if doc.get('id') != contract_id:
+            raise ValueError(f'resolved view for "{contract_id}" has id "{doc.get("id")}"')
+        views[contract_id] = doc
+        return doc
+    fp = Path(res) if res.endswith('.json') else Path(res) / f'{contract_id}.json'
+    if not res.endswith('.json'):
+        synced = auto_resolve_fn(contract_id, fp.resolve())
+        if isinstance(synced, dict) and synced.get('id') == contract_id:
+            views[contract_id] = attach_plan_fn(synced, fp.resolve(), read_json_fn)
+            return views[contract_id]
+    if not fp.is_file():
+        raise FileNotFoundError(f'contract "{contract_id}" was not found at {fp}')
+    doc = attach_plan_fn(read_json_fn(fp), fp, read_json_fn)
+    if doc.get('id') != contract_id:
+        raise ValueError(f'resolved view {fp} has id "{doc.get("id")}", exp "{contract_id}"')
+    views[contract_id] = doc
+    return doc
+
+
+def record_discovery_into(test_id: str, active_out: str, environ: Mapping[str, str], discover_dir_fn: Callable[[], str], shard_path: Path | None, bad_cls: frozenset[str], bad_mth: frozenset[str], disc_classes: set[str], disc_tests: set[str], ensure_inv_fn: Callable[[str], dict[str, Any]], flush_inv_fn: Callable[[str, dict[str, Any]], None], ensure_exit_fn: Callable[[], None]) -> None:
+    tgt = active_out or environ.get('DRIFT_EVENTS', '').strip() or discover_dir_fn()
+    if not tgt:
+        return
+    h = test_id.find('#') if isinstance(test_id, str) else -1
+    cls, mth = (test_id[:h] if h > 0 else ''), (test_id[h + 1:] if h > 0 else '').split('[', 1)[0]
+    if not cls or not mth or any(c.isspace() or c in bad_cls for c in cls) or any(c.isspace() or c in bad_mth for c in mth):
+        raise ValueError(f'DRIFT_EVENTS requires a test id in Class#method form: "{test_id}"')
+    canon = f'{cls}#{mth}'
+    disc_classes.add(cls)
+    disc_tests.add(canon)
+    out = active_out or (str(shard_path) if shard_path is not None else (tgt if tgt.endswith('.jsonl') and Path(tgt).is_file() else ''))
+    if not out:
+        return
+    inv = ensure_inv_fn(out)
+    before = len(inv['classes']) + len(inv['tests'])
+    inv['classes'].add(cls)
+    inv['tests'].add(canon)
+    if before == len(inv['classes']) + len(inv['tests']) and inv['flushed'] and not inv['dirty']:
+        return
+    inv['dirty'] = True
+    ensure_exit_fn()
+    if active_out:
+        flush_inv_fn(out, inv)
+
+
+def record_context_input(ctx: Any, fp: str | Path, pre: bytes | str | None, input_digest_fn: Callable[[Path, bytes | None], str], resolve_events_fn: Callable[[], str], record_disc_fn: Callable[[str, str], None], invs: dict[str, dict[str, Any]]) -> str:
+    import os
+    is_self = isinstance(pre, str)
+    cwd = Path(os.path.normpath(os.getcwd()))
+    abs_p = Path(fp) if is_self else Path(os.path.normpath(cwd / fp))
+    try:
+        rel = str(fp) if is_self else abs_p.relative_to(cwd).as_posix()
+    except ValueError:
+        rel = Path(fp).as_posix()
+    dig = pre if is_self else input_digest_fn(abs_p, pre)
+    if ctx.mutation_override is None:
+        if not is_self:
+            ctx._input_files[abs_p] = (rel, dig)
+        out = resolve_events_fn()
+        if out:
+            record_disc_fn(ctx.test_id, out)
+            inv = invs.get(out)
+            if inv is not None:
+                h = ctx.test_id.find('#')
+                canon = f"{ctx.test_id[:h]}#{ctx.test_id[h + 1:].split('[', 1)[0]}" if h > 0 else ctx.test_id
+                fm = inv['inputs'].setdefault(canon, {})
+                if fm.get(rel) != dig:
+                    fm[rel] = dig
+                    inv['dirty'] = True
+    return dig
+
+
+def verify_recorded_inputs(contract: str, test: str, input_files: dict[Path, tuple[str, str]], digests: dict[str, tuple[tuple[int, int] | None, str]], hash_bytes_fn: Callable[[bytes], str]) -> None:
+    for abs_p, (rel, dig) in input_files.items():
+        if not abs_p.is_file():
+            raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
+        st = abs_p.stat()
+        ok = (digests.get(str(abs_p), (None, '')) == ((st.st_mtime_ns, st.st_size), dig)) if st.st_size > 65536 else (hash_bytes_fn(abs_p.read_bytes()) == dig)
+        if not ok:
+            raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
+

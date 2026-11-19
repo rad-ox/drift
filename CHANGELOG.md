@@ -2,6 +2,79 @@
 
 User-visible changes and capabilities by release.
 
+## 0.8.0
+
+- Release `0.8.0`.
+- Fix Windows cross-compilation `C.PeekNamedPipe` bool check in `approval_write_windows.c.v` and strip internal ID from `drift-hook.sh` comment.
+- Eliminate concurrent `resolved-gen` TOCTOU `rmtree` race in Python/JS `ensure_export_generation` by copying from per-PID staging before atomic rename.
+- Harden Free export/packaging, warn on Free sweep=soundness, align SPEC 0.3-only prose, enforce 5-runtime case 101 parity, lock drift/* edges & show tiers, add sanitize.
+- Restructure public docs into a 3-line-hero README, L0–L1 guides, auto-generated `docs/cli.md`, `docs/bridges.md`, and 8 focused `docs/` guides with CI parity and link checks.
+- Add stdlib `scripts/perf_resource_collector.py` POSIX `wait4` collector emitting verified `cpu_time_ns` + `process_rss` `drift.performance-run/1` bundles and sync docs.
+- Add monotonic `[requires].budget_metrics` closure/coherence across check, `dr2a`, grants, cache, review, and multi-case baseline disambiguation.
+- Add direct `cpu_time_ns` budget metric with V/Python verifier parity, restrict Pact timeout inference to `request_latency`, and guard `bench --self-perf` metrics.
+- Emit `budget.referent_changed` in `review --base` `coarsened` and neutral `budget-offset-unverified:<id>` on strict unchanged-ref shifts.
+- Harden Python paths: guard 3.11+ (exit 2) and unify ssh-keygen in verifier, ship verifier/ in dist archives, isolate check.py (-I), and handle missing python3 in install.sh.
+- Require `cause` on `red` worker return receipts and halt identical local retries after two matching non-transient reds in `schedule-orchestration.md` across all 3 skill editions.
+- Reuse `(color, index)` topological order for `tail` and stop `select_orientation` / local search at exact `rw`/mutex/chordal dual floors with byte-identical plans.
+- Extend `review --base` with `added-case-undiscriminated` and `unexercised-then-keys` on modified `0.3` contracts and update `integration-first.md`.
+- Add Pro `drift plan --compile-edges` and `--build-graph` stage ordering and `module_deps` in `drift.build-graph/1`.
+- Isolate concurrent JS/Python `drift_cli` run paths, shard `drift_v` mutants by PID, and enforce `DRIFT_STATE_DIR` parity across 4 bridges.
+- Add diff-anchored `L2` symbol witnesses (`oracle.unexercised_diff_symbol`) in `prove` and `touched_symbols` emission in `drift_v`.
+- Run `stale_pack` fencing pre-pack, move completed revisits to `revisit_watch`, and compact partial `plan` mega-lanes.
+- Fold quiet-completed `plan` text with `--events`, add Pro `drift plan --active`, and align hooks/skills on `'contextSlice @:, editSlice @'`.
+- Degrade overflow `@` code lenses to `@:` in `recall`, report `resource.unbacked_when` in `sweep --simplify`, and add skill attention receipts.
+- Anchor desktop option trade-offs to one non-dominated reference, flag dominated options, move `leverage` to details, and enrich Seal.
+- Add stdlib `scripts/drift_build_graph.py` Cargo/Maven `drift.build-graph/1` adapter for `select --build-graph` narrowing.
+- Gate `Evidence: bound lacks complete expected-value read attestation` in `--as summary` on `bound > 0`.
+- Export `DRIFT_*`/runner `env` and inline `drift show --out` in `select --cmd` snippets while keeping `select` `pure_read`.
+- Add `#[ignore]`/`--include-ignored` `drift_rust` guidance and `sweep --root --simplify` `code.shared_test_file` unanchored test hygiene.
+- Add explicit `[runners.<id>]` config profiles (`rust_test_exact`, `widen_argv`, `uncovered`/`partial`) for `select --plan` and `--cmd`.
+- Add `[policy].uncovered` brownfield globs (`uncovered_paths`), `partial_tests` on widened `select`, and `policy.ignored_manifest` in `sweep`.
+- Preserve `--phase`/`--at` in guided `gate`, clear `next_command` on non-case blockers, map `model.lookup_reason` in summaries, and cap `hook session` shards.
+- Report proven gaps in exact integer relay copies under `sweep --flow`, without changing existing relay bounds.
+- Sum frame budget limits exactly in `sweep --flow`, independent of producer order (`budget.frame_envelope_exceeded`).
+- Focus `plan` `what_if` on zero-slack critical arcs, tighten `staffing` bounds, and short-circuit optimal chordal orientations.
+- Cover open integer intervals in `pact` across V and `drift_verify.py`, and guard `sweep --simplify --apply` against missing cube leaves.
+- Keep tolerant affine sums sound, catch zero-support pivot contradictions, and dual-validate relaxation and mutation witnesses.
+- Add segmented benefit and complexity scores and inline, keyboard-operable option details to desktop review.
+- Guard signed `i64` boundaries in pact `int_range`/`not_in` meet, `enum_set` subsumption, and strict `i64` parsing for full parity with `drift_verify.py`.
+- Make the approval name editable on every desktop seal; use the confirmed name for that review without replacing the saved preference.
+- Fix false `.uncovered` on unmaterializable pact `when` axes, rank splittable axes by open-child clauses across V and `drift_verify.py`, and skip uniform overlap loops.
+- Fix desktop reviews stuck at Approve when the saved identity is not authorized in the current area; allow explicit correction for that review.
+- Turn off desktop review inactivity expiry by default; keep explicit user-local idle limits and independent liveness checks.
+- Show expected benefit and estimate confidence on desktop option cards and mark a uniquely highest declared benefit without altering recommendations.
+- Enforce multi-manifest permutation invariance on `killed_set_relation` in `stats` and `sweep` `proof.overlapping_tests`.
+- Couple `(pc, cc)` witnesses (levels, `when`, post-state, joint polytope) and enforce token-bounded exemptions in `sweep --simplify` `resource.unhandled_outcome`.
+- Redesign `drift-ask-ui` into Atmospheric DRIFT Observatory across Web Deck and WPF (living sacred-geometry spine, glass monoliths, Obsidian-Quartz Gate CTAs, WCAG AA+ a11y).
+- Stratify `drift_verify*.py` into an acyclic DAG, split near-28k V/COBOL/test files, cache V test binaries, batch JVM `select`, and clear remaining T1 clones.
+- Add Pro `drift recall record` with typed `[revisit_if: <anchor>]` dead-ends, `[due]` tracking, `--retire`, and `review --base` `recall-revisit` signals.
+- Rebalance polyglot bridges `<25k` chars, stream `dup/1` misses (`162 MiB` cold RSS), unify `prove`/`gate` & `impact` helpers, batch `pwsh`, and guard `gate` anti-cache.
+- Memoize `sweep` file facts (`-52%` RSS), speed up `status` (`5x`), unify `0.3` peer-refs/`cat-file`/glob helpers, and rebalance LPT/JVM/registry CI lanes.
+- Extract T1 commons, prune dead `0.2` check paths, add zero-copy `canon.sha256_hex` and dynamic complexity ratchets, and speed up CLI/JVM/layers test lanes.
+- Add Enterprise advisory `code.duplicate_symbol` T1 clones in `sweep --root --simplify`, lazy `dup/1` digests in `area-v1.json`, and `grown`/`diverged`.
+- Add Enterprise advisory integer-only `churn.coupled_contracts` pairs (`lift >= 2`, `conf >= 3/5`, single-owner files) in `stats --root --churn-list`.
+- Add Enterprise advisory `resource.write_duplicate` `O(N)` projected write-duplicate clusters and `--base` `new`/`grown`/`diverged` in `sweep --simplify`.
+- Emit compact `O(R + G)` hyperedge `overlaps` by default in `drift plan` (`--overlaps compact|pairs`) and skip pairwise map allocation in text/pack.
+- Add Free-tier single-process `drift hook <session|prompt|stop|notify>` (`< 25 ms`) and thin `drift-hook.{sh,ps1}` shims with full `drift.attention/1` parity.
+- Add lazy auto-populated advisory area and Git-blob source-fact cache (`.drift-work/cache/area-v1.json`) with uncached `gate`/`check`/`prove`/`approve` guards.
+- Speed up `gate --base` demand-driven reuse, `readdir` walks, `O(F+E)` SCC `sync-scope`, `drift_v` append shards, `drift_verify.py` profile memo, and conformance LPT shards.
+- Speed up `gate`/`status` soundness, `recall`, `select`, `sweep`, `PairStore`, and `drift_verify.py`, and measure attested `--drift` RSS in `perf-check`.
+- Refine `drift-ask-ui` into Stratigraphic Dossier with 3D vertical cards, living Bezier wave spine, visual `Spec` flow, `[ui].theme`, and PS1 parity.
+- Add universal default-on `drift-ask-ui` decision and approval broker (WPF + loopback `web-deck` across Windows/WSL/macOS/Linux, `--off|--on|--status`).
+- Project `proposed_choices`, execution choices, and `baseline_delta` in `drift.guided/1` and narrow `--delta --detail guided` snapshots across subdirectories.
+- Add cold-start `review --base` signals (`write-without-error-frame`, `singleton-when-domain`, `unexercised-then-keys`) and advisory `merge.disjoint_cases`.
+- Add Pro `select --build-graph-base` / `--build-graph` (`drift.build-graph/1` `build_deps_ref` closure narrowing with `code.unowned` fallback).
+- Add Linux network/readonly-workspace containment in `contain_exec.py` (0 bridge LOC) and `dr2a:` `guards.require_containment` across kernel and `drift_verify.py`.
+- Add Enterprise `gate --allow-break-glass` (`emergency:` `break_glass` signatures, calendar `--verify-time`, inviolable guards, zero reuse, federated taint).
+- Harden `--trust-root` symlinks and add `owner:`/`runner:` role-bound `drift-signature@v1` checks, `require_signed_approval`, and `shard_bundle` provenance.
+- Add `drift.shard-bundle/1` (`dr2s:`) manifests, retry deduplication, `shard.conflicting_bundle`/`shard.bundle_hash_mismatch`, and `proof_events.py --emit-bundle`.
+- Add opt-in `policy.patch_scope = "required"` (`shard.snapshot_required`), directory `--result-snapshot` hash binding, and `.c` `#<symbol>` fencing.
+- Add multi-machine `execution_keys_complete` and `uniform_env` across `prove` and `gate` while preserving `proof_keys_complete` and single-env JSON outputs.
+- Enforce exact `#<symbol>` `symbol_missing`, additive `imports_only` fencing, cross-slice import `select`/`gate --base`, FSM frames, and `--openapi` schemas.
+- Fix `sweep` multi-conflict `unreachable_when`, consumer `peer.balance`, `out` units, fail-closed `0.3 -> pact` atoms/frames/resource pointers, and fleet error sets.
+- Align `0.3` `tol` algebra, `num` merged invariants, `keys`+`peer` checks, converted `peer` units, affine `peer` cycles, `O(K log K)` `not_in`, `enum`, and `series`.
+- Fix `drift_verify.py` `--base` reuse, `orphan`/`gone`/inventory/floor/`0.2` parity, empty-digest `gate --base`, CLI seam-stub signals, and `review` proof lowering.
+
 ## 0.7.0
 
 - Release `0.7.0`.

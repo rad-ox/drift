@@ -572,6 +572,20 @@ try {
             }
         }
     }
+    if (Test-Path -LiteralPath (Join @($here, 'ui'))) {
+        Remove-Safely (Join @($Prefix, 'ui')) 'ui'
+        Invoke-Step "copy ui to $Prefix" {
+            New-Item -ItemType Directory -Force -Path (Join @($Prefix, 'ui')) | Out-Null
+            foreach ($name in @('drift-ask-ui', 'drift_ui_deck.py', 'drift_ui_deck.html', 'drift-ask-ui.ps1', 'drift-ask-ui.cmd', 'DriftUiWin.cs', 'app.manifest')) {
+                if (Test-Path -LiteralPath (Join @($here, 'ui', $name))) {
+                    Copy-Item -LiteralPath (Join @($here, 'ui', $name)) -Destination (Join @($Prefix, 'ui', $name)) -Force
+                }
+            }
+            if (Test-Path -LiteralPath (Join @($here, 'ui', 'drift-ask-ui.cmd'))) {
+                Copy-Item -LiteralPath (Join @($here, 'ui', 'drift-ask-ui.cmd')) -Destination (Join @($bin, 'drift-ask-ui.cmd')) -Force
+            }
+        }
+    }
     if ($onWindows) {
         Invoke-Step 'unblock the installed files' {
             Get-ChildItem -LiteralPath $Prefix -Recurse -File | Unblock-File

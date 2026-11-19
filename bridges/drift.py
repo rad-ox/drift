@@ -7,11 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
-import platform
-import shutil
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -28,6 +24,7 @@ except ImportError:
         assert _spec is not None and _spec.loader is not None
         _checks = importlib.util.module_from_spec(_spec)
         _spec.loader.exec_module(_checks)
+_probes = _checks._uic
 
 ThenView = _checks.ThenView
 expand_domain = _checks.expand_domain
@@ -84,13 +81,7 @@ def _resolve_env() -> dict[str, str] | None:
     if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
-    base = {'adapter': 'drift.py@0.7.0', 'config': 'default', 'deps': 'none', 'drift': '0.7.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
-    if raw:
-        parsed = json.loads(_strip_bom(raw))
-        if not isinstance(parsed, dict): raise ValueError('DRIFT_ENV must be a JSON object')
-        for k, v in parsed.items():
-            if k not in _ENV_KEYS or not isinstance(v, str) or not v.strip(): raise ValueError(f'invalid DRIFT_ENV key "{k}"')
-            base[k] = v.strip()
+    base = _probes.build_env_dict('drift.py@0.8.0', raw, _strip_bom, _ENV_KEYS)
     _env_cache = (cache_key, base)
     return base
 
@@ -153,25 +144,7 @@ def verify_stub(id_or_res: str, case_id: str | Mapping[str, Any], payload: Any) 
 
 
 def _load_view(contract_id: str) -> dict[str, Any]:
-    if contract_id in _VIEWS: return _VIEWS[contract_id]
-    res = os.environ.get('DRIFT_RESOLVED', '').strip()
-    if not res:
-        doc = _auto_resolve(contract_id)
-        if doc is None: raise RuntimeError(f'DRIFT_RESOLVED is not set and contract "{contract_id}" could not be auto-resolved from .drift/')
-        if doc.get('id') != contract_id: raise ValueError(f'resolved view for "{contract_id}" has id "{doc.get("id")}"')
-        _VIEWS[contract_id] = doc
-        return doc
-    fp = Path(res) if res.endswith('.json') else Path(res) / f'{contract_id}.json'
-    if not res.endswith('.json'):
-        synced = _auto_resolve(contract_id, fp.resolve())
-        if isinstance(synced, dict) and synced.get('id') == contract_id:
-            _VIEWS[contract_id] = _checks.attach_bridge_plan_file(synced, fp.resolve(), _read_json)
-            return _VIEWS[contract_id]
-    if not fp.is_file(): raise FileNotFoundError(f'contract "{contract_id}" was not found at {fp}')
-    doc = _checks.attach_bridge_plan_file(_read_json(fp), fp, _read_json)
-    if doc.get('id') != contract_id: raise ValueError(f'resolved view {fp} has id "{doc.get("id")}", exp "{contract_id}"')
-    _VIEWS[contract_id] = doc
-    return doc
+    return _probes.load_view_doc(contract_id, _VIEWS, os.environ, _auto_resolve, _checks.attach_bridge_plan_file, _read_json)
 
 
 def _load_selection() -> dict[str, Any]:
@@ -221,33 +194,15 @@ def _ensure_inventory(out: str) -> dict[str, Any]:
     return _INVS.setdefault(out, {'classes': set(_DISC_CLASSES), 'tests': set(_DISC_TESTS), 'inputs': {}, 'dirty': True, 'flushed': False})
 
 
-def _record_discovery(test_id: str, active_out: str = '') -> None:
+def _ensure_exit_hook() -> None:
     global _exit_hook
-    tgt = active_out or os.environ.get('DRIFT_EVENTS', '').strip() or _discover_events_dir()
-    if not tgt:
-        return
-    h = test_id.find('#') if isinstance(test_id, str) else -1
-    cls, mth = (test_id[:h] if h > 0 else ''), (test_id[h + 1:] if h > 0 else '').split('[', 1)[0]
-    if not cls or not mth or any(c.isspace() or c in _BAD_CLS for c in cls) or any(c.isspace() or c in _BAD_MTH for c in mth):
-        raise ValueError(f'DRIFT_EVENTS requires a test id in Class#method form: "{test_id}"')
-    canon = f'{cls}#{mth}'
-    _DISC_CLASSES.add(cls)
-    _DISC_TESTS.add(canon)
-    out = active_out or (str(_shard_path) if _shard_path is not None else (tgt if tgt.endswith('.jsonl') and Path(tgt).is_file() else ''))
-    if not out:
-        return
-    inv = _ensure_inventory(out)
-    before = len(inv['classes']) + len(inv['tests'])
-    inv['classes'].add(cls)
-    inv['tests'].add(canon)
-    if before == len(inv['classes']) + len(inv['tests']) and inv['flushed'] and not inv['dirty']:
-        return
-    inv['dirty'] = True
     if not _exit_hook:
         _exit_hook = True
         atexit.register(flush_all_inventories)
-    if active_out:
-        _flush_inventory(out, inv)
+
+
+def _record_discovery(test_id: str, active_out: str = '') -> None:
+    _probes.record_discovery_into(test_id, active_out, os.environ, _discover_events_dir, _shard_path, _BAD_CLS, _BAD_MTH, _DISC_CLASSES, _DISC_TESTS, _ensure_inventory, _flush_inventory, _ensure_exit_hook)
 
 
 def _write_event(ev: dict[str, Any]) -> None:
@@ -411,26 +366,7 @@ class DriftContext:
         return ThenView({k: self._u03(v) for k, v in self._then_table(c).items()}, self.reads[c])
 
     def record_input(self, fp: str | Path, pre: bytes | str | None = None) -> str:
-        is_self = isinstance(pre, str)
-        cwd = Path(os.path.normpath(os.getcwd()))
-        abs_p = Path(fp) if is_self else Path(os.path.normpath(cwd / fp))
-        try: rel = str(fp) if is_self else abs_p.relative_to(cwd).as_posix()
-        except ValueError: rel = Path(fp).as_posix()
-        dig = pre if is_self else _input_digest(abs_p, pre)
-        if self.mutation_override is None:
-            if not is_self: self._input_files[abs_p] = (rel, dig)
-            out = _resolve_events_file()
-            if out:
-                _record_discovery(self.test_id, out)
-                inv = _INVS.get(out)
-                if inv is not None:
-                    h = self.test_id.find('#')
-                    canon = f"{self.test_id[:h]}#{self.test_id[h + 1:].split('[', 1)[0]}" if h > 0 else self.test_id
-                    fm = inv['inputs'].setdefault(canon, {})
-                    if fm.get(rel) != dig:
-                        fm[rel] = dig
-                        inv['dirty'] = True
-        return dig
+        return _probes.record_context_input(self, fp, pre, _input_digest, _resolve_events_file, _record_discovery, _INVS)
 
     def read_fixture(self, fp: str | Path, encoding: str = 'utf-8') -> str:
         raw = Path(os.path.normpath(Path(os.getcwd()) / fp)).read_bytes()
@@ -537,11 +473,7 @@ def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...],
     tok = _CTX_VAR.set(ctx)
     try:
         fn(ctx)
-        for abs_p, (rel, dig) in ctx._input_files.items():
-            if not abs_p.is_file(): raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
-            st = abs_p.stat()
-            ok = (_DIGESTS.get(str(abs_p), (None, '')) == ((st.st_mtime_ns, st.st_size), dig)) if st.st_size > 65536 else (_hash_bytes(abs_p.read_bytes()) == dig)
-            if not ok: raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')
+        _probes.verify_recorded_inputs(contract, test, ctx._input_files, _DIGESTS, _hash_bytes)
         passed = True
     except BaseException as err: control_err = err
     finally: _CTX_VAR.reset(tok)

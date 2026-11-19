@@ -5,44 +5,22 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
-from decimal import Decimal as D
 from pathlib import Path
 from typing import Any, Callable
-from drift_verify_grant import obs03, red03, tok_str_03 as _tok_str_03, unesc_lit_03 as _unesc_lit_03
-
-_RES03_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-def _norm_num_03(v: Any, typ: str) -> Any:
- if isinstance(v, bool): return v
- if typ == "num" and isinstance(v, (int, float)): return 0.0 if float(v) == 0.0 else float(v)
- if typ == "int" and isinstance(v, (int, float)) and float(v).is_integer(): return int(v)
- return 0.0 if isinstance(v, float) and v == 0.0 else v
-
-def _canon_ptr_03(s: str) -> str:
- st = 1 if s.startswith("/") else 0; col = s.find(":/", st)
- return f"{s[st:col]}:{s[col + 1:]}" if col > st and _RES03_RE.match(s[st:col]) else s
-
-def _canon_pred_03(sp: dict[str, Any]) -> dict[str, Any]:
- typ = str(sp.get("type", "")); m: dict[str, Any] = {"type": typ}
- for bk in ("min", "max"):
-  if bk in sp: m[bk] = int(sp[bk]) if typ == "int" else float(sp[bk])
- if isinstance(sp.get("len"), dict) and (lm := {k: int(sp["len"][k]) for k in ("min", "max") if k in sp["len"]}): m["len"] = lm
- for k in ("enum", "unit", "role", "transient", "compensating"):
-  if sp.get(k): m[k] = sp[k]
- if sp.get("ptr"): m["ptr"] = _canon_ptr_03(str(sp["ptr"]))
- return m
-
-def _merge_pred_03(b: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
- out = {**b, "type": c.get("type", b.get("type", ""))}
- if "min" in b or "min" in c: out["min"] = max(b["min"], c["min"]) if ("min" in b and "min" in c) else c.get("min", b.get("min"))
- if "max" in b or "max" in c: out["max"] = min(b["max"], c["max"]) if ("max" in b and "max" in c) else c.get("max", b.get("max"))
- bl, cl = b.get("len") or {}, c.get("len") or {}; lm = {}
- if "min" in bl or "min" in cl: lm["min"] = max(bl["min"], cl["min"]) if ("min" in bl and "min" in cl) else cl.get("min", bl.get("min"))
- if "max" in bl or "max" in cl: lm["max"] = min(bl["max"], cl["max"]) if ("max" in bl and "max" in cl) else cl.get("max", bl.get("max"))
- if lm: out["len"] = lm
- for k in ("enum", "unit", "role", "transient", "compensating", "ptr"):
-  if c.get(k): out[k] = c[k]
- return out
+from drift_verify_base import (
+    BUDGET_METRICS,
+    _budget_metrics_closure_ok,
+    _canon_pred_03,
+    _canon_ptr_03,
+    _contains_todo,
+    _has_approval_blocker,
+    _is_unanchored_prose_source,
+    _merge_pred_03,
+    _norm_num_03,
+    tok_str_03 as _tok_str_03,
+    unesc_lit_03 as _unesc_lit_03,
+)
+from drift_verify_obs import obs03, red03
 
 
 def _norm_expr_03(raw, pred, side, units, params):
@@ -89,12 +67,87 @@ def _norm_expr_03(raw, pred, side, units, params):
 
 
 _P03_CACHE: dict[Any, Any] = {}
-def _read_p03(pf: Path) -> dict[str, Any]:
- st = pf.stat(); k = (str(pf), st.st_mtime_ns, st.st_size)
- if k not in _P03_CACHE: _P03_CACHE[k] = tomllib.loads(pf.read_text("utf-8"))
- return _P03_CACHE[k]
+_PROF_MERGED_03_CACHE: dict[Any, Any] = {}
+_OBS_PTR_RE = re.compile(r"^/?[\w.-]+:(?=/)")
 
-def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_rank_fn, resolve_roots_fn, has_blocker_fn, is_prose_fn, contains_todo_fn):
+def _read_p03_stat(pf: Path) -> tuple[tuple[int, int] | None, dict[str, Any]]:
+ try: st = pf.stat()
+ except OSError: return None, {}
+ k = (str(pf), st.st_mtime_ns, st.st_size)
+ if k not in _P03_CACHE: _P03_CACHE[k] = tomllib.loads(pf.read_text("utf-8"))
+ return (st.st_mtime_ns, st.st_size), _P03_CACHE[k]
+
+def _merged_profile_03(profiles_dir: Path, prof_ref: str, proof_rank_fn: Callable[[str], int]) -> tuple[Any, ...]:
+ if not prof_ref:
+  return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], [], [], {}, {}, ({}, {}, set())
+ st0, prof_doc = _read_p03_stat(profiles_dir / f"{prof_ref}.toml")
+ if st0 is None:
+  return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], [], [], {}, {}, ({}, {}, set())
+ exts = [str(x) for x in (prof_doc.get("extends") or []) if isinstance(x, str)] if isinstance(prof_doc.get("extends"), list) else []
+ chain_docs: list[tuple[str, dict[str, Any]]] = []
+ chain_stats: list[tuple[str, int | None, int | None]] = []
+ for r in exts:
+  st_r, doc_r = _read_p03_stat(profiles_dir / f"{r}.toml")
+  chain_docs.append((r, doc_r))
+  chain_stats.append((r, st_r[0] if st_r else None, st_r[1] if st_r else None))
+ chain_docs.append((prof_ref, prof_doc))
+ chain_stats.append((prof_ref, st0[0], st0[1]))
+ mkey = (str(profiles_dir), prof_ref, tuple(chain_stats))
+ if mkey in _PROF_MERGED_03_CACHE:
+  return _PROF_MERGED_03_CACHE[mkey]
+ units, w_sch, t_sch, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont = {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, [], False, False, 0, [], [], []
+ for r, bp in chain_docs:
+  units.update({str(uk): float(uv) for uk, uv in (bp.get("units") or {}).items() if isinstance(uv, (int, float)) and not isinstance(uv, bool)})
+  sm = bp.get("schema") if isinstance(bp.get("schema"), dict) else {}
+  for wk, wp in (sm.get("when") or {}).items():
+   if isinstance(wp, dict): w_sch[wk] = _merge_pred_03(w_sch[wk], wp) if wk in w_sch else dict(wp)
+  for tk, tp in (sm.get("then") or {}).items():
+   if isinstance(tp, dict): t_sch[tk] = _merge_pred_03(t_sch[tk], tp) if tk in t_sch else dict(tp)
+  for ik, iv in (bp.get("invariants") or {}).items():
+   ne, _, _ = _norm_expr_03(iv, t_sch.get(ik), "then", units, {})
+   m_inv[ik] = {**m_inv[ik], **ne} if ik in m_inv else ne
+  for bcid, bcm in (bp.get("cases") or {}).items():
+   if isinstance(bcm, dict): tc = dict(bcm); tc["from"] = r if r == prof_ref or "from" not in tc else tc["from"]; m_cases[bcid] = tc
+  for bdid, bdm in (bp.get("decisions") or {}).items():
+   if isinstance(bdm, dict): td = dict(bdm); td["from"] = r if r == prof_ref or "from" not in td else td["from"]; m_decs[bdid] = td
+  b_ass = bp.get("assurance") if isinstance(bp.get("assurance"), dict) else {}
+  m_risks.update(b_ass.get("risks") or {}); m_ctrls.update(b_ass.get("controls") or {})
+  req = bp.get("requires") if isinstance(bp.get("requires"), dict) else {}
+  if req.get("proof") and proof_rank_fn(str(req["proof"])) > proof_rank_fn(p_proof): p_proof = str(req["proof"])
+  for sc in (req.get("security") or ()):
+   if str(sc) not in p_sec: p_sec.append(str(sc))
+  if req.get("simulation") == "required": p_sim = True
+  if req.get("budgets") == "required": p_buds = True
+  elif req.get("budgets") == "optional" and (p_buds or p_bmetrics): p_bm_bad = True
+  if "budget_metrics" in req:
+   bms = req["budget_metrics"]
+   if not isinstance(bms, list) or not bms or len(set(str(x) for x in bms)) != len(bms) or any(not isinstance(x, str) or x not in BUDGET_METRICS for x in bms) or any(m not in bms for m in p_bmetrics) or req.get("budgets") == "optional": p_bm_bad = True
+   else:
+    for m in bms:
+     if m not in p_bmetrics: p_bmetrics.append(m)
+    p_bmetrics.sort(); p_buds = True
+  if isinstance(rg := req.get("guards"), dict):
+   has_g = True
+   if isinstance(rg.get("max_lines"), int) and rg["max_lines"] > 0: g_max = rg["max_lines"] if g_max == 0 or rg["max_lines"] < g_max else g_max
+   for fi in (rg.get("forbid_imports") or ()):
+    if str(fi) not in g_forb: g_forb.append(str(fi))
+   for ft in (rg.get("forbid_touched") or ()):
+    if str(ft) not in g_forb_t: g_forb_t.append(str(ft))
+   for rc_m in (rg.get("require_containment") or ()):
+    if str(rc_m) not in g_cont: g_cont.append(str(rc_m))
+ sch_w_canon = {wk: _canon_pred_03(wp) for wk, wp in w_sch.items()}
+ sch_t_canon = {tk: _canon_pred_03(tp) for tk, tp in t_sch.items()}
+ obs_proj = {k: _OBS_PTR_RE.sub("", p["ptr"]) for k, p in t_sch.items() if p.get("ptr")}
+ obs_unit = {k: p["unit"] for k, p in t_sch.items() if p.get("unit")}
+ inv_0, deps_0, caps_0 = {}, {}, set()
+ for ik, iv in m_inv.items():
+  ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, {})
+  inv_0[ik] = ne; deps_0.setdefault(f"then.{ik}", []).extend(pr); caps_0.update(cp)
+ merged = (units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, (inv_0, deps_0, caps_0))
+ _PROF_MERGED_03_CACHE[mkey] = merged
+ return merged
+
+def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_rank_fn, resolve_roots_fn, has_blocker_fn=_has_approval_blocker, is_prose_fn=_is_unanchored_prose_source, contains_todo_fn=_contains_todo):
  cid, appr, _ = str(raw.get("id", path.stem)), raw.pop("approval", None), raw.pop("note", None)
  raw_sc, raw_bind, use_tbl = (raw.get(k) if isinstance(raw.get(k), dict) else {} for k in ("scope", "bind", "use"))
  sc_code = [str(x) for x in raw_bind.get("code", []) if isinstance(x, str)] if isinstance(raw_bind.get("code"), list) else []
@@ -102,47 +155,18 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
  prof_ref = str(use_tbl.get("profile", ""))
  use_params = {**(use_tbl["params"] if isinstance(use_tbl.get("params"), dict) else {}), **{k: v for k, v in use_tbl.items() if k not in ("profile", "concepts", "waive", "params")}}
  waived = use_tbl.get("waive") if isinstance(use_tbl.get("waive"), dict) else {}
- units, w_sch, t_sch, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, has_g, g_max, g_forb, g_forb_t = {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], []
- p0 = profiles_dir / f"{prof_ref}.toml" if prof_ref else None
- if p0 and p0.is_file():
-  prof_doc = _read_p03(p0)
-  exts = [str(x) for x in (prof_doc.get("extends") or []) if isinstance(x, str)] if isinstance(prof_doc.get("extends"), list) else []
-  for r in [*exts, prof_ref]:
-   bp = prof_doc if r == prof_ref else (_read_p03(pf) if (pf := profiles_dir / f"{r}.toml").is_file() else {})
-   units.update({str(uk): float(uv) for uk, uv in (bp.get("units") or {}).items() if isinstance(uv, (int, float)) and not isinstance(uv, bool)})
-   sm = bp.get("schema") if isinstance(bp.get("schema"), dict) else {}
-   for wk, wp in (sm.get("when") or {}).items():
-    if isinstance(wp, dict): w_sch[wk] = _merge_pred_03(w_sch[wk], wp) if wk in w_sch else dict(wp)
-   for tk, tp in (sm.get("then") or {}).items():
-    if isinstance(tp, dict): t_sch[tk] = _merge_pred_03(t_sch[tk], tp) if tk in t_sch else dict(tp)
-   for ik, iv in (bp.get("invariants") or {}).items():
-    ne, _, _ = _norm_expr_03(iv, t_sch.get(ik), "then", units, {})
-    m_inv[ik] = {**m_inv[ik], **ne} if ik in m_inv else ne
-   for bcid, bcm in (bp.get("cases") or {}).items():
-    if isinstance(bcm, dict): tc = dict(bcm); tc["from"] = r if r == prof_ref or "from" not in tc else tc["from"]; m_cases[bcid] = tc
-   for bdid, bdm in (bp.get("decisions") or {}).items():
-    if isinstance(bdm, dict): td = dict(bdm); td["from"] = r if r == prof_ref or "from" not in td else td["from"]; m_decs[bdid] = td
-   b_ass = bp.get("assurance") if isinstance(bp.get("assurance"), dict) else {}
-   m_risks.update(b_ass.get("risks") or {}); m_ctrls.update(b_ass.get("controls") or {})
-   req = bp.get("requires") if isinstance(bp.get("requires"), dict) else {}
-   if req.get("proof") and proof_rank_fn(str(req["proof"])) > proof_rank_fn(p_proof): p_proof = str(req["proof"])
-   for sc in (req.get("security") or ()):
-    if str(sc) not in p_sec: p_sec.append(str(sc))
-   if req.get("simulation") == "required": p_sim = True
-   if req.get("budgets") == "required": p_buds = True
-   if isinstance(rg := req.get("guards"), dict):
-    has_g = True
-    if isinstance(rg.get("max_lines"), int) and rg["max_lines"] > 0: g_max = rg["max_lines"] if g_max == 0 or rg["max_lines"] < g_max else g_max
-    for fi in (rg.get("forbid_imports") or ()):
-     if str(fi) not in g_forb: g_forb.append(str(fi))
-    for ft in (rg.get("forbid_touched") or ()):
-     if str(ft) not in g_forb_t: g_forb_t.append(str(ft))
- norm_inv, p_deps, all_caps = {}, {}, set()
- for ik, iv in m_inv.items():
-  ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, use_params)
-  norm_inv[ik] = ne
-  p_deps.setdefault(f"then.{ik}", []).extend(pr)
-  all_caps.update(cp)
+ units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, inv_base = _merged_profile_03(profiles_dir, prof_ref, proof_rank_fn)
+ if use_params:
+  norm_inv, p_deps, all_caps = {}, {}, set()
+  for ik, iv in m_inv.items():
+   ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, use_params)
+   norm_inv[ik] = ne
+   p_deps.setdefault(f"then.{ik}", []).extend(pr)
+   all_caps.update(cp)
+ else:
+  norm_inv = {k: dict(v) for k, v in inv_base[0].items()}
+  p_deps = {k: list(v) for k, v in inv_base[1].items()}
+  all_caps = set(inv_base[2])
  for ik, iv in (raw.get("invariants") or {}).items():
   ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, use_params)
   norm_inv[ik] = {**norm_inv[ik], **ne} if ik in norm_inv else ne
@@ -197,8 +221,8 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
    elif dep.startswith("then.") and dep[5:] not in need_t:
     need_t.add(dep[5:])
     q.append(dep)
- sch_w = {wk: _canon_pred_03(w_sch[wk]) for wk in need_w if wk in w_sch}
- sch_t = {tk: _canon_pred_03(t_sch[tk]) for tk in need_t if tk in t_sch}
+ sch_w = {wk: sch_w_canon[wk] for wk in need_w if wk in sch_w_canon}
+ sch_t = {tk: sch_t_canon[tk] for tk in need_t if tk in sch_t_canon}
  need_u = {str(s.get("unit", "")) for s in (*(w_sch[w] for w in need_w if w in w_sch), *(t_sch[t] for t in need_t if t in t_sch)) if s.get("unit")}
  act_u = {uk: uv for uk, uv in units.items() if len(pts := uk.split("->")) == 2 and (pts[0] in need_u or pts[1] in need_u)}
  prof_clos: dict[str, Any] = {}
@@ -234,23 +258,24 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
   if k not in beh_cases: continue
   cl_c, ss = beh_cases[k], {}
   for wk, wv in (cl_c.get("when") or {}).items():
-   if wk in w_sch: ss[f"when.{wk}"] = _canon_pred_03(w_sch[wk])
+   if wk in sch_w_canon: ss[f"when.{wk}"] = sch_w_canon[wk]
    for pr in exp_peers(wv):
-    if pr.startswith("when.") and pr[5:] in w_sch: ss[pr] = _canon_pred_03(w_sch[pr[5:]])
+    if pr.startswith("when.") and pr[5:] in sch_w_canon: ss[pr] = sch_w_canon[pr[5:]]
   for tk, tv in (cl_c.get("then") or {}).items():
-   if tk in t_sch: ss[f"then.{tk}"] = _canon_pred_03(t_sch[tk])
+   if tk in sch_t_canon: ss[f"then.{tk}"] = sch_t_canon[tk]
    for pr in exp_peers(tv):
-    if pr.startswith("when.") and pr[5:] in w_sch: ss[pr] = _canon_pred_03(w_sch[pr[5:]])
-    elif pr.startswith("then.") and pr[5:] in t_sch: ss[pr] = _canon_pred_03(t_sch[pr[5:]])
+    if pr.startswith("when.") and pr[5:] in sch_w_canon: ss[pr] = sch_w_canon[pr[5:]]
+    elif pr.startswith("then.") and pr[5:] in sch_t_canon: ss[pr] = sch_t_canon[pr[5:]]
   case_digs[k] = d2_fn("dr2b:sha256:", "drift.case-behavior/2", {"contract": cid, "case_id": k, "case": cl_c, "schema": ss, "units": dict(units)})
- dig_assur, res_budgets, res_formal, res_cutover, res_risks, res_ctrls, f_rrefs, eff_forb_t = {}, {}, {}, {}, {}, {}, {}, []
+ dig_assur, res_budgets, res_formal, res_cutover, res_risks, res_ctrls, f_rrefs, eff_forb_t, eff_cont = {}, {}, {}, {}, {}, {}, {}, [], []
  if "guards" in assur or has_g:
   gm = assur.get("guards") if isinstance(assur.get("guards"), dict) else {}
   ml = gm.get("max_lines", g_max)
   fb = sorted(set(g_forb) | {str(x) for x in (gm.get("forbid_imports") or ()) if isinstance(x, str)})
   eff_forb_t = sorted(set(g_forb_t) | {str(x) for x in (gm.get("forbid_touched") or ()) if isinstance(x, str)})
+  eff_cont = sorted(set(g_cont) | {str(x) for x in (gm.get("require_containment") or ()) if isinstance(x, str)})
   tgts = sorted({str(x) for x in (gm.get("target") or ()) if isinstance(x, str)})
-  dig_assur["guards"] = {"target": tgts, **({"max_lines": ml} if isinstance(ml, int) and ml > 0 else {}), **({"forbid_imports": fb} if fb else {}), **({"forbid_touched": eff_forb_t} if eff_forb_t else {})}
+  dig_assur["guards"] = {"target": tgts, **({"max_lines": ml} if isinstance(ml, int) and ml > 0 else {}), **({"forbid_imports": fb} if fb else {}), **({"forbid_touched": eff_forb_t} if eff_forb_t else {}), **({"require_containment": eff_cont} if eff_cont else {})}
  if isinstance(assur.get("formal"), dict):
   df = {}
   for fid, fm in assur["formal"].items():
@@ -296,17 +321,20 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
    dc[ctrl_id] = cl
    res_ctrls[ctrl_id] = {**cl, "requirement_ref": rr}
   dig_assur["controls"] = dc
- req_pos = {**({"proof": p_proof} if p_proof else {}), **({"security": sorted(p_sec)} if p_sec else {}), **({"simulation": "required"} if p_sim else {}), **({"budgets": "required"} if p_buds else {})}
+ req_pos = {**({"proof": p_proof} if p_proof else {}), **({"security": sorted(p_sec)} if p_sec else {}), **({"simulation": "required"} if p_sim else {}), **({"budgets": "required"} if p_buds else {}), **({"budget_metrics": sorted(p_bmetrics)} if p_bmetrics else {})}
  assur_dig = d2_fn("dr2a:sha256:", "drift.assurance/2", {"contract": cid, "requires": req_pos, "assurance": dig_assur})
  d_match = lambda r, fd: isinstance(r, str) and bool(re.fullmatch(rf"{fd[:5]}(?:sha256:[0-9a-f]{{64}}|[0-9a-f]{{12}})", r)) and (r == fd or r == ref_fn(fd))
  has_blk = has_blocker_fn({**raw, "budgets": assur.get("budgets"), "formal": assur.get("formal"), "cutover": assur.get("cutover")}, {"decisions": m_decs}) or contains_todo_fn(raw.get("bind")) or contains_todo_fn(raw.get("invariants")) or contains_todo_fn(assur)
  has_any_ref = isinstance(appr, dict) and any(appr.get(k) for k in ("behavior_ref", "assurance_ref", "ref", "digest"))
  cur_ok = isinstance(appr, dict) and set(appr) <= {"behavior_ref", "assurance_ref", "by", "at"} and d_match(appr.get("behavior_ref"), beh_dig) and d_match(appr.get("assurance_ref"), assur_dig)
- st = "invalid" if (p_buds and not res_budgets) else ("blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent")))
+ act_cids = {k for k, cm in beh_cases.items() if isinstance(cm, dict) and "status" not in cm}
+ st = "invalid" if (p_bm_bad or (p_buds and not res_budgets) or not _budget_metrics_closure_ok(p_bmetrics, res_budgets, act_cids)) else ("blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent")))
  open_m = raw.get("open") if isinstance(raw.get("open"), dict) else {}
  own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d, dict)] if isinstance(raw.get("decisions"), dict) else []
  decs = [d for s in (raw.get("decisions"), m_decs) if isinstance(s, dict) for d in s.values() if isinstance(d, dict)]
  blk = lambda ph: any(isinstance(q, dict) and q.get("blocks") == ph for q in open_m.values()) or any(d.get("pick", "") == "" and d.get("decide_by") == ph for d in decs)
  roots = resolve_roots_fn(path)
- return {"drift": "0.3", "id": cid, "digest": beh_dig, "ref": ref_fn(beh_dig), "assurance_digest": assur_dig, "assurance_ref": ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), "profile_proof": p_proof, "profile_security": p_sec, "profile_simulation": p_sim, "profile_budgets": p_buds, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": beh_cases, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": {k: re.sub(r"^/?[\w.-]+:(?=/)", "", p["ptr"]) for k, p in t_sch.items() if p.get("ptr")}, "units": units, "unit": {k: p["unit"] for k, p in t_sch.items() if p.get("unit")}, "w": sc_writes, "ft": eff_forb_t}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
+ reuse_env = canon_fn({"id": cid, "intent": raw.get("intent", ""), "scope": raw.get("scope"), "waived": sorted(waived), "open": clean_open, "profile": prof_clos})
+ case_reuse_sigs = {k: canon_fn({"case": beh_cases[k], "cards": {did: {**dm, "cases": [rc for rc in (dm.get("cases") or ()) if rc in act_cids]} for did, dm in loc_decs.items() if k in (dm.get("cases") or ())}}) for k in act_cids}
+ return {"drift": "0.3", "id": cid, "digest": beh_dig, "ref": ref_fn(beh_dig), "assurance_digest": assur_dig, "assurance_ref": ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), "profile_proof": p_proof, "profile_security": list(p_sec), "profile_simulation": p_sim, "profile_budgets": p_buds, "profile_budget_metrics": sorted(p_bmetrics), "require_containment": eff_cont, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": beh_cases, "reuse_env": reuse_env, "case_reuse_sigs": case_reuse_sigs, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": dict(obs_proj), "units": dict(units), "unit": dict(obs_unit), "w": sc_writes, "ft": eff_forb_t}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
 

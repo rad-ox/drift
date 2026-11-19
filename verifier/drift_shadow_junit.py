@@ -1,110 +1,32 @@
 #!/usr/bin/env python3
 """Two-phase pre/post-execution JUnit XML and external harness shadow adapter."""
-import argparse, hashlib, json, os, subprocess, sys, tomllib, xml.etree.ElementTree as ET
+import sys
+if sys.version_info < (3, 11):
+ sys.stderr.write(f"drift_shadow_junit: Python 3.11+ required (found {sys.version_info.major}.{sys.version_info.minor})\n")
+ sys.exit(2)
+import argparse, hashlib, json, os, subprocess, tomllib, xml.etree.ElementTree as ET
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import drift_verify as dv
-SHADOW_RUN_SCHEMA = "drift.shadow-run/1"
-SHADOW_RUN_KEYS = frozenset(("schema", "run_id", "source_snapshot", "bindings_ref", "shadow_snapshot", "selected_tests", "shadow_inputs", "sequence", "supersedes"))
-SNAPSHOT_RE = dv.SNAPSHOT_RE
-def validate_shadow_run_dict(sr):
- if not isinstance(sr, dict) or any(k not in SHADOW_RUN_KEYS for k in sr) or sr.get("schema") != SHADOW_RUN_SCHEMA: raise ValueError("shadow_run")
- rid, s_snap, b_ref, sh_snap, s_in = sr.get("run_id", ""), sr.get("source_snapshot", ""), sr.get("bindings_ref", ""), sr.get("shadow_snapshot", ""), sr.get("shadow_inputs")
- if not isinstance(rid, str) or not rid.strip() or rid != rid.strip() or "/" in rid or "\\" in rid or ".." in rid: raise ValueError("shadow_run.run_id")
- if not isinstance(s_snap, str) or not SNAPSHOT_RE.match(s_snap) or not isinstance(b_ref, str) or len(b_ref) != 71 or not b_ref.startswith("sha256:") or not isinstance(sh_snap, str) or len(sh_snap) != 71 or not sh_snap.startswith("sha256:"): raise ValueError("shadow_run.ref")
- if not isinstance(s_in, dict) or not s_in or any(not isinstance(k, str) or not k.strip() or k.startswith("/") or "\\" in k or any(p in ("", ".", "..") for p in k.split("/")) or not isinstance(v, str) or len(v) != 71 or not v.startswith("sha256:") for k, v in s_in.items()): raise ValueError("shadow_run.inputs")
- if "selected_tests" in sr and (not isinstance(st_l := sr["selected_tests"], list) or not all(isinstance(x, str) and "#" in x for x in st_l) or st_l != sorted(set(st_l))): raise ValueError("shadow_run.selected_tests")
- if "sequence" in sr and (not isinstance(seq := sr["sequence"], int) or isinstance(seq, bool) or seq < 1): raise ValueError("shadow_run.sequence")
- if "supersedes" in sr and (not isinstance(sup_l := sr["supersedes"], list) or not all(isinstance(x, str) and bool(x.strip()) and x == x.strip() and "/" not in x and "\\" not in x and ".." not in x and x != rid for x in sup_l) or sup_l != sorted(set(sup_l))): raise ValueError("shadow_run.supersedes")
-from drift_verify_sim import order_shadow_shards_py
-def lookup_registered_shadow_py(probe_path: Path) -> str:
- reg = os.environ.get("DRIFT_SHADOW_REGISTRY", "").strip()
- reg_p = Path(reg) if reg else (Path(os.environ.get("XDG_CONFIG_HOME", "").strip() or (Path.home() / ".config")) / "drift" / "shadows.toml")
- if not reg_p.is_file() or reg_p.is_symlink(): return ""
- try:
-  doc = tomllib.loads(reg_p.read_text("utf-8"))
-  if doc.get("schema") != "drift.shadow-registry/1": return ""
-  areas = doc.get("areas") or {}
- except Exception: return ""
- cur = probe_path.resolve()
- for d in (cur, *cur.parents):
-  sd = str(areas.get(str(d), "")).strip()
-  if sd and (Path(sd) / "shadow.toml").is_file(): return sd
- return ""
-def resolve_shadow_roots_impl(path, state_dir=""):
- p = Path(path)
- def _area_of(cand):
-  if cand.parent.name == "contracts" and cand.parent.parent.name == ".drift": return cand.parent.parent.parent
-  if cand.name == "config.toml" and cand.parent.name == ".drift": return cand.parent.parent
-  cur = cand if cand.is_dir() else cand.parent
-  for d in (cur, *cur.parents):
-   if (d / "shadow.toml").exists() or (d / "shadow.toml").is_symlink() or (d / ".drift").exists(): return d
-  return cand.parent
- env_sd = os.environ.get("DRIFT_STATE_DIR", "").strip()
- sd = state_dir or env_sd or lookup_registered_shadow_py(p if p.exists() else Path.cwd())
- area_root = Path(sd) if sd and not ((p.parent.name == "contracts" and p.parent.parent.name == ".drift") or (p / "shadow.toml").exists()) else _area_of(p)
- man = area_root / "shadow.toml"
- if not man.exists() and not man.is_symlink():
-  if sd:
-   r_area, r_cwd = area_root.resolve(), Path.cwd().resolve()
-   if r_area != r_cwd and (r_area.is_relative_to(r_cwd) or r_cwd.is_relative_to(r_area)):
-    raise ValueError(f"shadow state directory must lie outside source_root: {area_root}")
-  return {"is_shadow": False, "source_root": area_root, "area_root": area_root, "work_root": area_root / ".drift-work"}
- if man.is_symlink() or not man.is_file(): raise ValueError(f"shadow.toml must be a regular file: {man}")
- doc = tomllib.loads(man.read_text("utf-8"))
- if set(doc) - {"schema", "source_root"} or doc.get("schema") != "drift.shadow-area/1": raise ValueError("invalid shadow.toml schema")
- raw_src = os.environ.get("DRIFT_SOURCE_ROOT", "").strip() or str(doc.get("source_root", "")).strip()
- if not raw_src: raise ValueError("missing source_root in shadow.toml")
- src_dir = Path(raw_src) if Path(raw_src).is_absolute() else (area_root / raw_src)
- if not src_dir.is_dir(): raise ValueError(f"no such source_root: {src_dir}")
- r_area, r_src = area_root.resolve(), src_dir.resolve()
- if r_area == r_src or r_area.is_relative_to(r_src) or r_src.is_relative_to(r_area):
-  raise ValueError(f"shadow state directory must lie outside source_root: {area_root}")
- if (r_src / ".drift" / "config.toml").is_file() or (r_src / ".drift" / "contracts").is_dir():
-  raise ValueError(f"ambiguous area for {r_src}: both in-tree .drift/ and shadow state directory {r_area} exist")
- if not state_dir and env_sd:
-  r_cwd = Path.cwd().resolve()
-  if not (r_cwd.is_relative_to(r_src) or r_cwd.is_relative_to(r_area)):
-   raise ValueError(f"DRIFT_STATE_DIR ({area_root}) is bound to {r_src}, not {r_cwd}")
- for sub in ("", ".drift", ".drift-work", "harness", "fixtures", ".drift/config.toml", ".drift/contracts", ".drift/profiles", ".drift/proves.toml", ".drift-work/baselines", ".drift-work/events", ".drift-work/runs"):
-  cand = area_root if not sub else (area_root / sub)
-  if (cand.exists() or cand.is_symlink()) and cand.resolve().is_relative_to(r_src):
-   raise ValueError(f"shadow state directory must lie outside source_root: {cand}")
- return {"is_shadow": True, "source_root": r_src, "area_root": r_area, "work_root": r_area / ".drift-work"}
-def shadow_inputs_fresh(sr, sf, area_root=None):
- if not isinstance(sr, dict) or not isinstance(s_in := sr.get("shadow_inputs"), dict): return True
- try:
-  roots = resolve_shadow_roots_impl(area_root or sf)
-  cur_inputs, cur_b_ref, cur_sh_snap = collect_shadow_inputs(roots["area_root"])
- except Exception: return False
- return cur_b_ref == sr.get("bindings_ref") and cur_sh_snap == sr.get("shadow_snapshot") and cur_inputs == s_in
-def _expect_err(fn, arg):
- try:
-  fn(arg)
-  raise AssertionError(arg)
- except ValueError: pass
-def run_verifier_self_test():
- assert dv.canonical_json(-0.0) == "0" and dv.canonical_json(1e21) == "1e+21" and dv.canonical_json(1e-6) == "0.000001" and dv.canonical_json(1e-7) == "1e-7" and dv.canonical_json({"\ue000": 1, "\U0001f600": 2}) == '{"\U0001f600":2,"\ue000":1}'
- for b in (1 << 53, -(1 << 53), float("nan"), float("inf")): _expect_err(dv.canonical_json, b)
- eb = '"contract":"a","cases":["c"],"level":"unit","outcome":"passed"'
- for b in (f'"test":"t#1","test":"t#2",{eb}', f'"test":"t#1",{eb},"extra":1', f'"test":"t#1",{eb},"read":["other"]', '"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"', '"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"', f'"test":"t#1",{eb},"digest":"dr1:UPPER0000000"'): _expect_err(dv.validate_event_line, "{" + b + "}")
- _expect_err(dv.validate_event_line, '{"a":' * 65 + '1' + '}' * 65)
- assert len(dv.validate_inventory_text(json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0" * 40, "pack_ref": "dr1:" + "0" * 12, "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": dict.fromkeys(dv.ENV_KEYS, "v")}))["tests"]) == 2
- assert dv.validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))["version"] == 2
- ib = '"version":1,"classes":["a"],"tests":["a#t1"]'
- for sfx in ('"version":2,"classes":[],"tests":[]', '"version":true,"classes":[],"tests":[]', '"version":1,"classes":["b","a"],"tests":[]', '"version":1,"classes":["a/b"],"tests":[]', '"version":1,"classes":["a"],"tests":["other#t1"]', f'{ib},"snapshot":"bad"', f'{ib},"pack_ref":"dr1:bad"', f'{ib},"touched":["/abs"]', f'{ib},"touched":["../e"]', f'{ib},"inputs":{{"u#t":{{"f":"1"}}}}', f'{ib},"env":{{"toolchain":"v1"}}', f'{ib},"extra":1'): _expect_err(dv.validate_inventory_text, "{" + sfx + "}")
- assert dv._is_unanchored_prose_source("observed in prod") and not dv._is_unanchored_prose_source("src/a/Item.java") and dv._has_approval_blocker({"scope": {"indirect": "unknown"}}, {})
- ck = {"id": "svc", "digest": "dr1:sha256:" + "a" * 64, "ref": "dr1:" + "a" * 12, "approval": "current", "approver": "o", "profile_proof": "killed", "cases": {"ok": {"at": ["unit"], "then": {"status": 200}}}, "open_cnt": 0, "exec_blk": False, "rel_blk": False}
- ev = [{"test": "T#ok", "contract": "svc", "cases": ["ok"], "read": ["ok"], "level": "unit", "outcome": "passed", "digest": ck["ref"]}]
- assert not dv.evaluate_contract(ck, "current", ev, 0, 0, [])["ok"] and dv.evaluate_contract(ck, "current", ev, 0, 0, [], mutations_ok=True)["ok"]
- dv.run_sec_self_test(ck, dv.digest_matches)
- dv.run_ra_self_test(ck, dv.digest_matches)
- print("drift_verify.py self-test: ok (RFC 8785 JCS, event & full inventory schema vectors passed)")
- return 0
-def normalize_bytes(raw: bytes) -> bytes:
- return raw.replace(b"\r\n", b"\n") if b"\x00" not in raw else raw
-def file_sha256(path: Path) -> str:
- return "sha256:" + hashlib.sha256(normalize_bytes(path.read_bytes())).hexdigest()
+from drift_verify_base import SNAPSHOT_RE, canonical_json
+from drift_verify_subject import (
+    SHADOW_RUN_KEYS,
+    SHADOW_RUN_SCHEMA,
+    collect_shadow_inputs,
+    file_sha256,
+    lookup_registered_shadow_py,
+    normalize_bytes,
+    order_shadow_shards_py,
+    resolve_shadow_roots_impl,
+    shadow_inputs_fresh,
+    validate_shadow_run_dict,
+)
+
+
+def run_verifier_self_test() -> int:
+ return dv.run_verifier_self_test()
+
+
 _SKIP_SNAPSHOT_DIRS = frozenset((".git", ".drift", ".drift-work", "target", ".build", "node_modules", "__pycache__"))
 _OUTCOME_RANK = {"failed": 3, "skipped": 2, "passed": 1}
 def validate_run_id(raw_id: str) -> str:
@@ -119,33 +41,13 @@ def capture_source_snapshot(source_root: Path) -> str:
   rev = subprocess.run(["git", "-C", str(source_root), "rev-parse", "--verify", "--quiet", "HEAD^{tree}"], env=env, capture_output=True, text=True)
   if st.returncode == 0 and st.stdout.strip() == "" and rev.returncode == 0:
    oid = rev.stdout.strip()
-   if dv.SNAPSHOT_RE.match(oid): return oid
+   if SNAPSHOT_RE.match(oid): return oid
  h = hashlib.sha256()
  for p in sorted(x for x in source_root.rglob("*") if x.is_file() and not x.is_symlink() and not (_SKIP_SNAPSHOT_DIRS & set(x.relative_to(source_root).parts))):
   rel = p.relative_to(source_root).as_posix()
   norm = normalize_bytes(p.read_bytes())
   h.update(f"{rel}\x00{len(norm)}\x00".encode("utf-8") + norm + b"\n")
  return h.hexdigest()
-def collect_shadow_inputs(area_root: Path) -> tuple[dict[str, str], str, str]:
- inputs: dict[str, str] = {}
- proves_p = area_root / ".drift" / "proves.toml"
- if proves_p.is_symlink(): raise ValueError("proves.toml must not be a symlink")
- if proves_p.is_file():
-  inputs[".drift/proves.toml"] = file_sha256(proves_p)
- for sub in ("harness", "fixtures"):
-  base = area_root / sub
-  if base.is_symlink(): raise ValueError(f"{sub} must not be a symlink")
-  if base.is_dir():
-   for p in sorted(base.rglob("*")):
-    if p.is_symlink(): raise ValueError(f"shadow input must not be a symlink: {p}")
-    if p.is_file() and "__pycache__" not in p.parts and not p.name.endswith(".pyc"):
-     rel = p.relative_to(area_root).as_posix()
-     inputs[rel] = file_sha256(p)
- if not inputs:
-  inputs[".drift/config.toml"] = file_sha256(area_root / ".drift" / "config.toml")
- b_ref = inputs.get(".drift/proves.toml", "sha256:" + hashlib.sha256(b"").hexdigest())
- sh_snap = "sha256:" + hashlib.sha256(dv.canonical_json(inputs).encode("utf-8")).hexdigest()
- return inputs, b_ref, sh_snap
 def collect_contract_digests(area_root: Path) -> dict[str, str]:
  c_dir = area_root / ".drift" / "contracts"
  p_dir = area_root / ".drift" / "profiles"

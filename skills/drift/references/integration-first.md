@@ -23,5 +23,13 @@ feedback forward; they add no owner stop.
 - Inspect `unverified_surface` and `oracle_discrimination` via
   `drift gate ... --explain` before claiming full/release coverage (`deferred`
   and `waived` cases stay unverified).
+- When a slice adds an indexed fast-path over a valid fallback or rejects
+  saturated inputs, discriminate it via `[assurance.budgets.<id>]`,
+  `[assurance.guards].forbid_touched`, or `L3` causal coupling rather than
+  return-value assertions alone, and declare `writes = []` on rejection cases.
+- For manual-memory or native FFI targets (C/C++/Rust/V), pass sanitizer build
+  flags (`-O0 -fsanitize=address,leak,undefined` with fail-closed
+  `ASAN_OPTIONS`/`LSAN_OPTIONS`/`UBSAN_OPTIONS`) through the configured runner
+  command so both production libraries and test binaries are instrumented.
 - Client interaction, protocol negotiation and recovery:
   [native-flow.md](native-flow.md).

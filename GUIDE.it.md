@@ -149,21 +149,21 @@ drift approve .drift/contracts/item-get.toml --by alice
 
 Per un handoff vincolato alla versione, esegui `drift review <file|dir> --detail guided --as json` e conserva il JSON nella sessione dell'host. Approvalo con `drift approve --reviewed FILE --expect-review REF --by OWNER`, dove `REF` è esattamente il valore `review_snapshot.review_ref` mostrato nel JSON. Lo snapshot vincola area, selettori, target, policy e contesto decisionale; non è una firma e non prova chi ha acconsentito. Il comando `approve` legacy resta disponibile per approvazioni esplicite senza protezione dello snapshot.
 
+Sulle postazioni desktop, `drift-ask-ui <file|dir>` automatizza questo handoff senza alcun demone in background: apre la finestra nativa Atmospheric DRIFT Observatory su Windows 10/11 e WSL2 (o un Observatory Deck locale monouso su `127.0.0.1` su macOS e Linux Desktop) per confrontare le card decisionali ancorate al riferimento non dominato con marker di dominanza, ispezionare i flussi `WHEN → THEN` e sigillare lo snapshot `--reviewed`, passando automaticamente alla CLI in sessioni headless/SSH/CI (`drift-ask-ui --status|--off|--on`; `[ui].theme = "auto|dark|light"` in `~/.config/drift/ui.toml` o `%APPDATA%\drift\ui.toml`).
+
 Se `drift check` segnala un errore, esegui `drift explain <codice>` (ad esempio `drift explain DR-E601`) per vedere causa e correzione. `drift doctor` riassume l'intera area in una sola esecuzione in sola lettura (edizione, approvazione della config, profili, contratti, eventi, merge driver) e `drift completion <bash|zsh|fish|pwsh>` stampa uno script di completamento per la shell.
 
 - Un contratto o un profilo non richiede un percorso: `drift show item-get`, `drift check item-get` e `drift prove item-get --events ev` leggono `.drift/contracts/item-get.toml` dell'area più vicina, e `drift show http-json@1` legge `.drift/profiles/http-json@1.toml`; un percorso esistente vince sempre.
 - `drift show item-get --as text` (oppure `--as md`) stampa in una tabella i casi effettivi (propri, ereditati, esentati, rinviati) e gli invarianti; `drift show item-get#found` limita la vista, e `drift gate item-get#found --events ev --explain` la spiegazione, a un solo caso.
 
-### 5. Vincoli Relazionali `then`, `[invariants]`, Frame `writes`, Budget, Sicurezza e Prove Formali
+### 5. Vincoli Relazionali `then` e `[invariants]`
 
-Oltre ai valori scalari puntuali, i contratti di **DRIFT Free** esprimono vincoli di dominio ed evidenze direttamente in `.toml`:
-
-Per l'esempio esteso qui sotto, aggiungi prima `body = { type = "map" }`, `price = { type = "num" }`, `tax = { type = "num" }`, `total = { type = "num" }` e `currency = { type = "string" }` al `[schema.then]` del profilo.
+Oltre ai valori scalari puntuali, i contratti schema `0.3` esprimono vincoli di dominio direttamente in `.toml` (aggiungendo `body`, `price`, `tax`, `total` e `currency` a `[schema.then]`):
 
 ```toml
 drift = "0.3"
 id = "item-get"
-intent = "Restituisce un articolo per id con latenza limitata e sicurezza formale sul totale."
+intent = "Restituisce un articolo per id con postcondizioni relazionali."
 
 [use]
 profile = "http-json@1"
@@ -192,69 +192,12 @@ then.price = 10.0
 then.tax = 2.0
 then.total = { min = 0.0, max = 10000.0, peer = { sum = ["then.price", "then.tax"] } }
 then.currency = { not_in = ["UNKNOWN"] }
-
-[assurance.budgets.p99-latency]
-case = "found"
-metric = "request_latency"
-unit = "ns"
-aggregation = "p99"
-op = "le"
-limit = 15000000
-evidence = "statistical"
-min_confidence = 0.95
-enforce = "release"
-workload_ref = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-protocol_ref = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-environment_ref = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-warn_ratio = 0.85
-
-[assurance.formal.no-negative-total]
-cases = ["found"]
-verifier = "cbmc"
-property = "no_negative_total"
-property_kind = "safety"
-min_evidence = "bounded_exhaustive"
-linkage = "in_code_harness"
-harness = "src/items.c#proof_no_negative_total"
-enforce = "release"
 ```
 
-- **Tabelle relazionali `then` (`0.3`)**: vincolano intervalli numerici (`min`, `max`), tolleranze (`eq` con `tol.abs` / `tol.rel`), traiettorie (`series`), lunghezze (`len.min`, `len.max`), insiemi finiti (`in`, `not_in`), affissi stringa (`prefix`, `suffix`, `contains`), chiavi ricorsive del payload (`keys.allow`, `keys.forbid`), confronti tra campi (`peer.le`, `peer.ge`, `peer.eq`), somme affini (`peer.sum`) e bilanci a partita doppia (`peer.balance`). Le mappe letterali richiedono `eq = { ... }`; scalari e array restano abbreviazioni di `eq`.
-- **`[invariants]`, `[assurance.guards]` e frame condition `cases.<id>.writes`**: `[invariants]` vale su tutti i casi; `cases.<id>.writes` restringe quali risorse di `scope.writes` uno specifico caso può mutare (verificato a runtime con `checkFrame` / `checks.frame`, `checkLogSink` e collector frame non osservati `{ "observed": false }`). `[assurance.guards]` dichiara guardie statiche con glob `target` che coprono `bind.code` e guardie dinamiche `forbid_touched` verificate sugli elenchi `touched` di `.meta.json`. Comportamento e assurance hanno sigilli indipendenti `dr2b` / `dr2a`; `dr2r` identifica i requisiti di evidenza e `dr2x` i contesti di esecuzione.
-
-Le evidenze di assurance, i concetti di dominio e i protocolli di verifica runtime vengono valutati da `drift prove`, `drift gate` e `verifier/drift_verify.py`:
-
-| Capacità | Chiavi Contratto / Config | Ricevute Runtime, Adapter e Flag CLI |
-|---|---|---|
-| **Performance e Sicurezza** | `[assurance.budgets.<id>]`, `[requires].security` e `[requires].budgets` nel profilo | `--measurements bench.jsonl` (`request_latency`, `successful_throughput`, `process_rss`, `frame_time`, `cold_start`, `artifact_bytes`, `work_units`, `alloc_bytes_total`, `alloc_count_total`); `*.security.json` (`--security-lock`) |
-| **Regolamentato, Simulazione e Prove Formali** | `[assurance.risks]`, `[assurance.controls]`, `[assurance.formal.<id>]` | `*.study.json` e `*.evaluation.json` (più firme detached `.sig.json`), replay/rollback deterministico `drift.sim-receipt/1` e ricevute `*.formal.json` / `*.model.json` (`tlc`, `cbmc`, `alloy`, `spin`, Kani, `gappa` `arithmetic_model`, `stochastic_experiment`, `equivalence` QCEC, `observed_convergence`, `trajectory_stability`) |
-| **Concetti di Dominio e Cutover** | `.drift/config.toml` `[concepts]`, `[use].concepts`, `[cutover]` | `drift new --concept`, recall `@concept`, `drift case add --from-signal --deployment` e ricevute di parità/migrazione DB (`*.parity.json` `drift.parity-receipt/1`, `*.migration.json` `drift.migration-receipt/1`) |
-| **Sequenze UI** | Proiezioni UI del profilo, `async-action-feedback@1`, `wizard-form@1` | `drift.ui-observation/1` (`collectPlaywrightSequence` / `observeUiSequence`, `evaluateScenarioMatrix` e adapter Web, Compose o Windows UIA) |
-| **Osservazioni e Seam Perimetrali** | `_frame` (`keys.allow` / `allowed_keys`), `.drift/seam-stub/` | `drift.observation/1` (`ObsValue` lossless: `int64`, `decimal`, `bytes`, copybook COBOL) e `drift.bridge-session/1` nel kernel; coupling `L0–L3` (`sweep --flow`); provenienza seam in `.meta.json` (`oracle.unverified_seam`, `oracle.stale_seam_stub`), `checkSeamBounds` / `check_seam_bounds`, sonde comportamentali (idempotenza, retry/query, rollback, BOLA) e `prove.seam_mutants` |
-| **Shadow Mode e Federazione** | `<state-dir>/shadow.toml` | `--state-dir` / `DRIFT_STATE_DIR` esterno (albero soggetto in sola lettura con `GIT_OPTIONAL_LOCKS=0`, `--unshadow`, `verifier/drift_shadow_junit.py`), `drift.composition-manifest/1` e bundle bidirezionali `drift.boundary-bundle/1` (`offers`/`requires`) |
-
-<details>
-<summary><kbd>FREE</kbd> <strong>In Vetrina: Adozione Zero-Footprint con Shadow Mode e JUnit XML a 2 Fasi</strong></summary>
-
-<br />
-
-Quando adotti DRIFT su un repository legacy o di terze parti in cui non puoi committare subito `.drift/` in-tree (o montato in sola lettura), inizializza una **Shadow Area** esterna:
-
-```bash
-# 1. Crea una shadow area esterna al repository target (registrata in ~/.config/drift/shadows.toml)
-drift init alice /path/to/service-repo --state-dir ~/.drift-shadows/service
-drift approve ~/.drift-shadows/service/.drift/config.toml --by alice
-
-# 2. Accredita i report JUnit XML esistenti con provenienza pre/post snapshot (stato 'bound')
-python3 verifier/drift_shadow_junit.py begin  --state-dir ~/.drift-shadows/service --run-id run-01
-mvn -f /path/to/service-repo/pom.xml test
-cp /path/to/service-repo/target/surefire-reports/*.xml ~/.drift-shadows/service/.drift-work/runs/run-01/reports/
-python3 verifier/drift_shadow_junit.py finish --state-dir ~/.drift-shadows/service --run-id run-01
-
-# 3. Promuovi la shadow area dentro il repository quando sei pronto (preservando tutti i digest di approvazione)
-drift init --unshadow /path/to/service-repo --state-dir ~/.drift-shadows/service
-```
-</details>
+- **Tabelle relazionali `then` (`0.3`):** intervalli numerici (`min`, `max`), tolleranze (`eq` con `tol.abs` / `tol.rel`), traiettorie (`series`), lunghezze (`len.min`, `len.max`), insiemi finiti (`in`, `not_in`), affissi stringa (`prefix`, `suffix`, `contains`), chiavi ricorsive del payload (`keys.allow`, `keys.forbid`), confronti tra campi (`peer.le`, `peer.ge`, `peer.eq`), somme affini (`peer.sum`) e bilanci a partita doppia (`peer.balance`). Le mappe letterali usano `eq = { ... }`.
+- **`[invariants]`, `[assurance.guards]` e frame `writes`:** `[invariants]` vale su tutti i casi; `cases.<id>.writes` restringe quali risorse di `scope.writes` un caso può mutare; `[assurance.guards]` dichiara glob statici `target` e guardie dinamiche `forbid_touched` sotto il sigillo separato `dr2a:`.
+- **Vuoi usare Shadow Mode su un repository esistente?** Vedi **[docs/adopt/existing-repo.md](docs/adopt/existing-repo.md)**.
+- **Ti servono budget di performance, ricevute di sicurezza, prove formali, replay di simulazioni, sequenze UI o parità di cutover?** Vedi le guide verticali in **[docs/workflows/](docs/workflows/formal-and-regulated.md)**.
 
 ---
 
@@ -277,7 +220,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.7.0</version>
+    <version>0.8.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -287,7 +230,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.7.0</version>
+      <version>0.8.0</version>
       <executions>
         <execution>
           <goals>
@@ -301,7 +244,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
 </build>
 ```
 
-Annota i test JUnit 5 con `@DriftCase` e leggi i valori attesi dal contratto tramite `Drift.expect`:
+Annota i test JUnit 5 con `@DriftCase` e leggi i valori attesi tramite `Drift.expect`, poi esegui `mvn verify`:
 
 ```java
 @Test
@@ -314,28 +257,9 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-Poi esegui:
-
-```bash
-mvn verify
-```
-
-In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` dal repository Maven locale in `build.sbt` e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)` direttamente nel corpo del test (senza annotazioni):
+In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.8.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
-// build.sbt
-scalaVersion := "3.9.0"
-resolvers += Resolver.mavenLocal
-libraryDependencies += "io.github.rad-ox" % "drift-junit" % "0.7.0" % Test
-Test / fork := true
-Test / javaOptions ++= Seq(
-  s"-Ddrift.resolved=${baseDirectory.value}/target/drift/resolved",
-  s"-Ddrift.events=${baseDirectory.value}/target/drift/events"
-)
-```
-
-```scala
-// src/test/scala/example/items/ItemSuite.scala
 import drift.Drift
 
 class ItemSuite extends munit.FunSuite:
@@ -346,14 +270,8 @@ class ItemSuite extends munit.FunSuite:
   }
 ```
 
-```bash
-drift show .drift/contracts --as json --out target/drift/resolved
-sbt test
-drift gate .drift/contracts --events target/drift/events
-```
-
-- **Directory degli eventi**: `--events` si può omettere: `status`, `prove`, `gate` e `select` usano allora la state directory, `[area] events = "target/drift/events"` di `.drift/config.toml` (un percorso relativo dentro l'area, dichiarato una volta con approvazione del proprietario) o il più vicino `.drift/events`, e il report si apre con `events: <path> (<source>)`.
-- **`verified` vs `bound`**: Quando il test legge **tutti** i campi `then` del caso tramite `Drift.expect` (o li verifica con `c.verify(...)` nelle suite basate su closure come **Scala 3 / MUnit**), il caso raggiunge lo stato **`verified`**. Se il test passa senza leggere tutti i campi `then`, viene registrato come **`bound`**.
+- **Directory degli eventi:** `--events` si può omettere; `status`, `prove`, `gate` e `select` risolvono `[area].events` in `.drift/config.toml` o il più vicino `.drift/events`.
+- **`verified` vs `bound`:** leggere/verificare ogni chiave `then` porta il caso a **`verified`**; passare senza controllare tutte le chiavi `then` lo mantiene **`bound`**.
 
 ### Opzione B: JavaScript / TypeScript (`bridges/drift.mjs`)
 
@@ -401,152 +319,25 @@ pytest
 drift gate .drift/contracts --events .drift/events
 ```
 
-### Opzione D: Rust (`bridges/rust` · `drift_rust`)
+### Altri Runtime (Rust, V, C++20, C#, Godot GDScript, PHP, JUnit 4, COBOL)
 
-```rust
-use drift_rust::{canonical_rust_test_id, run_drift_case, RunOptions};
-
-#[test]
-fn test_found() {
-    let tid = canonical_rust_test_id("catalog", module_path!(), "test_found");
-    run_drift_case(
-        RunOptions {
-            contract: "item-get".to_string(),
-            test: tid,
-            cases: vec!["found".to_string()],
-            level: "http".to_string(),
-            ..Default::default()
-        },
-        |ctx| {
-            let payload = send(ctx.when_str("found", "request")?);
-            ctx.check_projection("found", &payload)
-        },
-    ).expect("drift case verified");
-}
-```
-
-```bash
-drift show .drift/contracts --as json --out target/drift/resolved
-DRIFT_RESOLVED=target/drift/resolved DRIFT_EVENTS=target/drift/events cargo test
-drift gate .drift/contracts --events target/drift/events
-```
-
-### Opzione E: V (`bridges/v/drift_v`)
-
-```v
-import drift_v
-
-fn test_found() {
-	res := drift_v.run_drift_case(drift_v.RunOptions{
-		contract: 'item-get'
-		test:     'items_test#test_found'
-		cases:    ['found']
-		level:    'http'
-	}, fn (mut ctx drift_v.DriftContext) ! {
-		payload := send(ctx.when_str('found', 'request')!)
-		ctx.check_projection('found', payload)!
-	}) or { panic(err) }
-	assert res == 'passed'
-}
-```
-
-```bash
-drift show .drift/contracts --as json --out .drift-work/resolved
-DRIFT_RESOLVED=.drift-work/resolved DRIFT_EVENTS=.drift-work/events v -path "bridges/v|@vlib|@vmodules" test .
-drift gate .drift/contracts --events .drift-work/events
-```
-
-### Sezione Dedicata Legacy & Monoliti: Java 6+ / JUnit 4 (`DriftJUnit4.java`), PHP 8.2+ (`Drift.php`) e COBOL 85 (`drift_cobol.py`)
-
-Mentre i bridge principali puntano alle ultime versioni **LTS/stable** (`drift-junit` e `drift-maven-plugin` su Java 25 LTS con bytecode floor Java 17 / Scala 2.12–3.9 / JUnit 5 Platform, `drift.mjs` su Node.js 24 LTS, `drift.py` su Python 3.14, `drift_rust` su Rust Edition 2024, `drift_v` su V 0.5.2), per i monoliti legacy e i carve-out enterprise sono disponibili bridge dedicati senza dipendenze:
-- **Java 6–8 / JUnit 4 (`drift.junit4.DriftJUnit4`, `bridges/legacy/junit4/DriftJUnit4.java`)**: collega `DriftJUnit4.Listener` al `RunListener` JUnit 4 per generare gli inventari `.meta.json` e gli eventi `bound` senza dipendenze da JUnit 5, e invoca `DriftJUnit4.verify(contract, caseId, observations, frames)` e `DriftJUnit4.replayCounterexamples(...)` nei test delle slice estratte.
-- **PHP 8.2+ (`Drift\Drift`, `bridges/Drift.php`)**: verifica proiezioni RFC 6901 JSON Pointer, clausole relazionali/negative (`forbid_keys`, `not_in`), write frame per caso (`checkFrame`) e fixture `*.cex.json`, scrivendo sidecar atomici `.events.jsonl` e `.meta.json`.
-- **COBOL 85 Batch / Copybook (`drift_cobol`, `bridges/drift_cobol.py`)**: analizza layout copybook `PIC` (`--copybook`), serializza i `when` JSON in record a larghezza fissa (`PIC X`, `PIC 9`, `PIC S9...V99`), vincola gli input `.cbl`/`.cpy` in `.meta.json` (o invia record grezzi `drift.observation/1` decodificati dal kernel) ed emette ricevute di cutover `drift.parity-receipt/1` tra batch mainframe e nuovi microservizi.
-- **C++20 (`bridges/drift_cpp.hpp`), C# / .NET / Unity (`bridges/Drift.cs`) e Godot 4 GDScript (`bridges/drift.gd`)**: bridge single-file senza dipendenze per motori real-time, simulazioni e codice nativo, con supporto per invarianti di traiettoria tolleranti al tuning (`monotonic`, `sum_total`, `step_max_delta`), tolleranze numeriche (`approx`, `abs_tol`, `rel_tol`, `balance_fields`), replay deterministico dei tick (`drift.sim-receipt/1`), `forbid_keys` ricorsivo, collector frame non osservati e `checkLogSink`.
+Tutti gli 11 bridge senza dipendenze—più l'esecuzione zero-binary tramite `.plans/<id>.plan.json` e `drift eval`—sono raccolti in un unico documento: **[docs/bridges.md](docs/bridges.md)**.
 
 ---
 
-## Livello 2: Selezione Incrementale, Blast Radius e Scaffolding da Specifiche/Tracce (`Pro`)
+## Livello 2 e Livello 3: Scalare a Team, Wave e Alta Assurance
 
-Quando il numero di slice cresce, **DRIFT Pro** usa il grafo di `bind.code`, `scope.reads` e `scope.writes` (su Java, Scala, JS/TS, Python, Rust, V, C++, C#, GDScript, PHP, COBOL e Pug/Sass/CSS) per selezionare solo i test e i budget di performance toccati da una modifica—allargando automaticamente a tutti i test in caso di dubbio:
+Quando i Livelli 0–1 sono verdi sulle prime slice, aggiungi solo i moduli di workflow che servono davvero:
 
-```bash
-# Elenca solo i file di test (o genera un piano drift.test-plan/1) impattati dai file sorgente modificati
-drift select .drift/contracts --events .drift/events --changed src/items.js --files
-drift select .drift/contracts --events .drift/events --changed src/items.js --plan
-
-# Riusa le prove precedenti per i contratti non toccati mantenendo il gate attivo
-drift gate .drift/contracts --events .drift/events --base HEAD --changed src/items.js
-
-# Analizza il blast radius, la mappa di dominio (@tree) o compila capsule @recall
-drift impact .drift --writes items --transitive
-drift recall query "@tree" .drift
-drift recall query "item lookup #getItem /800t" .drift
-drift plan .drift/contracts --pack ready
-
-# Genera profili da OpenAPI 3.x (incluso 3.2 QUERY) o AsyncAPI, e contratti da WSDL, copybook COBOL o tracce runtime observe()
-drift new .drift/profiles/items-api@1.toml --openapi openapi.json
-drift new .drift/profiles/items-events@1.toml --asyncapi asyncapi.json
-drift new .drift/contracts/item-soap.toml --wsdl items.wsdl --profile http-json@1
-drift new .drift/contracts/item-batch.toml --copybook ORDREC.cpy --profile batch@1
-drift new .drift/contracts/item-legacy.toml --from-upstream .drift-work/observed.jsonl --profile http-json@1
-drift export boundary .drift/contracts --out target/drift/boundary.json
-
-# Esporta un grant 0.3 clean-room sanitizzato per implementatori esterni (una slice per contratto) e inizializzalo con DRIFT Free
-drift export grant .drift/contracts --policy grant-policy.toml --dry-run
-drift export grant .drift/contracts --policy grant-policy.toml --out dist/orders-grant --ssh-sign ~/.ssh/grantor_ed25519
-drift init supplier-team ./supplier-repo --grant dist/orders-grant
-drift gate ./supplier-repo/.drift/contracts --events ./supplier-repo/events --grant-lock dist/orders-grant/.drift/grant.lock.json
-
-# Negozia un patto bilaterale 0.3 equilibrato tra due progetti pari senza esporre le slice interne
-drift pact offer .drift/contracts --policy equalizer-policy.toml --pact-id orders-pact --counterparty checkout --role producer --area orders --out dist/orders.offer.json
-drift pact equalize --left dist/orders.offer.json --right dist/checkout.offer.json --policy equalizer-policy.toml --as md
-drift pact seal --left dist/orders.offer.json --right dist/checkout.offer.json --policy equalizer-policy.toml --out dist/orders-pact.lock.json
-drift init checkout-team ./checkout-repo --pact dist/orders-pact.lock.json
-drift gate ./checkout-repo/.drift/contracts --events ./checkout-repo/events --pact-lock dist/orders-pact.lock.json
-```
-
-Nei progetti Maven, `-Ddrift.changed=auto` cattura uno snapshot dell'albero Git durante `prepare` e riusa automaticamente gli shard non toccati mantenendo `gate` attivo.
-
----
-
-## Livello 3: Policy `core@1`, Audit Architetturali e Mutation Testing (`Enterprise`)
-
-Per i servizi mission-critical, aggiungi una sezione `[policy]` a `.drift/config.toml` e ri-approva la configurazione:
-
-La configurazione dichiara `drift = "0.3"` e sigilla il proprio JSON canonico con un riferimento `dr1` indipendente:
-
-```toml
-drift = "0.3"
-kind = "config"
-
-[area]
-owner = "alice"
-
-[policy]
-pack = "core@1"
-approvers = ["alice", "bob"]
-proof = "verified"
-```
-
-Con `pack = "core@1"`:
-1. Solo gli owner elencati in `approvers` possono approvare i contratti (`DR-E603` altrimenti).
-2. Ogni caso deve raggiungere almeno lo stato `verified`.
-3. Impostando `proof = "killed"`, ogni mutante sintetico dei valori `then` (e `--when`) generato da `drift mutants` deve essere intercettato e ucciso (`killed`) dai test, mentre `sweep --flow` verifica il dataflow cross-contratto, deadlock FSM, compensazioni Saga, consegne duplicate, compatibilità multi-epoca AsyncAPI e confini di sicurezza/budget:
-
-```bash
-# Verifica ownership dell'area, dataflow, protocolli FSM/Saga, epoche AsyncAPI e conservazione di flotta sui patti
-drift sweep check .drift/contracts --root . --flow --asyncapi asyncapi.json --epoch-manifest epochs.json --pacts dist/pacts
-
-# Genera i mutanti del contratto, esegui i test in-process ed emetti l'attestazione firmata OpenSSH
-drift mutants .drift/contracts --out .drift-work/mutants.json
-DRIFT_MUTANTS=.drift-work/mutants.json DRIFT_MUTATION_EVENTS=.drift-work/mutation-events node --test
-drift gate .drift/contracts --events .drift/events \
-  --mutants .drift-work/mutants.json --mutation-events .drift-work/mutation-events \
-  --attest target/drift/attestation.json --ssh-sign ~/.ssh/id_ed25519 \
-  --trust-root .drift/allowed_signers --verify-time 2026-11-08T09:00:00Z \
-  --as junit > target/drift/junit.xml
-```
+- **CI incrementale e wave multi-agente (`Pro`):** esegui solo i test impattati (`drift select --plan/--cmd/--build-graph`), riusa le prove delle slice intatte (`gate --base HEAD`), orienta gli agenti con `@recall`, pianifica wave parallele (`drift plan --pack ready --active --compile-edges`) e genera scaffold da OpenAPI/AsyncAPI → **[docs/workflows/incremental-and-waves.md](docs/workflows/incremental-and-waves.md)**.
+- **Policy ad alta assurance e mutation proof (`Enterprise`):** attiva `[policy]` `pack = "core@1"` con `approvers` e `proof = "killed"` (`drift mutants`), audit cross-contratto (`sweep --flow --simplify`) e attestazioni di rilascio firmate OpenSSH (`gate --attest --ssh-sign --trust-root --as junit`) → **[docs/workflows/incremental-and-waves.md](docs/workflows/incremental-and-waves.md)** e **[docs/workflows/formal-and-regulated.md](docs/workflows/formal-and-regulated.md)**.
+- **Workflow specialistici:**
+  - **[Shadow Mode e Adozione Brownfield](docs/adopt/existing-repo.md)** (`Free` / `Pro`)
+  - **[Agenti AI, Hook e `drift-ask-ui`](docs/adopt/ai-agents.md)** (`Free` / `Pro` / `Enterprise`)
+  - **[Carve-Out Legacy e Cutover](docs/workflows/legacy-cutover.md)** (JUnit 4, PHP, COBOL, WSDL, `[assurance.cutover]`)
+  - **[Real-Time e Simulazione](docs/workflows/realtime-and-simulation.md)** (`series`, `tol`, `peer.balance`, `sim-receipt/1`, budget zero-alloc)
+  - **[Sequenze UI](docs/workflows/ui-sequences.md)** (`drift.ui-observation/1`)
+  - **[Grant, Patti Bilaterali e Federazione Multi-Repo](docs/workflows/multi-repo-governance.md)** (`export grant`, `drift pact`, `export boundary`)
 
 ---
 

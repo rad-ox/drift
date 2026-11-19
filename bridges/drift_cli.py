@@ -157,9 +157,10 @@ def _max_source_mtime(cur: Path, tf: Path, warmed: set[str]) -> float:
 
 
 def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], toml_dirs: dict[str, dict[str, Path]], warmed: set[str], cli_state: list[str], read_json: Callable[[Path], Any], strip_bom: Callable[[str], str], find_upstream_fn: Callable[[str], tuple[dict[str, Any], Path] | None], target_json: Path | None = None) -> dict[str, Any] | None:
-    if target_json is None and contract_id in batch:
+    sd = validate_shadow_state_dir(Path.cwd(), os.environ) if target_json is None else ''
+    if target_json is None and not sd and contract_id in batch:
         return batch[contract_id]
-    cur = target_json.parent if target_json is not None else Path.cwd().resolve()
+    cur = target_json.parent if target_json is not None else (Path(sd) if sd else Path.cwd().resolve())
     home = os.environ.get('HOME') or os.environ.get('USERPROFILE') or ''
     linux_cli = str(Path(home) / '.local' / 'bin' / 'drift') if home else ''
     app_data = os.environ.get('LOCALAPPDATA') or (str(Path(home) / 'AppData' / 'Local') if home else '')
@@ -240,7 +241,7 @@ def auto_resolve_contract(contract_id: str, batch: dict[str, dict[str, Any]], to
     return up[0] if up is not None else None
 
 
-from drift_probes import ensure_export_generation as _ensure_export_generation, parse_test_command_str as _parse_test_command_str
+from drift_probes import ensure_export_generation as _ensure_export_generation, parse_test_command_str as _parse_test_command_str, resolve_cli_work_paths as _resolve_cli_work_paths, validate_shadow_state_dir, write_atomic_utf8 as _write_atomic_utf8
 from drift_security import capture_worktree_snapshot as _capture_worktree_snapshot
 from drift_ui_surface import run_precheck_test_literals as _run_precheck_test_literals
 
@@ -285,10 +286,9 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
         elif a and not a.startswith('-'):
             targets.append(a)
         i += 1
-    area = Path.cwd().resolve()
-    while not (area / '.drift' / 'contracts').is_dir() and area.parent != area:
-        area = area.parent
-    c_dir = area / '.drift' / 'contracts'
+    area, state_area, work_root, run_root, has_run, is_shadow = _resolve_cli_work_paths(Path.cwd(), os.environ)
+    sd_args = ['--state-dir', str(state_area)] if is_shadow else []
+    c_dir = state_area / '.drift' / 'contracts'
     if not c_dir.is_dir():
         raise FileNotFoundError(f'no .drift/contracts found from {Path.cwd()}')
     if not targets:
@@ -321,7 +321,7 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
                     changed_paths.append(p)
         except Exception:
             pass
-    res_dir, ev_dir = area / '.drift-work' / 'resolved', area / '.drift-work' / 'events'
+    res_dir, ev_dir = run_root / 'resolved', run_root / 'events'
     res_dir.mkdir(parents=True, exist_ok=True)
     ev_dir.mkdir(parents=True, exist_ok=True)
     ids, tomls, rel_srcs = [], [], []
@@ -364,10 +364,11 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
                     tomls.append(str(m_direct))
         if not ids:
             raise FileNotFoundError(f'contract "{rel_srcs[0][0]}" not found at {rel_srcs[0][1]}')
-    gen_dir = _ensure_export_generation(area, cli, ids, tomls, res_dir)
+    gen_dir = _ensure_export_generation(state_area, cli, ids, tomls, res_dir)
     sel_file, narrowed_files, select_widened, select_reasons = '', None, False, []
     if base_ref:
-        sel_cmd = [cli, 'select', tomls[0] if len(tomls) == 1 else str(c_dir), '--base', base_ref, '--events', str(ev_dir), '--files', '--json', *([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else (['--changed'] if want_changed else []))]
+        ev_args = (['--events', str(ev_dir), '--events', str(work_root / 'events')] if has_run and (work_root / 'events').is_dir() else ['--events', str(ev_dir)])
+        sel_cmd = [cli, 'select', tomls[0] if len(tomls) == 1 else str(c_dir), *sd_args, '--base', base_ref, *ev_args, '--files', '--json', *([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else (['--changed'] if want_changed else []))]
         sel_proc = subprocess.run(sel_cmd, cwd=str(area), capture_output=True, text=True, check=False)
         if sel_proc.returncode not in (0, 1):
             raise RuntimeError((sel_proc.stderr or '').strip() or f'drift select failed with status {sel_proc.returncode}')
@@ -377,8 +378,8 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
             sel_obj = None
         if not isinstance(sel_obj, Mapping):
             raise RuntimeError((sel_proc.stderr or '').strip() or 'drift select returned invalid JSON')
-        sf_p = area / '.drift-work' / 'select.json'
-        sf_p.write_text(sel_proc.stdout, encoding='utf-8')
+        sf_p = run_root / 'select.json'
+        _write_atomic_utf8(sf_p, sel_proc.stdout)
         sel_file = str(sf_p)
         if sel_obj.get('all') is False and isinstance(sel_obj.get('test_files'), list):
             narrowed_files = [str(x) for x in sel_obj['test_files']]
@@ -392,7 +393,7 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
         missing = []
     else:
         found: dict[str, set[str]] = {cid: set() for cid in ids}
-        for d in (ev_dir, area / '.drift' / 'events'):
+        for d in (ev_dir, work_root / 'events', state_area / '.drift' / 'events'):
             if d.is_dir():
                 for jf in sorted(d.glob('*.jsonl')):
                     for line in jf.read_text(encoding='utf-8').splitlines():
@@ -428,14 +429,14 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
                     rel = p.relative_to(area).as_posix()
                     if (g_rx is not None and g_rx.match(rel)) or id_rx.search(p.read_text(encoding='utf-8', errors='ignore')):
                         test_files.add(rel)
-    cfg_p = area / '.drift' / 'config.toml'
+    cfg_p = state_area / '.drift' / 'config.toml'
     need_mut = force_mut or (cfg_p.is_file() and 'proof = "killed"' in cfg_p.read_text(encoding='utf-8'))
-    mut_f, mut_ev = area / '.drift-work' / 'mutants.json', area / '.drift-work' / 'mut-events'
+    mut_f, mut_ev = run_root / 'mutants.json', run_root / 'mut-events'
     if need_mut:
         shutil.rmtree(mut_ev, ignore_errors=True)
         mut_ev.mkdir(parents=True, exist_ok=True)
         m_cmd = (
-            [cli, 'mutants', *tomls]
+            [cli, 'mutants', *tomls, *sd_args]
             + (['--base', base_ref] if base_ref else [])
             + ([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else (['--changed'] if want_changed else []))
             + (['--when'] if mut_when else [])
@@ -491,6 +492,6 @@ def run_drift_cli_runner(argv: list[str], resolve_selected_files: Callable[[Any,
     base_args = (['--base', base_ref] + ([x for cp in changed_paths for x in ('--changed', cp)] if changed_paths else ['--changed-none'])) if base_ref else []
     mut_args = ['--mutants', str(mut_f), '--mutation-events', str(mut_ev)] if need_mut and mut_f.is_file() else []
     gate_targets = [str(c_dir)] if all_gate else tomls
-    cmd = [cli, mode, *gate_targets, '--events', str(ev_dir), *base_args, *mut_args] + (['--json'] if json_out else [])
+    cmd = [cli, mode, *gate_targets, *sd_args, '--events', str(ev_dir), *base_args, *mut_args] + (['--json'] if json_out else [])
     return subprocess.run(cmd, cwd=str(area), check=False).returncode
 

@@ -1,0 +1,1434 @@
+#!/bin/sh
+# Universal cross-OS desktop decision and guarded-approval broker for DRIFT.
+# Defaults to smart auto mode (WPF on Windows/WSL2, loopback Observatory Deck on
+# macOS/Linux Desktop) and supports instant opt-out via --off or DRIFT_UI=off.
+set -eu
+
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+  printf '%s\n' '{"approval_writes":0,"reason":"python3_311_unavailable","schema":"drift.ui-result/1","status":"fallback"}'
+  exit 10
+fi
+
+exec python3 -I - "$HERE" "$@" <<'PY'
+import fcntl
+import hashlib
+import json
+import os
+import platform
+import pwd
+import secrets
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+
+def fail(msg: str, code: int = 2):
+    print(f"drift-ask-ui: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def runtime_root() -> Path:
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    base_str = os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
+    base = Path(base_str)
+    if base.is_symlink():
+        fail("runtime base directory must not be a symlink", 2)
+    root = base / f"drift-ui-{uid}"
+    if root.exists() or root.is_symlink():
+        st = os.lstat(root)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            fail("runtime directory must be a real directory, not a symlink", 2)
+        if hasattr(os, "getuid") and st.st_uid != uid:
+            fail("runtime directory owned by unexpected user", 2)
+        os.chmod(root, 0o700)
+    else:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
+    st2 = os.lstat(root)
+    if stat.S_ISLNK(st2.st_mode) or (st2.st_mode & 0o077) != 0:
+        fail("runtime directory failed 0700 permission verification", 2)
+    return root
+
+
+def find_area(start: Path) -> Path:
+    cur = start.resolve()
+    git_stop = None
+    while True:
+        if (cur / ".drift" / "config.toml").is_file() or (cur / ".drift" / "contracts").is_dir():
+            return cur
+        state_env = os.environ.get("DRIFT_STATE_DIR") or os.environ.get("DRIFT_CLI_STATE_DIR")
+        if state_env and Path(state_env).is_dir():
+            return cur
+        if git_stop is None and (cur / ".git").exists():
+            git_stop = cur
+        if cur.parent == cur:
+            return git_stop or start.resolve()
+        cur = cur.parent
+
+
+def resolve_drift_cli(here: Path) -> str:
+    env_cli = os.environ.get("DRIFT_CLI", "").strip()
+    candidates = [
+        env_cli,
+        str(here.parent / "bin" / "drift"),
+        str(here.parent.parent / "bin" / "drift"),
+        str(Path.home() / ".local" / "bin" / "drift"),
+        shutil.which("drift") or "",
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    fail("cannot locate executable drift CLI")
+
+
+def local_config_path() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    cfg_dir = Path(xdg) / "drift"
+    if cfg_dir.is_symlink():
+        fail("refusing symlinked config directory", 2)
+    cfg_path = cfg_dir / "local.toml"
+    if cfg_path.is_symlink():
+        fail("refusing symlinked local.toml", 2)
+    return cfg_path
+
+
+def load_local_ui_config() -> tuple[dict, bool]:
+    cfg_path = local_config_path()
+    if not cfg_path.is_file():
+        return {"mode": "auto"}, False
+    try:
+        doc = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        fail(f"invalid local.toml: {exc}", 2)
+    ui = doc.get("ui")
+    if not isinstance(ui, dict):
+        return {"mode": "auto"}, False
+    return ui, ("mode" in ui)
+
+
+def toml_quote(val: str) -> str:
+    escaped = val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def save_local_ui_fields(updates: dict) -> Path:
+    cfg_path = local_config_path()
+    cfg_dir = cfg_path.parent
+    cfg_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_file = cfg_dir / ".local.toml.lock"
+    with open(lock_file, "w", encoding="utf-8") as lk:
+        fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+        if cfg_path.is_symlink():
+            fail("refusing symlinked local.toml", 2)
+        existing_text = ""
+        doc = {}
+        if cfg_path.is_file():
+            existing_text = cfg_path.read_text(encoding="utf-8")
+            try:
+                doc = tomllib.loads(existing_text)
+            except Exception as exc:
+                fail(f"invalid local.toml: {exc}", 2)
+        ui = dict(doc.get("ui") or {}) if isinstance(doc.get("ui"), dict) else {}
+        ui.update(updates)
+        doc["ui"] = ui
+
+        # Serialize preserving non-[ui] top-level tables cleanly
+        out_lines = []
+        for k, v in doc.items():
+            if isinstance(v, dict):
+                continue
+            if isinstance(v, bool):
+                out_lines.append(f"{k} = {'true' if v else 'false'}")
+            elif isinstance(v, int):
+                out_lines.append(f"{k} = {v}")
+            else:
+                out_lines.append(f"{k} = {toml_quote(str(v))}")
+        for sec_name, sec_val in doc.items():
+            if not isinstance(sec_val, dict):
+                continue
+            if out_lines:
+                out_lines.append("")
+            out_lines.append(f"[{sec_name}]")
+            for sk, sv in sec_val.items():
+                if isinstance(sv, bool):
+                    out_lines.append(f"{sk} = {'true' if sv else 'false'}")
+                elif isinstance(sv, int):
+                    out_lines.append(f"{sk} = {sv}")
+                else:
+                    out_lines.append(f"{sk} = {toml_quote(str(sv))}")
+        out_lines.append("")
+        tmp_p = cfg_dir / f".local.toml.tmp.{os.getpid()}"
+        fd = os.open(str(tmp_p), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(out_lines))
+        os.replace(tmp_p, cfg_path)
+    return cfg_path
+
+
+def load_repo_downgrade_off(area: Path) -> bool:
+    cfg = area / ".drift" / "config.toml"
+    if not cfg.is_file() or cfg.is_symlink():
+        return False
+    try:
+        doc = tomllib.loads(cfg.read_text(encoding="utf-8"))
+        ui = doc.get("ui")
+        if isinstance(ui, dict) and str(ui.get("mode") or "").strip().lower() in ("off", "none"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def load_policy_approvers(area: Path) -> list[str]:
+    cfg = area / ".drift" / "config.toml"
+    if not cfg.is_file() or cfg.is_symlink():
+        return []
+    try:
+        doc = tomllib.loads(cfg.read_text(encoding="utf-8"))
+        pol = doc.get("policy")
+        if isinstance(pol, dict) and isinstance(pol.get("approvers"), list):
+            return [str(x).strip() for x in pol["approvers"] if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def resolve_host_suggested_owner() -> str:
+    # Read host-only identity (never repository files or GIT_CONFIG_* overrides)
+    clean_env = {
+        "HOME": str(Path.home()),
+        "PATH": os.environ.get("PATH") or "/usr/bin:/bin",
+    }
+    git_bin = shutil.which("git")
+    if git_bin:
+        try:
+            proc = subprocess.run(
+                [git_bin, "config", "--global", "--get", "user.name"],
+                cwd="/",
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.strip()
+        except Exception:
+            pass
+    try:
+        pw = pwd.getpwuid(os.getuid())
+        gecos = (pw.pw_gecos or "").split(",", 1)[0].strip()
+        if gecos:
+            return gecos
+        if pw.pw_name:
+            return pw.pw_name
+    except Exception:
+        pass
+    return ""
+
+
+def find_ui_assets(here: Path) -> tuple[Path | None, Path | None, Path | None]:
+    cs_found = None
+    mf_found = None
+    deck_found = None
+    for d in (here, here.parent / "share" / "drift" / "ui", Path.home() / ".local" / "share" / "drift" / "ui"):
+        cs = d / "DriftUiWin.cs"
+        mf = d / "app.manifest"
+        dk = d / "drift_ui_deck.py"
+        if cs_found is None and cs.is_file() and mf.is_file():
+            cs_found, mf_found = cs, mf
+        if deck_found is None and dk.is_file():
+            deck_found = dk
+    return cs_found, mf_found, deck_found
+
+
+def ensure_wsl_compiled_exe(here: Path) -> tuple[str, str]:
+    if os.environ.get("CI", "").lower() in ("1", "true") or os.environ.get("GITHUB_ACTIONS", "").lower() == "true" or os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return "", "headless_or_ci"
+    if not (Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() or os.environ.get("WSL_INTEROP")):
+        return "", "not_wsl"
+    ps = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    if not os.access(ps, os.X_OK):
+        ps = shutil.which("powershell.exe") or ""
+    csc = "/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+    if not (ps and os.access(csc, os.X_OK)):
+        return "", "missing_wsl_csc"
+    cs_path, mf_path, _ = find_ui_assets(here)
+    if cs_path is None or mf_path is None:
+        return "", "missing_wpf_assets"
+    h = hashlib.sha256(cs_path.read_bytes() + b"\0" + mf_path.read_bytes()).hexdigest()[:12]
+    rt = runtime_root()
+    cache_path_hint = rt / "win_localappdata.txt"
+    local_wsl = ""
+    if cache_path_hint.is_file():
+        cand_dir = cache_path_hint.read_text(encoding="utf-8").strip()
+        if cand_dir and Path(cand_dir).is_dir():
+            local_wsl = cand_dir
+    if not local_wsl:
+        try:
+            raw_bytes = subprocess.check_output(
+                [ps, "-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Environment]::GetFolderPath('LocalApplicationData')"],
+                timeout=10,
+            )
+            local_win = raw_bytes.decode("utf-8", errors="replace").strip()
+            if not local_win:
+                return "", "empty_localappdata"
+            local_wsl = subprocess.check_output(["wslpath", "-u", local_win], text=True, timeout=5).strip()
+            cache_path_hint.write_text(local_wsl + "\n", encoding="utf-8")
+        except Exception:
+            return "", "wslpath_failed"
+
+    bin_dir = Path(local_wsl) / "drift" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    exe_wsl = bin_dir / f"drift-ui-win-{h}.exe"
+    lock_path = bin_dir / "compile.lock"
+    with open(lock_path, "w", encoding="utf-8") as lk:
+        fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+        if not exe_wsl.is_file():
+            stage_dir = bin_dir / f"build-{os.getpid()}"
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(cs_path, stage_dir / "DriftUiWin.cs")
+                shutil.copy2(mf_path, stage_dir / "app.manifest")
+                stage_win = subprocess.check_output(["wslpath", "-w", str(stage_dir)], text=True, timeout=5).strip()
+                out_tmp = stage_dir / "out.exe"
+                out_win = f"{stage_win}\\out.exe"
+                fw = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
+                comp = subprocess.run(
+                    [
+                        csc,
+                        "/nologo",
+                        "/optimize+",
+                        "/warnaserror+",
+                        "/target:winexe",
+                        f"/win32manifest:{stage_win}\\app.manifest",
+                        f"/r:{fw}\\WPF\\WindowsBase.dll",
+                        f"/r:{fw}\\WPF\\PresentationCore.dll",
+                        f"/r:{fw}\\WPF\\PresentationFramework.dll",
+                        f"/r:{fw}\\System.Xaml.dll",
+                        f"/r:{fw}\\System.Runtime.Serialization.dll",
+                        f"/r:{fw}\\System.Xml.dll",
+                        f"/out:{out_win}",
+                        f"{stage_win}\\DriftUiWin.cs",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if comp.returncode != 0 or not out_tmp.is_file():
+                    return "", "wpf_compile_failed"
+                os.replace(out_tmp, exe_wsl)
+                # Best-effort prune stale cached binaries
+                for old_exe in bin_dir.glob("drift-ui-win-*.exe"):
+                    if old_exe.name != exe_wsl.name:
+                        try:
+                            old_exe.unlink()
+                        except Exception:
+                            pass
+            finally:
+                shutil.rmtree(stage_dir, ignore_errors=True)
+    try:
+        pr = subprocess.run([str(exe_wsl), "--probe"], capture_output=True, text=True, timeout=5)
+        if pr.returncode != 0:
+            return "", "windows_desktop_locked_or_inactive"
+    except Exception:
+        return "", "windows_probe_failed"
+    return str(exe_wsl), "wsl_wpf_ready"
+
+
+def resolve_backend(here: Path, mode: str, ui_cfg: dict) -> tuple[str, str, str]:
+    """Returns (backend_kind, executable_or_script, reason)."""
+    if mode == "custom":
+        renderer = str(ui_cfg.get("renderer") or "").strip()
+        if not renderer or not (os.path.isfile(renderer) and os.access(renderer, os.X_OK)):
+            fail("[ui].renderer must name an executable when mode = 'custom'", 2)
+        return "custom", renderer, "custom_renderer"
+
+    if mode == "wsl-popup":
+        exe_wsl, reason = ensure_wsl_compiled_exe(here)
+        if exe_wsl:
+            return "wsl-popup", exe_wsl, reason
+        return "", "", reason
+
+    if mode == "web-deck":
+        _, _, deck_py = find_ui_assets(here)
+        if deck_py is None:
+            return "", "", "missing_deck_script"
+        pr = subprocess.run([sys.executable, "-I", str(deck_py), "--probe"], capture_output=True, text=True, timeout=5)
+        if pr.returncode == 0:
+            return "web-deck", str(deck_py), "web_deck_ready"
+        return "", "", "web_deck_unavailable"
+
+    if mode == "auto":
+        if os.environ.get("CI", "").lower() in ("1", "true") or os.environ.get("GITHUB_ACTIONS", "").lower() == "true" or os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+            return "", "", "headless_or_ci"
+        exe_wsl, wsl_reason = ensure_wsl_compiled_exe(here)
+        if exe_wsl:
+            return "wsl-popup", exe_wsl, wsl_reason
+        _, _, deck_py = find_ui_assets(here)
+        if deck_py is not None:
+            pr = subprocess.run([sys.executable, "-I", str(deck_py), "--probe"], capture_output=True, text=True, timeout=5)
+            if pr.returncode == 0:
+                return "web-deck", str(deck_py), "web_deck_ready"
+        return "", "", wsl_reason if wsl_reason != "not_wsl" else "desktop_unavailable"
+
+    if mode == "win-native":
+        return "", "", "win_native_requires_ps1_entrypoint"
+
+    fail(f"unsupported [ui].mode '{mode}'", 2)
+    return "", "", "invalid"
+
+
+def parse_risk_level(val: object) -> int:
+    s = str(val or "").strip()
+    if "/" in s:
+        left = s.split("/", 1)[0].strip()
+        if left.isdigit():
+            return max(1, min(4, int(left)))
+    return 0
+
+
+def option_chips(opt: dict) -> list[str]:
+    chips = []
+    eff = opt.get("effort_h")
+    if eff not in (None, "", "unknown"):
+        chips.append(f"~{eff}h")
+    rk = opt.get("risk")
+    if rk not in (None, "", "unknown"):
+        chips.append(f"risk {rk}")
+    un = opt.get("undo")
+    if un not in (None, "", "unknown"):
+        chips.append(f"↺ {un}")
+    par = opt.get("parity")
+    if par not in (None, "", "unknown", "same"):
+        chips.append(f"≠ {par}")
+    if par in ("same", "diverges"):
+        chips.append(f"parity {par}")
+    for key in ("leverage", "confidence", "complexity"):
+        if opt.get(key) in ("1/4", "2/4", "3/4", "4/4"):
+            chips.append(f"{key} {opt[key]}")
+    chips.extend(f"dependency {dep}" for dep in opt.get("deps") or [])
+    return chips
+
+
+def option_summary_line(opt: dict) -> str:
+    return "   ·   ".join(option_chips(opt))
+
+
+def extract_impacts(raw_list: list) -> list[str]:
+    seen = set()
+    out = []
+    for raw in raw_list or []:
+        s = str(raw)
+        rhs = s.split("->", 1)[1] if "->" in s else (s.split(":", 1)[1] if ":" in s else "")
+        cid = rhs.split("#", 1)[0].split(":", 1)[0].strip()
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return sorted(out)
+
+
+def fmt_clean_val(v: object) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, dict):
+        if set(v.keys()) == {"eq"}:
+            return fmt_clean_val(v["eq"])
+        if "min" in v and "max" in v and len(v) == 2:
+            return f"{v['min']} – {v['max']}"
+        if "min" in v and len(v) == 1:
+            return f"≥ {v['min']}"
+        if "max" in v and len(v) == 1:
+            return f"≤ {v['max']}"
+        if "in" in v and len(v) == 1 and isinstance(v["in"], list):
+            return " / ".join(fmt_clean_val(x) for x in v["in"])
+        parts = [f"{k}: {fmt_clean_val(val)}" for k, val in sorted(v.items())]
+        return ", ".join(parts)
+    if isinstance(v, list):
+        return ", ".join(fmt_clean_val(x) for x in v)
+    return json.dumps(v, ensure_ascii=False)
+
+
+def clause_pairs(m: object, relaxed_preds: set | None = None) -> list[dict]:
+    if not isinstance(m, dict) or not m:
+        return []
+    rset = relaxed_preds or set()
+    return [{"key": str(k), "val": fmt_clean_val(m[k]), "relaxed": str(k) in rset} for k in sorted(m.keys())]
+
+
+def fmt_clause_map(m: object) -> str:
+    pairs = clause_pairs(m)
+    if not pairs:
+        return "—"
+    return ", ".join(f"{p['key']}: {p['val']}" for p in pairs)
+
+
+def extract_relaxed_case_preds(coarsened: list, witnesses: list) -> dict[str, set]:
+    by_case: dict[str, set] = {}
+    for rw in witnesses or []:
+        if isinstance(rw, dict):
+            c = str(rw.get("case") or "")
+            p = str(rw.get("predicate") or "")
+            if c and p:
+                by_case.setdefault(c, set()).add(p)
+    for cs in coarsened or []:
+        s = str(cs)
+        tail = s.split(":", 1)[1] if ":" in s else s
+        if "." in tail:
+            c, p = tail.split(".", 1)
+            by_case.setdefault(c, set()).add(p)
+        elif ":" in tail:
+            c, p = tail.split(":", 1)
+            by_case.setdefault(c, set()).add(p)
+    return by_case
+
+
+def fmt_human_relaxations(coarsened: list, witnesses: list) -> list[dict]:
+    out = []
+    covered = set()
+    for rw in witnesses or []:
+        if not isinstance(rw, dict):
+            out.append({"title": "Relaxed constraint", "detail": str(rw)})
+            continue
+        c = str(rw.get("case") or "")
+        pred = str(rw.get("predicate") or "")
+        kind = str(rw.get("kind") or "")
+        if c and pred:
+            covered.add(f"{c}.{pred}")
+        if rw.get("witness"):
+            title = f"{c}" if c else "Relaxed constraint"
+            out.append({"title": title, "detail": str(rw["witness"])})
+            continue
+        label_target = f"{c} · {pred}" if (c and pred) else (c or pred)
+        if kind in ("then.widened", "writes.widened"):
+            wh = fmt_clause_map(rw.get("when") or {})
+            adm = fmt_clean_val(rw.get("admitted_after"))
+            out.append({
+                "title": f"Widened output  ·  {label_target}",
+                "detail": f"Admits {pred} = {adm}   (when {wh})",
+            })
+        elif kind in ("when.narrowed", "when.shifted"):
+            unc = fmt_clause_map(rw.get("uncovered_when") or {})
+            out.append({
+                "title": f"Narrowed input  ·  {label_target}",
+                "detail": f"Drops coverage for {unc}",
+            })
+        else:
+            out.append({"title": f"Relaxed  ·  {label_target}", "detail": json.dumps(rw, ensure_ascii=False)})
+
+    for cs in coarsened or []:
+        s = str(cs)
+        tail = s.split(":", 1)[1] if ":" in s else s
+        if tail in covered:
+            continue
+        out.append({
+            "title": f"Relaxed  ·  {tail}",
+            "detail": "Broader than baseline.",
+        })
+    return out
+
+
+def fmt_witness(rw: object) -> str:
+    items = fmt_human_relaxations([], [rw])
+    return f"{items[0]['title']} — {items[0]['detail']}" if items else str(rw)
+
+
+def resolve_workspace_identity(area: Path) -> dict:
+    home_str = str(Path.home())
+    full_path = str(area.resolve())
+    compact_path = ("~" + full_path[len(home_str):]) if full_path.startswith(home_str + "/") else full_path
+    proj_name = area.name or "workspace"
+    wt_name = area.name or ""
+    branch = ""
+    is_wt = False
+    git_bin = shutil.which("git")
+    if git_bin:
+        try:
+            br = subprocess.run([git_bin, "-C", full_path, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=2)
+            if br.returncode == 0 and br.stdout.strip() and br.stdout.strip() != "HEAD":
+                branch = br.stdout.strip()
+            elif br.returncode == 0:
+                sh = subprocess.run([git_bin, "-C", full_path, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=2)
+                if sh.returncode == 0 and sh.stdout.strip():
+                    branch = sh.stdout.strip()
+            dirs = subprocess.run([git_bin, "-C", full_path, "rev-parse", "--git-dir", "--git-common-dir"], capture_output=True, text=True, timeout=2)
+            if dirs.returncode == 0:
+                lines = [ln.strip() for ln in dirs.stdout.splitlines() if ln.strip()]
+                if len(lines) >= 2:
+                    g_dir = (Path(full_path) / lines[0]).resolve() if not Path(lines[0]).is_absolute() else Path(lines[0]).resolve()
+                    c_dir = (Path(full_path) / lines[1]).resolve() if not Path(lines[1]).is_absolute() else Path(lines[1]).resolve()
+                    if g_dir != c_dir:
+                        is_wt = True
+                    if c_dir.name == ".git" and c_dir.parent.name:
+                        proj_name = c_dir.parent.name
+        except Exception:
+            pass
+    return {
+        "project_name": proj_name,
+        "worktree_name": wt_name,
+        "is_linked_worktree": is_wt,
+        "git_branch": branch,
+        "workspace_path": compact_path,
+    }
+
+
+def extract_toml_decision_why(area: Path, rel_file: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not rel_file:
+        return out
+    try:
+        area_real = area.resolve()
+        cand = area / rel_file
+        if cand.is_symlink() or not cand.is_file():
+            return out
+        cand_real = cand.resolve()
+        if cand_real != area_real and area_real not in cand_real.parents:
+            return out
+        doc = tomllib.loads(cand_real.read_text(encoding="utf-8"))
+        for sec_name in ("decisions", "open"):
+            sec = doc.get(sec_name)
+            if isinstance(sec, dict):
+                for k, v in sec.items():
+                    if isinstance(v, dict):
+                        w = str(v.get("why") or v.get("note") or "").strip()
+                        if w:
+                            out[str(k)] = w
+    except Exception:
+        pass
+    return out
+
+
+def build_ui_request(
+    area: Path,
+    report: dict,
+    request_id: str,
+    area_name: str,
+    ws_meta: dict,
+    edition: str,
+    theme: str,
+    owner: str,
+    suggested_owner: str,
+    policy_approvers: list[str],
+    quiet_arm_ms: int,
+    timeout_s: int,
+    sentinel_path: str,
+    prev_hashes: dict | None,
+) -> tuple[dict, dict]:
+    contracts = report.get("contracts") or []
+    snap = report.get("review_snapshot") or {}
+    review_ref = snap.get("review_ref") or ""
+    coarsened_total = 0
+    removed_total = 0
+    impacts_all = set()
+    cases_lines = []
+    perim_lines = []
+    target_lines = []
+    contract_panels = []
+    exec_choices = []
+    target_items = []
+
+    by_file_id = {}
+    by_id_intent = {}
+    why_cache: dict[str, dict[str, str]] = {}
+    for c in contracts:
+        cid = str(c.get("id") or "unknown")
+        cfile = str(c.get("file") or "")
+        cintent = str(c.get("intent") or "")
+        by_file_id[cfile] = cid
+        by_id_intent[cid] = cintent
+        appr = str(c.get("approval") or "")
+        bd = c.get("baseline_delta") or {}
+        chg = str(bd.get("contract_change") or ("snapshot" if not bd else "unchanged"))
+        if cases_lines:
+            cases_lines.append("")
+        cases_lines.append(f"▸ {cid}  ({cfile})  [{appr} · {chg}]")
+
+        c_coarsened = [str(cs) for cs in (bd.get("coarsened") or [])]
+        coarsened_total += len(c_coarsened)
+        for cs in c_coarsened:
+            cases_lines.append(f"  ! coarsened: {cs}")
+
+        raw_wits = bd.get("relaxation_witnesses") or []
+        c_witnesses = [fmt_witness(rw) for rw in raw_wits]
+        for w_line in c_witnesses:
+            cases_lines.append(f"    {w_line}")
+        c_relaxations = fmt_human_relaxations(c_coarsened, raw_wits)
+        relaxed_by_case = extract_relaxed_case_preds(c_coarsened, raw_wits)
+
+        case_rows = []
+        seen_case_ids = set()
+        for cc in bd.get("case_changes") or []:
+            kind = str(cc.get("kind") or "")
+            cc_id = str(cc.get("case") or "")
+            if kind in ("removed", "waived", "deferred"):
+                removed_total += 1
+            cases_lines.append(f"  Δ case {cc_id}: {kind}")
+            after_m = cc.get("after") if isinstance(cc.get("after"), dict) else {}
+            before_m = cc.get("before") if isinstance(cc.get("before"), dict) else {}
+            src_m = after_m if after_m else before_m
+            wh_s = fmt_clause_map(src_m.get("when") or {})
+            th_s = fmt_clause_map(src_m.get("then") or {})
+            seen_case_ids.add(cc_id)
+            rel_preds = relaxed_by_case.get(cc_id, set())
+            case_rows.append({
+                "id": cc_id,
+                "badge": kind.upper() or "CHANGED",
+                "when_text": wh_s,
+                "then_text": th_s,
+                "when_pairs": clause_pairs(src_m.get("when") or {}, rel_preds),
+                "then_pairs": clause_pairs(src_m.get("then") or {}, rel_preds),
+            })
+
+        for ac in c.get("active_cases") or []:
+            ac_id = str(ac.get("id") or "")
+            wh_s = fmt_clause_map(ac.get("when") or {})
+            th_s = fmt_clause_map(ac.get("then") or {})
+            st_lbl = str(ac.get("status") or "active")
+            cases_lines.append(f"  • {ac_id} [{st_lbl}]:  {wh_s}  →  {th_s}")
+            if ac_id not in seen_case_ids:
+                rel_preds = relaxed_by_case.get(ac_id, set())
+                case_rows.append({
+                    "id": ac_id,
+                    "badge": st_lbl.upper(),
+                    "when_text": wh_s,
+                    "then_text": th_s,
+                    "when_pairs": clause_pairs(ac.get("when") or {}, rel_preds),
+                    "then_pairs": clause_pairs(ac.get("then") or {}, rel_preds),
+                })
+
+        c_impacts = extract_impacts(bd.get("boundary_impact") or [])
+        for bi in c_impacts:
+            impacts_all.add(bi)
+
+        sc = c.get("scope_summary") or {}
+        code_list = [str(x) for x in (sc.get("code") or [])]
+        reads_list = [str(x) for x in (sc.get("reads") or [])]
+        writes_list = [str(x) for x in (sc.get("writes") or [])]
+        perim_lines.append(f"• {cid}: code={json.dumps(code_list)}  writes={json.dumps(writes_list)}")
+
+        has_base = isinstance(c.get("baseline_delta"), dict)
+        cc_counts = c.get("clause_counts") if isinstance(c.get("clause_counts"), dict) else None
+        has_counts = cc_counts is not None or ("active_cases" in c)
+        if cc_counts is not None:
+            act_cases_n = int(cc_counts.get("active_cases") or 0)
+            inv_n = int(cc_counts.get("invariants") or 0)
+            bud_n = int(cc_counts.get("budgets") or 0)
+            frm_n = int(cc_counts.get("formal") or 0)
+        else:
+            act_cases_n = sum(1 for ac in (c.get("active_cases") or []) if str(ac.get("status") or "active") == "active")
+            inv_n = 0
+            bud_n = 0
+            frm_n = 0
+        if has_base:
+            add_cases_n = act_cases_n if chg == "added" else sum(1 for cc in (bd.get("case_changes") or []) if str(cc.get("kind") or "") == "added")
+        else:
+            add_cases_n = 0
+
+        contract_panels.append({
+            "id": cid,
+            "file": cfile,
+            "intent": cintent,
+            "approval": appr,
+            "change_kind": chg,
+            "has_baseline": has_base,
+            "has_clause_counts": has_counts,
+            "active_cases_count": act_cases_n,
+            "added_cases_count": add_cases_n,
+            "invariants_count": inv_n,
+            "budgets_count": bud_n,
+            "formal_count": frm_n,
+            "surface": str(sc.get("surface") or ""),
+            "coarsened": c_coarsened,
+            "witnesses": c_witnesses,
+            "relaxations": c_relaxations,
+            "impacts": c_impacts,
+            "cases": case_rows,
+            "code": code_list,
+            "reads": reads_list,
+            "writes": writes_list,
+        })
+
+    for se in report.get("settled_execution_choices") or []:
+        ec_cid = str(se.get("contract_id") or se.get("contract") or "")
+        ec_id = str(se.get("id") or "")
+        ec_pick = str(se.get("pick") or "")
+        ec_ask = str(se.get("ask") or "")
+        ec_why = str(se.get("why") or "")
+        ec_does_raw = se.get("does")
+        ec_does = str(ec_does_raw) if ec_does_raw not in (None, "", "unknown") else ""
+        ec_eff_raw = se.get("effort_h")
+        ec_eff = f"~{ec_eff_raw}h" if ec_eff_raw not in (None, "", "unknown") else ""
+        ec_undo_raw = se.get("undo")
+        ec_undo = str(ec_undo_raw) if ec_undo_raw not in (None, "", "unknown") else ""
+        perim_lines.append(f"• Autonomous choice (execution) {ec_cid}#{ec_id} = {ec_pick}: {ec_ask}")
+        exec_choices.append({
+            "contract_id": ec_cid,
+            "card_id": ec_id,
+            "pick": ec_pick,
+            "ask": ec_ask,
+            "why": ec_why,
+            "does": ec_does,
+            "effort": ec_eff,
+            "risk_level": parse_risk_level(se.get("risk")),
+            "undo": ec_undo,
+            "cases": [str(x) for x in (se.get("cases") or [])],
+        })
+
+    for t in snap.get("targets") or []:
+        t_path = str(t.get("path") or "")
+        t_dig = str(t.get("digest") or "")
+        t_assur = str(t.get("assurance_digest") or "")
+        target_lines.append(f"• {t_path}  ({t_dig[:24]}...)")
+        target_items.append({
+            "path": t_path,
+            "behavior_digest": t_dig,
+            "assurance_digest": t_assur,
+        })
+    if review_ref:
+        target_lines.append(f"review_ref: {review_ref}")
+    claim_limits = [str(lim) for lim in (report.get("claim_limits") or [])]
+    for lim in claim_limits:
+        target_lines.append(f"limit: {lim}")
+
+    cards = []
+    cur_hashes = {}
+
+    def add_card(raw_c: dict, kind_override: str, proposed_pick: str):
+        cfile = str(raw_c.get("contract") or "")
+        cid = str(raw_c.get("contract_id") or by_file_id.get(cfile) or cfile)
+        card_id = str(raw_c.get("id") or "")
+        key = f"{cid}:{kind_override}:{card_id}"
+        fp = hashlib.sha256(json.dumps(raw_c, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        cur_hashes[key] = fp
+        changed_prior = (prev_hashes is not None) and (prev_hashes.get(key) != fp)
+        rec = ""
+        rec_basis = ""
+        if isinstance(raw_c.get("recommendation"), dict) and raw_c["recommendation"].get("conditional"):
+            rec = str(raw_c["recommendation"].get("option") or "")
+            rec_basis = str(raw_c["recommendation"].get("basis") or "")
+        if cfile not in why_cache:
+            why_cache[cfile] = extract_toml_decision_why(area, cfile)
+        why_txt = str(raw_c.get("why") or why_cache[cfile].get(card_id) or "").strip()
+        lead_id = proposed_pick or rec
+        raw_opts = list(raw_c.get("options") or [])
+        raw_opts.sort(key=lambda item: (0 if str(item.get("id") or "") == lead_id else 1, str(item.get("id") or "")))
+        opts = []
+        for o in raw_opts:
+            eff_raw = o.get("effort_h")
+            eff_txt = f"~{eff_raw}h" if eff_raw not in (None, "", "unknown") else ""
+            undo_raw = o.get("undo")
+            undo_txt = str(undo_raw) if undo_raw not in (None, "", "unknown") else ""
+            dom_by = [str(x) for x in (o.get("dominated_by") or []) if str(x)]
+            opts.append({
+                "id": str(o.get("id") or ""),
+                "does": str(o.get("does") or ""),
+                "summary": option_summary_line(o),
+                "chips": option_chips(o),
+                "effort": eff_txt,
+                "risk_level": parse_risk_level(o.get("risk")),
+                "undo": undo_txt,
+                "dominated_by": dom_by,
+            })
+        cards.append({
+            "contract_id": cid,
+            "contract_file": cfile,
+            "contract_intent": by_id_intent.get(cid, ""),
+            "card_kind": kind_override,
+            "card_id": card_id,
+            "ask": str(raw_c.get("ask") or ""),
+            "why": why_txt,
+            "cases": [str(x) for x in (raw_c.get("cases") or [])],
+            "owner": str(raw_c.get("owner") or "unknown"),
+            "disposition": str(raw_c.get("disposition") or ""),
+            "proposed_pick": proposed_pick,
+            "recommended_option": rec,
+            "recommendation_basis": rec_basis,
+            "changed_since_prior": changed_prior,
+            "impacts": extract_impacts(raw_c.get("boundary_impact") or []),
+            "options": opts,
+        })
+
+    approval_decisions = [d for d in (report.get("decisions") or []) if str(d.get("blocking_phase") or "approval") == "approval"]
+    approval_questions = [q for q in (report.get("questions") or []) if str(q.get("blocking_phase") or "approval") == "approval"]
+    for d in approval_decisions:
+        add_card(d, "decision", "")
+    for p in report.get("proposed_choices") or []:
+        add_card(p, "proposed_choice", str(p.get("proposed_pick") or ""))
+    for q in approval_questions:
+        add_card(q, "question", "")
+
+    excl_count = 0
+    for lim_item in (report.get("claim_limits") or []):
+        ls = str(lim_item)
+        if "quiet unchanged contract" in ls:
+            tok = ls.split(" ", 1)[0]
+            if tok.isdigit():
+                excl_count = int(tok)
+
+    n_targs = len(snap.get("targets") or [])
+    banner_parts = [f"{n_targs} {'target' if n_targs == 1 else 'targets'}"]
+    warning = False
+    if coarsened_total > 0:
+        warning = True
+        banner_parts.append(f"{coarsened_total} relaxed")
+    if removed_total > 0:
+        warning = True
+        banner_parts.append(f"{removed_total} removed")
+    if impacts_all:
+        warning = True
+        banner_parts.append(f"↗ {', '.join(sorted(impacts_all))}")
+    if excl_count > 0:
+        banner_parts.append(f"{excl_count} unchanged")
+
+    can_seal = (
+        bool(review_ref)
+        and len(approval_decisions) == 0
+        and len(approval_questions) == 0
+        and len(report.get("blocking_reasons") or []) == 0
+    )
+    if prev_hashes is not None:
+        diff_keys = sorted(k for k, v in cur_hashes.items() if prev_hashes.get(k) != v)
+        if diff_keys:
+            perim_lines.insert(0, f"Updated since prior review: {', '.join(diff_keys)}")
+
+    env = {
+        "schema": "drift.ui-request/1",
+        "request_id": request_id,
+        "area_name": area_name,
+        "project_name": str(ws_meta.get("project_name") or area_name),
+        "worktree_name": str(ws_meta.get("worktree_name") or ""),
+        "is_linked_worktree": bool(ws_meta.get("is_linked_worktree")),
+        "git_branch": str(ws_meta.get("git_branch") or ""),
+        "workspace_path": str(ws_meta.get("workspace_path") or ""),
+        "edition": edition,
+        "theme": theme,
+        "owner": owner,
+        "needs_owner_enrollment": not bool(owner),
+        "suggested_owner": suggested_owner,
+        "policy_approvers": policy_approvers,
+        "review_ref": review_ref,
+        "quiet_arm_ms": quiet_arm_ms,
+        "timeout_s": timeout_s,
+        "sentinel_path": sentinel_path,
+        "can_seal_directly": can_seal,
+        "kernel_banner": "   ·   ".join(banner_parts),
+        "kernel_warning": warning,
+        "targets_count": n_targs,
+        "relaxed_count": coarsened_total,
+        "removed_count": removed_total,
+        "hidden_count": excl_count,
+        "banner_impacts": sorted(impacts_all),
+        "cases_tab": "\n".join(cases_lines) or "No case details.",
+        "perimeter_tab": "\n".join(perim_lines) or "No scope details.",
+        "targets_tab": "\n".join(target_lines) or "No target snapshot.",
+        "contract_panels": contract_panels,
+        "exec_choices": exec_choices,
+        "target_items": target_items,
+        "claim_limits": claim_limits,
+        "cards": cards,
+    }
+    return env, cur_hashes
+
+
+def inspect_target_states(drift_bin: str, area: Path, targets: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not targets:
+        return out
+    st_proc = subprocess.run([drift_bin, "status", *targets, "--detail", "guided", "--json"], cwd=str(area), capture_output=True, text=True)
+    if st_proc.returncode in (0, 1):
+        try:
+            st_doc = json.loads(st_proc.stdout)
+            for sc in st_doc.get("contracts") or []:
+                p = str(sc.get("file") or sc.get("id") or "")
+                out[p] = str(sc.get("approval") or "unknown")
+        except Exception:
+            pass
+    return out
+
+
+def narrow_non_delta_selectors(drift_bin: str, area: Path, selectors: list[str]) -> list[str]:
+    expanded = []
+    changed_any = False
+    for sel in selectors:
+        cand = (area / sel) if not Path(sel).is_absolute() else Path(sel)
+        if cand.is_dir():
+            st_proc = subprocess.run([drift_bin, "status", sel, "--detail", "guided", "--json"], cwd=str(area), capture_output=True, text=True)
+            if st_proc.returncode in (0, 1):
+                try:
+                    st_doc = json.loads(st_proc.stdout)
+                    non_cur = [str(c.get("file")) for c in (st_doc.get("contracts") or []) if c.get("file") and str(c.get("approval")) != "current"]
+                    if non_cur:
+                        expanded.extend(non_cur)
+                        changed_any = True
+                        continue
+                except Exception:
+                    pass
+        expanded.append(sel)
+    return expanded if changed_any else selectors
+
+
+def main() -> int:
+    here = Path(sys.argv[1]).resolve()
+    raw_args = sys.argv[2:]
+
+    if len(raw_args) == 1 and raw_args[0] == "--off":
+        cfg_p = save_local_ui_fields({"mode": "off"})
+        print(json.dumps({"config_file": str(cfg_p), "mode": "off", "schema": "drift.ui-prefs/1", "status": "ok"}, sort_keys=True))
+        return 0
+
+    if len(raw_args) == 1 and raw_args[0] == "--on":
+        cfg_p = save_local_ui_fields({"mode": "auto"})
+        print(json.dumps({"config_file": str(cfg_p), "mode": "auto", "schema": "drift.ui-prefs/1", "status": "ok"}, sort_keys=True))
+        return 0
+
+    if len(raw_args) == 1 and raw_args[0] == "--status":
+        ui_cfg, explicit_mode = load_local_ui_config()
+        area = find_area(Path.cwd())
+        env_off = os.environ.get("DRIFT_UI", "").strip().lower() in ("off", "0", "false", "none")
+        repo_off = load_repo_downgrade_off(area)
+        cfg_mode = str(ui_cfg.get("mode") or "auto").strip()
+        cfg_theme = str(ui_cfg.get("theme") or "auto").strip().lower() or "auto"
+        if env_off:
+            eff_mode, layer = "off", "DRIFT_UI"
+        elif repo_off:
+            eff_mode, layer = "off", "repo_config"
+        else:
+            eff_mode, layer = cfg_mode, ("local_toml" if explicit_mode else "default_auto")
+        backend, _, reason = ("", "", "ui_disabled") if eff_mode in ("", "off", "none") else resolve_backend(here, eff_mode, ui_cfg)
+        print(
+            json.dumps(
+                {
+                    "backend": backend or "fallback",
+                    "deciding_layer": layer,
+                    "desktop_available": bool(backend),
+                    "effective_mode": eff_mode,
+                    "enrolled_owner": str(ui_cfg.get("owner") or "").strip(),
+                    "os": platform.system(),
+                    "reason": reason,
+                    "schema": "drift.ui-prefs/1",
+                    "theme": cfg_theme,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    rt = runtime_root()
+
+    if len(raw_args) == 2 and raw_args[0] == "--cancel":
+        req_id = raw_args[1].strip()
+        if not req_id or "/" in req_id or "\\" in req_id or ".." in req_id:
+            fail("invalid request_id for --cancel", 2)
+        req_dir = rt / "requests" / req_id
+        req_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(req_dir, 0o700)
+        (req_dir / "state").write_text("cancelled\n", encoding="utf-8")
+        try:
+            (req_dir / "sentinel").unlink(missing_ok=True)
+        except Exception:
+            pass
+        print(json.dumps({"approval_writes": 0, "request_id": req_id, "schema": "drift.ui-result/1", "status": "cancelled"}, sort_keys=True))
+        return 0
+
+    selectors = []
+    for arg in raw_args:
+        if arg.startswith("-"):
+            fail(f"unsupported option: {arg}", 2)
+        if arg.lower().endswith(".json"):
+            fail("refusing pre-rendered JSON input; pass contract or directory selectors", 2)
+        selectors.append(arg)
+
+    ui_cfg, _ = load_local_ui_config()
+    mode = str(ui_cfg.get("mode") or "auto").strip()
+    if mode not in ("", "off", "none", "auto", "wsl-popup", "win-native", "web-deck", "custom"):
+        fail(f"unsupported [ui].mode '{mode}'", 2)
+    theme = str(ui_cfg.get("theme") or "auto").strip().lower() or "auto"
+    if theme not in ("auto", "dark", "light"):
+        fail(f"unsupported [ui].theme '{theme}'", 2)
+
+    owner = str(ui_cfg.get("owner") or "").strip()
+    ssh_sign_key = str(ui_cfg.get("ssh_sign_key") or "").strip()
+    try:
+        quiet_arm_ms = max(50, int(ui_cfg.get("quiet_arm_ms") or 300))
+    except Exception:
+        fail("quiet_arm_ms in local.toml must be an integer", 2)
+    timeout_s = ui_cfg.get("timeout_s", 0)
+    if type(timeout_s) is not int or not 0 <= timeout_s <= 2_147_483_647:
+        fail("timeout_s in local.toml must be an integer from 0 to 2147483647", 2)
+
+    area = find_area(Path.cwd())
+    if not selectors:
+        selectors = [".drift/contracts"]
+    drift_bin = resolve_drift_cli(here)
+
+    ver_proc = subprocess.run([drift_bin, "version", "--json"], cwd=str(area), capture_output=True, text=True)
+    if ver_proc.returncode != 0:
+        fail(f"drift version --json failed: {ver_proc.stderr.strip()}", 2)
+    try:
+        ver_doc = json.loads(ver_proc.stdout)
+    except Exception as exc:
+        fail(f"invalid drift version JSON: {exc}", 2)
+    caps = set(ver_doc.get("capabilities") or [])
+    edition = str(ver_doc.get("effective_edition") or ver_doc.get("edition") or "free")
+    if os.environ.get("DRIFT_EDITION") == "free":
+        caps.discard("incremental_baseline")
+        edition = "free"
+
+    help_proc = subprocess.run([drift_bin, "help", "--json"], cwd=str(area), capture_output=True, text=True)
+    if help_proc.returncode != 0 or "drift.review-snapshot/1" not in help_proc.stdout or "drift.guided/1" not in help_proc.stdout:
+        fail("installed drift CLI lacks required guided/review-snapshot protocols", 2)
+
+    git_bin = shutil.which("git")
+    has_git_head = False
+    if git_bin:
+        has_git_head = subprocess.run([git_bin, "-C", str(area), "rev-parse", "--verify", "HEAD"], capture_output=True).returncode == 0
+
+    use_delta = ("incremental_baseline" in caps) and has_git_head
+    eff_selectors = selectors if use_delta else narrow_non_delta_selectors(drift_bin, area, selectors)
+
+    rev_cmd = [drift_bin, "review", *eff_selectors]
+    if use_delta:
+        rev_cmd.extend(["--base", "HEAD", "--delta"])
+    rev_cmd.extend(["--detail", "guided", "--as", "json"])
+
+    rev_proc = subprocess.run(rev_cmd, cwd=str(area), capture_output=True, text=True)
+    if rev_proc.returncode == 2:
+        fail(rev_proc.stderr.strip() or "drift review invocation failed", 2)
+    try:
+        report = json.loads(rev_proc.stdout)
+    except Exception as exc:
+        fail(f"drift review returned invalid guided JSON: {exc}", 2)
+
+    area_ref = str(report.get("area_ref") or hashlib.sha256(str(area).encode("utf-8")).hexdigest())
+    snap = report.get("review_snapshot") or {}
+    rev_ref = str(snap.get("review_ref") or "")
+    ident_basis = rev_ref if rev_ref else hashlib.sha256(json.dumps(report.get("decisions") or [], sort_keys=True).encode("utf-8")).hexdigest()
+    candidate_key = hashlib.sha256(f"{area_ref}:{ident_basis}".encode("utf-8")).hexdigest()[:24]
+    attempt_id = f"{candidate_key[:12]}-{secrets.token_hex(6)}"
+
+    def fallback_out(reason: str) -> int:
+        fb_snap = rt / f"fallback-{attempt_id}.review.json"
+        fd = os.open(str(fb_snap), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(rev_proc.stdout)
+        next_cmd = ""
+        if rev_ref:
+            who = owner if owner else "<owner>"
+            next_cmd = f"drift approve --reviewed {shlex.quote(str(fb_snap))} --expect-review {shlex.quote(rev_ref)} --by {shlex.quote(who)}"
+        payload = {
+            "approval_writes": 0,
+            "next_command": next_cmd,
+            "reason": reason,
+            "request_id": attempt_id,
+            "review_ref": rev_ref,
+            "schema": "drift.ui-result/1",
+            "snapshot_file": str(fb_snap),
+            "status": "fallback",
+        }
+        print(json.dumps(payload, sort_keys=True))
+        if next_cmd:
+            print(f"Next command: {next_cmd}", file=sys.stderr)
+        return 10
+
+    if os.environ.get("DRIFT_UI", "").strip().lower() in ("off", "0", "false", "none"):
+        return fallback_out("ui_disabled_env")
+    if load_repo_downgrade_off(area):
+        return fallback_out("ui_disabled_repo")
+    if mode in ("", "off", "none"):
+        return fallback_out("ui_disabled")
+
+    if str(report.get("next_actor") or "") != "user":
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "next_actor": report.get("next_actor"),
+                    "next_command": report.get("next_command"),
+                    "request_id": attempt_id,
+                    "schema": "drift.ui-result/1",
+                    "status": "no_user_action",
+                },
+                sort_keys=True,
+            )
+        )
+        return 0 if report.get("ok") else 1
+
+    req_dir = rt / "requests" / attempt_id
+    req_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(req_dir, 0o700)
+    state_file = req_dir / "state"
+    state_file.write_text("pending\n", encoding="utf-8")
+    sentinel_file = req_dir / "sentinel"
+    sentinel_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    snap_file = req_dir / "review.json"
+    fd_s = os.open(str(snap_file), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd_s, "w", encoding="utf-8") as fh:
+        fh.write(rev_proc.stdout)
+
+    area_short = hashlib.sha256(area_ref.encode("utf-8")).hexdigest()[:16]
+    prior_cards_file = rt / f"last-cards-{area_short}.json"
+    prev_hashes = None
+    if prior_cards_file.is_file():
+        try:
+            prev_hashes = json.loads(prior_cards_file.read_text(encoding="utf-8"))
+        except Exception:
+            prev_hashes = None
+
+    suggested_owner = "" if owner else resolve_host_suggested_owner()
+    policy_approvers = load_policy_approvers(area)
+
+    cap_file = os.environ.get("DRIFT_UI_CAPTURE_FILE", "").strip()
+    backend_kind, backend_target, backend_reason = ("capture", "", "capture") if cap_file else resolve_backend(here, mode, ui_cfg)
+    if not cap_file and not backend_kind:
+        sentinel_file.unlink(missing_ok=True)
+        return fallback_out(backend_reason)
+
+    sentinel_for_req = str(sentinel_file)
+    if backend_kind == "wsl-popup":
+        try:
+            sentinel_for_req = subprocess.check_output(["wslpath", "-w", str(sentinel_file)], text=True, timeout=5).strip()
+        except Exception:
+            sentinel_for_req = ""
+
+    ws_meta = resolve_workspace_identity(area)
+    ui_req, cur_hashes = build_ui_request(
+        area,
+        report,
+        attempt_id,
+        area.name or "drift",
+        ws_meta,
+        edition,
+        theme,
+        owner,
+        suggested_owner,
+        policy_approvers,
+        quiet_arm_ms,
+        timeout_s,
+        sentinel_for_req,
+        prev_hashes,
+    )
+    req_file = req_dir / "request.json"
+    res_file = req_dir / "gesture.json"
+    res_file.unlink(missing_ok=True)
+    fd_r = os.open(str(req_file), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd_r, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(ui_req, ensure_ascii=False, sort_keys=True))
+
+    if cap_file:
+        sentinel_file.unlink(missing_ok=True)
+        with open(cap_file, "a", encoding="utf-8") as cf:
+            cf.write(json.dumps(ui_req, sort_keys=True) + "\n")
+        print(json.dumps({"approval_writes": 0, "request_id": attempt_id, "schema": "drift.ui-result/1", "status": "captured"}, sort_keys=True))
+        return 0
+
+    try:
+        if backend_kind == "custom":
+            r_proc = subprocess.run([backend_target, str(req_file), str(res_file)], cwd=str(area), timeout=timeout_s + 25 if timeout_s else None)
+        elif backend_kind == "wsl-popup":
+            win_req = subprocess.check_output(["wslpath", "-w", str(req_file)], text=True, timeout=5).strip()
+            win_res = subprocess.check_output(["wslpath", "-w", str(res_file)], text=True, timeout=5).strip()
+            r_proc = subprocess.run([backend_target, win_req, win_res], cwd=str(area))
+        elif backend_kind == "web-deck":
+            r_proc = subprocess.run([sys.executable, "-I", backend_target, str(req_file), str(res_file), str(sentinel_file)], cwd=str(area))
+        else:
+            return fallback_out("unsupported_backend")
+    except subprocess.TimeoutExpired:
+        sentinel_file.unlink(missing_ok=True)
+        return fallback_out("renderer_timeout")
+    finally:
+        sentinel_file.unlink(missing_ok=True)
+
+    if r_proc.returncode != 0 or not res_file.is_file():
+        return fallback_out("renderer_busy_or_unavailable" if r_proc.returncode in (3, 10) else "renderer_failed")
+
+    gesture = json.loads(res_file.read_text(encoding="utf-8"))
+    if gesture.get("schema") != "drift.ui-gesture/1":
+        fail("renderer returned unsupported gesture schema", 2)
+
+    act = str(gesture.get("action") or "cancel")
+    if act == "timeout":
+        return fallback_out("idle_timeout")
+
+    if act == "use_terminal_once":
+        return fallback_out("user_used_terminal_once")
+
+    if act == "disable_ui":
+        save_local_ui_fields({"mode": "off"})
+        return fallback_out("user_switched_to_terminal")
+
+    if act == "cancel":
+        state_file.write_text("cancelled\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "request_id": attempt_id,
+                    "schema": "drift.ui-result/1",
+                    "status": "cancelled",
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+
+    if act == "amend":
+        prior_cards_file.write_text(json.dumps(cur_hashes, sort_keys=True), encoding="utf-8")
+        os.chmod(prior_cards_file, 0o600)
+        changed_cards = sorted(k for k, v in cur_hashes.items() if prev_hashes.get(k) != v) if prev_hashes is not None else sorted(cur_hashes.keys())
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "card_diff": changed_cards,
+                    "note": str(gesture.get("note") or ""),
+                    "request_id": attempt_id,
+                    "schema": "drift.ui-result/1",
+                    "selections": gesture.get("selections") or [],
+                    "status": "amend_requested",
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+
+    if act != "approve":
+        fail(f"unknown gesture action: {act}", 2)
+
+    confirmed_ref = str(gesture.get("confirmed_review_ref") or "")
+    if not rev_ref or confirmed_ref != rev_ref:
+        fail("gesture confirmed_review_ref does not match active review_ref", 2)
+
+    effective_owner = str(gesture.get("confirmed_owner") or "").strip()
+    if backend_kind == "custom" and "confirmed_owner" not in gesture:
+        effective_owner = owner
+    if not effective_owner:
+        fail("approve gesture requires a non-empty owner identity", 2)
+
+    targets = [str(t.get("path")) for t in (snap.get("targets") or []) if t.get("path")]
+    area_lock = rt / f"area-{area_short}.lock"
+    with open(area_lock, "w", encoding="utf-8") as alk:
+        fcntl.flock(alk.fileno(), fcntl.LOCK_EX)
+        cur_state = state_file.read_text(encoding="utf-8").strip() if state_file.is_file() else ""
+        if cur_state != "pending":
+            fail(f"request {attempt_id} is '{cur_state}', refusing commit", 2)
+        state_file.write_text("committing\n", encoding="utf-8")
+
+        pre_states = inspect_target_states(drift_bin, area, targets)
+
+        appr_cmd = [drift_bin, "approve", "--reviewed", str(snap_file), "--expect-review", rev_ref, "--by", effective_owner]
+        if ssh_sign_key:
+            appr_cmd.extend(["--ssh-sign", ssh_sign_key])
+        appr_proc = subprocess.run(appr_cmd, cwd=str(area), capture_output=True, text=True)
+        appr_err = appr_proc.stderr.strip() or appr_proc.stdout.strip()
+
+        targets_state = inspect_target_states(drift_bin, area, targets)
+        all_current = len(targets) > 0 and all(targets_state.get(t) == "current" for t in targets)
+        newly_approved = sum(1 for t in targets if targets_state.get(t) == "current" and pre_states.get(t) != "current")
+        total_current = sum(1 for t in targets if targets_state.get(t) == "current")
+
+        sig_ok = (not ssh_sign_key) or (Path(f"{snap_file}.sig").is_file() and appr_proc.returncode == 0)
+        if all_current:
+            if not owner:
+                save_local_ui_fields({"owner": effective_owner})
+            if sig_ok and appr_proc.returncode == 0:
+                state_file.write_text("committed\n", encoding="utf-8")
+                prior_cards_file.unlink(missing_ok=True)
+                print(
+                    json.dumps(
+                        {
+                            "approval_writes": newly_approved if newly_approved > 0 else total_current,
+                            "owner": effective_owner,
+                            "request_id": attempt_id,
+                            "review_ref": rev_ref,
+                            "schema": "drift.ui-result/1",
+                            "status": "approved",
+                            "targets_state": targets_state,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            state_file.write_text("committed_unsigned\n", encoding="utf-8")
+            print(
+                json.dumps(
+                    {
+                        "approval_writes": newly_approved if newly_approved > 0 else total_current,
+                        "error": appr_err,
+                        "owner": effective_owner,
+                        "request_id": attempt_id,
+                        "review_ref": rev_ref,
+                        "schema": "drift.ui-result/1",
+                        "status": "approved_unsigned",
+                        "targets_state": targets_state,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 1
+
+        if newly_approved > 0 and not all_current:
+            state_file.write_text("partial\n", encoding="utf-8")
+            print(
+                json.dumps(
+                    {
+                        "approval_writes": newly_approved,
+                        "error": appr_err,
+                        "owner": effective_owner,
+                        "request_id": attempt_id,
+                        "review_ref": rev_ref,
+                        "schema": "drift.ui-result/1",
+                        "status": "partial",
+                        "targets_state": targets_state,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 2
+
+        state_file.write_text("rejected\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "error": appr_err,
+                    "request_id": attempt_id,
+                    "review_ref": rev_ref,
+                    "schema": "drift.ui-result/1",
+                    "status": "rejected",
+                    "targets_state": targets_state,
+                },
+                sort_keys=True,
+            )
+        )
+        return appr_proc.returncode if appr_proc.returncode in (1, 2) else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as unexpected_exc:
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "error": str(unexpected_exc),
+                    "reason": "broker_exception",
+                    "schema": "drift.ui-result/1",
+                    "status": "fallback",
+                },
+                sort_keys=True,
+            )
+        )
+        raise SystemExit(10)
+PY

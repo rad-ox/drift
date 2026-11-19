@@ -2,16 +2,14 @@
 """DRIFT Independent Reference Performance Evidence Verifier (MIT License)."""
 
 from __future__ import annotations
-import hashlib, math, re
+import math
 from pathlib import Path
 from typing import Any, Callable
+from drift_verify_base import ARTIFACT_REF_RE, BUDGET_METRICS, ID_RE, MAX_MEASUREMENT_BYTES, SNAPSHOT_RE, _read_confined_file, _req_str as _perf_str
+from drift_verify_mutation import evaluate_contract_mutations_impl, load_mutation_events_impl
+from drift_verify_sim import parse_sim_opt_blocks
 
-MAX_MEASUREMENT_BYTES = 4 * 1024 * 1024
-ARTIFACT_REF_RE = re.compile(r"^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b|dr2a|dr2r|dr2x):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$")
-SNAPSHOT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 CONF_METHODS = frozenset(("bootstrap_bca", "student_t", "wilcoxon", "binomial_exact", "direct_observed"))
-BUDGET_METRICS = frozenset(("request_latency", "successful_throughput", "process_rss", "frame_time", "cold_start", "artifact_bytes", "work_units", "tick_alloc_bytes", "tick_alloc_count", "alloc_bytes_total", "alloc_count_total", "frame_hitch_ns"))
 BUDGET_AGGS = frozenset(("p99", "rate", "max_observed"))
 
 def extract_contract_budgets(raw: dict[str, Any], use_tbl: dict[str, Any] | None, dr1_digest_fn: Callable[[Any], str]) -> tuple[dict[str, dict[str, Any]], bool]:
@@ -39,10 +37,6 @@ def extract_contract_budgets(raw: dict[str, Any], use_tbl: dict[str, Any] | None
   resolved_budgets[bid] = res_entry
  raw["budgets"] = digest_budgets
  return resolved_budgets, bool(resolved_budgets)
-def _perf_str(m: dict[str, Any], k: str) -> str:
- v = m.get(k)
- if not isinstance(v, str) or not v.strip() or v.strip() != v: raise ValueError(k)
- return v
 def _perf_int(m: dict[str, Any], k: str, lo: int = 0) -> int:
  v = m.get(k)
  if isinstance(v, bool) or not isinstance(v, int) or v < lo or v > (1 << 53) - 1: raise ValueError(k)
@@ -90,8 +84,14 @@ def _parse_receipt(doc: dict[str, Any]) -> dict[str, Any]:
   bid, case_id, req_ref = _perf_str(rm, "budget"), _perf_str(rm, "case"), _perf_str(rm, "requirement_ref")
   if not ID_RE.match(bid) or not ID_RE.match(case_id) or not ARTIFACT_REF_RE.match(req_ref) or bid in seen_b: raise ValueError("result_id")
   seen_b.add(bid)
-  metric, unit, agg, ev, est = _perf_str(rm, "metric"), _perf_str(rm, "unit"), _perf_str(rm, "aggregation"), _perf_str(rm, "evidence"), _perf_num(rm, "estimate")
-  if est < 0.0: raise ValueError("estimate")
+  metric, unit, agg, ev = _perf_str(rm, "metric"), _perf_str(rm, "unit"), _perf_str(rm, "aggregation"), _perf_str(rm, "evidence")
+  if metric == "cpu_time_ns":
+   raw_est = rm.get("estimate")
+   if isinstance(raw_est, bool) or not isinstance(raw_est, (int, float)) or not math.isfinite(float(raw_est)) or float(raw_est) < 0.0 or float(raw_est) > (1 << 53) - 1 or not float(raw_est).is_integer(): raise ValueError("estimate")
+   est = float(int(raw_est))
+  else:
+   est = _perf_num(rm, "estimate")
+   if est < 0.0: raise ValueError("estimate")
   sc, rc, fr = _perf_int(rm, "sample_count", 0), _perf_int(rm, "run_count", 0), (_perf_int(rm, "failed_requests", 0) if "failed_requests" in rm else 0)
   iv = None
   if "interval" in rm:
@@ -114,21 +114,6 @@ def _parse_receipt(doc: dict[str, Any]) -> dict[str, Any]:
    comp = {"baseline_ref": b_ref, "regression": reg, "interval": c_iv}
   results.append({"contract": cid, "contract_ref": c_ref, "run_id": run_id, "run_status": status, "subject_artifact": sub_art, "subject_tree": sub_tree, "workload_ref": w_ref, "protocol_ref": p_ref, "environment_ref": e_ref, "environment_obs": env_obs, "adapter_ref": a_ref, "budget": bid, "case": case_id, "requirement_ref": req_ref, "metric": metric, "unit": unit, "aggregation": agg, "evidence": ev, "estimate": est, "sample_count": sc, "run_count": rc, "failed_requests": fr, "interval": iv, "comparison": comp})
  return {"run_id": run_id, "run_status": status, "contract": cid, "contract_ref": c_ref, "subject_artifact": sub_art, "subject_tree": sub_tree, "workload_ref": w_ref, "protocol_ref": p_ref, "environment_ref": e_ref, "environment_obs": env_obs, "adapter_ref": a_ref, "results": results}
-def _read_confined_file(bundle_dir: Path, real_root: Path, rel_path: str) -> tuple[str, str, str]:
- if not rel_path or rel_path.startswith("/") or "\\" in rel_path or ":" in rel_path or "\x00" in rel_path: raise ValueError("path")
- segs = rel_path.split("/")
- if any(s in ("", ".", "..") for s in segs): raise ValueError("path")
- cur = bundle_dir
- for s in segs:
-  cur = cur / s
-  if cur.is_symlink(): raise ValueError("symlink")
- if not cur.is_file(): raise ValueError("missing")
- resolved = cur.resolve()
- if real_root not in resolved.parents: raise ValueError("escape")
- raw_bytes = resolved.read_bytes()
- if len(raw_bytes) > MAX_MEASUREMENT_BYTES: raise ValueError("size")
- text, h = raw_bytes.decode("utf-8"), hashlib.sha256(raw_bytes).hexdigest()
- return text, f"sha256:{h}", f"dr1:sha256:{h}"
 def load_measurement_bundle(manifest_path: Path | None, decode_fn: Callable[[str], Any], digest_matches_fn: Callable[[str, str], bool]) -> dict[str, Any]:
  if manifest_path is None: return {"active": False, "invalid": False}
  try:
@@ -198,6 +183,7 @@ def _eval_one_budget(bid: str, bm: dict[str, Any], cid: str, c_dig: str, bundle:
  if not digest_matches_fn(exp_req, req_ref): return done("stale", "performance.subject_changed")
  if rec is None: return done("missing", "performance.evidence_missing")
  if rec["metric"] not in BUDGET_METRICS: return done("unsupported", "performance.unsupported")
+ if metric == "cpu_time_ns" and (unit, agg, op, ev) != ("ns", "max_observed", "le", "observed"): return done("invalid", "measurements.invalid")
  if (rec["unit"], rec["metric"], rec["aggregation"], rec["evidence"], rec["case"]) != (unit, metric, agg, ev, case_id): return done("invalid", "measurements.invalid")
  proto = bundle["protocols"].get(p_ref)
  if proto is None: return done("unsupported", "performance.unsupported")
@@ -220,7 +206,8 @@ def _eval_one_budget(bid: str, bm: dict[str, Any], cid: str, c_dig: str, bundle:
  comp, base_rec = rec["comparison"], bundle["baselines"].get(b_ref)
  if comp is None or comp["baseline_ref"] != b_ref or base_rec is None or base_rec["run_status"] != "passed" or base_rec["workload_ref"] != w_ref or base_rec["protocol_ref"] != p_ref or base_rec["adapter_ref"] != rec["adapter_ref"]: return done("missing", "performance.baseline_missing")
  if not _env_ok(proto["environment_keys"], env_def, base_rec["environment_obs"]): return done("not_comparable", "performance.environment_mismatch")
- b_item = next((br for br in base_rec["results"] if (br["metric"], br["unit"], br["aggregation"], br["evidence"]) == (metric, unit, agg, ev)), None)
+ b_matches = [br for br in base_rec["results"] if (br["metric"], br["unit"], br["aggregation"], br["evidence"]) == (metric, unit, agg, ev)]
+ b_item = next((br for br in b_matches if br["case"] == case_id and br["budget"] == bid), b_matches[0] if len(b_matches) == 1 else None)
  if b_item is None or b_item["failed_requests"] > 0: return done("missing", "performance.baseline_missing")
  if b_item["run_count"] < proto["min_runs"] or b_item["sample_count"] < proto["min_samples"] or (ev == "statistical" and b_item["interval"]["confidence"] < min_conf): return done("inconclusive", "performance.insufficient_evidence")
  if b_item["estimate"] <= 0.0: return done("unsupported", "performance.unsupported")
@@ -279,42 +266,6 @@ def evaluate_contract_budgets(contract: dict[str, Any], phase: str = "", perf_bu
  if pending: perf_summary["pending_budgets"] = pending
  return reasons, pending, perf_summary
 
-MUT_EVENT_KEYS = frozenset(("manifest", "contract", "digest", "mutant", "case", "outcome", "control"))
-def _count_then_leaves(val): return sum(_count_then_leaves(v) for v in val.values()) if isinstance(val, dict) else 1
-def load_mutation_events_impl(paths, manifest, decode_fn):
- files = [f for p in paths for f in (sorted(p.glob("*.jsonl")) if p.is_dir() else ([p] if p.is_file() else []))]
- latest, errs, tgts = {}, [], manifest["targets"]
- for mf in files:
-  for idx, line in enumerate(mf.read_text(encoding="utf-8").splitlines(), 1):
-   if not line.strip(): continue
-   try:
-    ev = decode_fn(line)
-    if not isinstance(ev, dict) or set(ev) != MUT_EVENT_KEYS or not all(isinstance(v, str) and v.strip() for v in ev.values()): raise ValueError("mut")
-    t = tgts.get((ev["contract"], ev["mutant"]))
-    if t is None or ev["manifest"] != manifest["digest"] or ev["digest"] != t["digest"] or ev["case"] != t["case"] or ev["outcome"] not in ("killed", "survived", "inconclusive") or ev["control"] not in ("passed", "failed") or (ev["outcome"] in ("killed", "survived") and ev["control"] != "passed"): raise ValueError("mut")
-    latest[(ev["contract"], ev["mutant"])] = ev
-   except Exception as exc: errs.append(f"mutation-events:{mf.name}:{idx}: {exc}")
- return latest, errs
-def evaluate_contract_mutations_impl(contract, manifest, latest_mut, mut_errors, digest_matches_fn):
- if manifest is None or mut_errors or (mc := manifest["contracts"].get(contract["id"])) is None or not digest_matches_fn(mc["digest"], contract["digest"]): return False
- tc = {}
- for m in mc["mutants"]:
-  if "/when/" not in m["path"]: tc[m["case"]] = tc.get(m["case"], 0) + 1
-  if (ev := latest_mut.get((contract["id"], m["id"]))) is None or ev["outcome"] != "killed": return False
- return all(tc.get(cid, 0) >= _count_then_leaves(cm.get("then", {})) for cid, cm in contract["cases"].items() if isinstance(cm, dict) and "status" not in cm)
-def parse_sim_opt_blocks(doc: dict[str, Any]) -> dict[str, Any]:
- ex: dict[str, Any] = {}
- if "observed_convergence" in doc:
-  oc = doc["observed_convergence"]
-  if not isinstance(oc, dict) or set(oc) != {"grid_steps", "errors", "norm", "reference_kind", "roundoff_floor", "min_expected_order", "horizon"}: raise ValueError("observed_convergence")
-  gs, es, rf, mo, hz = oc["grid_steps"], oc["errors"], float(oc["roundoff_floor"]), float(oc["min_expected_order"]), float(oc["horizon"])
-  if not isinstance(gs, list) or not isinstance(es, list) or len(gs) < 2 or len(gs) != len(es) or oc["norm"] not in ("L1", "L2", "L_inf") or oc["reference_kind"] not in ("exact_analytic", "fine_grid_self") or rf <= 0 or mo <= 0 or hz <= 0 or any(float(gs[i]) <= 0 or float(es[i]) < 0 or (i > 0 and float(gs[i]) >= float(gs[i - 1])) for i in range(len(gs))): raise ValueError("observed_convergence")
-  ex["observed_convergence"] = {"errors": [float(x) for x in es], "grid_steps": [float(x) for x in gs], "horizon": hz, "min_expected_order": mo, "norm": str(oc["norm"]), "reference_kind": str(oc["reference_kind"]), "roundoff_floor": rf}
- if "trajectory_stability" in doc:
-  ts = doc["trajectory_stability"]
-  if not isinstance(ts, dict) or not set(ts).issubset({"horizon", "max_abs_drift", "max_allowed_drift", "non_finite_count", "subnormal_count", "forbid_subnormals"}): raise ValueError("trajectory_stability")
-  hz, md, ad, nf, sb, fs = float(ts["horizon"]), float(ts["max_abs_drift"]), float(ts["max_allowed_drift"]), int(ts["non_finite_count"]), int(ts["subnormal_count"]), bool(ts.get("forbid_subnormals", False))
-  if hz <= 0 or md < 0 or ad < 0 or nf < 0 or sb < 0: raise ValueError("trajectory_stability")
-  ex["trajectory_stability"] = {"forbid_subnormals": fs, "horizon": hz, "max_abs_drift": md, "max_allowed_drift": ad, "non_finite_count": nf, "subnormal_count": sb}
- return ex
+__all__ = ["_eval_one_budget", "evaluate_contract_budgets", "evaluate_contract_mutations_impl", "extract_contract_budgets", "load_measurement_bundle", "load_mutation_events_impl", "parse_sim_opt_blocks"]
+
 

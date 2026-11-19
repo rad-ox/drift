@@ -10,6 +10,7 @@ import { normalizeBytes } from './drift_cli.mjs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { applyMutation, attachBridgePlan, bindUiEnvironment, buildWhenEnv, CAPS_03, captureSurfaceView, checkProjectedLeaf, checkRelationalLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, readPointer, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, unwrap03Eq, writePointer } from './drift_checks.mjs';
+import { buildEnvObj, discoverEventsDirFrom, loadViewFromEnv, parseMutantsManifest, parseSelectionJson, recordContextInput, recordDiscoveryInto, verifyRecordedInputs } from './drift_probes.mjs';
 import { extractTestOrigin, forbiddenWritesOf, requiredProbesOf, resolveSeamMutatedThen, runAdverseChecks, runIdempotencyProbe, runLogSinkProbe, runProjectionChecks, runRollbackProbe, runSeamBoundsChecks, runSeamProbe, verifyCaseFrame } from './drift_security.mjs';
 import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
 export { bindUiEnvironment, captureSurfaceView, checkViewTable, collectPlaywrightSequence, collectUiSequence, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, observeUiSequence };
@@ -51,16 +52,7 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- const base = { adapter: 'drift.mjs@0.7.0', config: 'default', deps: 'none', drift: '0.7.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${process.versions.node}` };
- if (raw) {
-  const parsed = parseJson(raw);
-  if (!isObj(parsed)) err('DRIFT_ENV must be a JSON object');
-  for (const [k, v] of Object.entries(parsed)) {
-   if (!ENV_KEYS.includes(k) || !isStr(v) || !v.trim()) err(`invalid DRIFT_ENV key "${k}"`);
-   base[k] = v.trim();
-  }
- }
- return (envCache = { key, value: base }).value;
+ return (envCache = { key, value: buildEnvObj('drift.mjs@0.8.0', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
 }
 function flushInventory(out, inv) {
  inv.scheduled = false;
@@ -99,35 +91,13 @@ export function verifyStub(idOrRes, caseId, payload) {
  return true;
 }
 function loadView(id) {
- if (VIEWS.has(id)) return VIEWS.get(id);
- const res = process.env.DRIFT_RESOLVED || '';
- if (!res) {
-  const d = autoResolve(id);
-  if (!d) err(`DRIFT_RESOLVED is not set and contract "${id}" could not be auto-resolved from .drift/`);
-  if (d.id !== id) err(`resolved view for "${id}" has id "${d.id}"`);
-  return VIEWS.set(id, d).get(id);
- }
- const f = res.endsWith('.json') ? res : path.join(res, `${id}.json`);
- if (!res.endsWith('.json')) {
-  const synced = autoResolve(id, path.resolve(f));
-  if (synced && synced.id === id) return VIEWS.set(id, attachBridgePlan(synced, path.resolve(f), fs, path, readJson)).get(id);
- }
- if (!fs.existsSync(f)) err(`contract "${id}" was not found at ${f}`);
- const d = attachBridgePlan(readJson(f), f, fs, path, readJson);
- if (d.id !== id) err(`resolved view ${f} has id "${d.id}", expected "${id}"`);
- return VIEWS.set(id, d).get(id);
+ return loadViewFromEnv(id, VIEWS, process.env, autoResolve, attachBridgePlan, fs, path, readJson, err);
 }
 function loadSelection() {
  if (selectionCache !== null) return selectionCache;
  const f = process.env.DRIFT_SELECT || '';
  if (!f || !fs.existsSync(f)) return (selectionCache = { all: true, tests: new Set(), byC: new Map(), tagged: new Set() });
- const raw = readJson(f), byC = new Map(), tagged = new Set();
- for (const c of Array.isArray(raw.contracts) ? raw.contracts : (isStr(raw.contract) ? [raw] : [])) {
-  const rep = Array.isArray(c.replayed_cases) ? c.replayed_cases : [];
-  if (c.code_hit === true || (c.resource_hit === true && !rep.length)) tagged.add(c.contract);
-  byC.set(c.contract, new Set([...(c.cases || []).filter((ch) => ch.change !== 'removed').map((ch) => ch.case), ...rep]));
- }
- return (selectionCache = { all: Boolean(raw.all), tests: new Set(Array.isArray(raw.tests) ? raw.tests : []), byC, tagged });
+ return (selectionCache = parseSelectionJson(readJson(f)));
 }
 export function shouldRun(contractId, testId, cases = []) {
  recordDiscovery(testId);
@@ -143,26 +113,7 @@ export function shouldRun(contractId, testId, cases = []) {
 }
 function discoverEventsDir() {
  if (eventsDirCache !== null) return eventsDirCache;
- const sd = (process.env.DRIFT_STATE_DIR || '').trim();
- if (sd) {
-  for (const sub of ['.drift', '.drift-work']) {
-   const c = path.join(sd, sub, 'events');
-   if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return (eventsDirCache = c);
-  }
-  if (!(process.env.DRIFT_RESOLVED || '').trim()) return (eventsDirCache = path.join(sd, '.drift-work', 'events'));
- }
- let cur = process.cwd(), areaRoot = '';
- while (true) {
-  for (const sub of ['.drift', '.drift-work']) {
-   const c = path.join(cur, sub, 'events');
-   if (fs.existsSync(c) && fs.statSync(c).isDirectory()) return (eventsDirCache = c);
-  }
-  if (fs.existsSync(path.join(cur, '.drift', 'config.toml')) || fs.existsSync(path.join(cur, '.drift', 'contracts'))) { areaRoot = cur; break; }
-  const p = path.dirname(cur);
-  if (p === cur) break;
-  cur = p;
- }
- return (eventsDirCache = (areaRoot && !(process.env.DRIFT_RESOLVED || '').trim()) ? path.join(areaRoot, '.drift-work', 'events') : '');
+ return (eventsDirCache = discoverEventsDirFrom(process.cwd(), process.env, fs, path));
 }
 function resolveEventsFile() {
  const tgt = process.env.DRIFT_EVENTS || discoverEventsDir();
@@ -180,37 +131,16 @@ function writeEvent(ev) {
  const out = resolveEventsFile();
  if (out) { ensureInventory(out); recordDiscovery(ev.test, out); fs.appendFileSync(out, JSON.stringify(ev) + '\n', 'utf8'); }
 }
+function ensureExitHook() { if (!exitHook) { exitHook = true; process.once('exit', flushAllInventories); } }
 function recordDiscovery(testId, activeOut = '') {
- const tgt = activeOut || process.env.DRIFT_EVENTS || discoverEventsDir();
- if (!tgt) return;
- const h = isStr(testId) ? testId.indexOf('#') : -1, cls = h > 0 ? testId.slice(0, h) : '', mth = (h > 0 ? testId.slice(h + 1) : '').split('[', 1)[0];
- if (!cls || !mth || /[\s/\\#[\]]/u.test(cls) || /[\s#[\]]/u.test(mth)) err(`DRIFT_EVENTS requires a test id in Class#method form: "${testId}"`);
- const canon = `${cls}#${mth}`, out = activeOut || shardPath || (tgt.endsWith('.jsonl') && fs.existsSync(tgt) ? tgt : '');
- DISCOVERED_CLASSES.add(cls); DISCOVERED_TESTS.add(canon);
- if (!out) return;
- const inv = ensureInventory(out), before = inv.classes.size + inv.tests.size;
- inv.classes.add(cls); inv.tests.add(canon);
- if (before === inv.classes.size + inv.tests.size && !inv.dirty && fs.existsSync(out.slice(0, -6) + '.meta.json')) return;
- inv.dirty = true;
- if (!exitHook) { exitHook = true; process.once('exit', flushAllInventories); }
- if (!inv.scheduled) { inv.scheduled = true; queueMicrotask(() => flushInventory(out, inv)); }
+ recordDiscoveryInto(testId, activeOut, process.env, discoverEventsDir, shardPath, DISCOVERED_CLASSES, DISCOVERED_TESTS, ensureInventory, flushInventory, ensureExitHook, fs, err);
 }
 function loadMutants() {
  const file = (process.env.DRIFT_MUTANTS || '').trim(), outputTarget = (process.env.DRIFT_MUTATION_EVENTS || '').trim();
  if (!file && !outputTarget) return null;
  if (!file || !outputTarget) err('DRIFT_MUTANTS and DRIFT_MUTATION_EVENTS must be set together');
  if (mutationCache && mutationCache.file === file && mutationCache.outT === outputTarget) return mutationCache;
- const bytes = fs.readFileSync(file), manifest = parseJson(bytes.toString('utf8'));
- if (manifest.version !== 1 || !Array.isArray(manifest.contracts)) err(`invalid mutation manifest ${file}`);
- const manifestId = `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`, byCase = new Map();
- for (const c of manifest.contracts) {
-  for (const m of c.mutants || []) {
-   const k = `${c.id}\u0000${m.case}`, isWhen = isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/when/`);
-   if (!byCase.has(k)) byCase.set(k, []);
-   byCase.get(k).push({ id: m.id, contract: c.id, digest: c.digest, case: m.case, path: m.path, after: m.after, isWhen, segments: parseMutationSegments(c.id, m.case, m.path, isWhen ? 'when' : 'then') });
-  }
- }
- return (mutationCache = { file, outT: outputTarget, manifestId, byCase });
+ return (mutationCache = parseMutantsManifest(file, outputTarget, fs.readFileSync(file), crypto, parseJson, escapePointer, parseMutationSegments, err));
 }
 function resolveMutationFile(outputTarget) {
  if (outputTarget.endsWith('.jsonl')) { fs.mkdirSync(path.dirname(outputTarget), { recursive: true }); return outputTarget; }
@@ -315,37 +245,7 @@ export class DriftContext {
   });
  }
  recordInput(filePath, pre = null) {
-  const isSelf = pre === 'sha256:self-stub' || (typeof pre === 'string' && String(filePath).startsWith('.drift/seam-stub/'));
-  const abs = isSelf ? String(filePath) : path.resolve(process.cwd(), String(filePath));
-  const relRaw = isSelf ? abs : path.relative(process.cwd(), abs).split(path.sep).join('/');
-  const rel = relRaw && !relRaw.startsWith('..') ? relRaw : String(filePath).split(path.sep).join('/');
-  const dig = isSelf ? pre : inputDigest(abs, pre);
-  if (!this.mutationOverride) {
-   if (!isSelf) this.inputFiles.set(abs, { rel, dig });
-   const out = resolveEventsFile();
-   if (out) {
-    recordDiscovery(this.testId, out);
-    const inv = INVENTORIES.get(out);
-    if (inv) {
-     const h = this.testId.indexOf('#');
-     const canon = h > 0 ? `${this.testId.slice(0, h)}#${this.testId.slice(h + 1).split('[', 1)[0]}` : this.testId;
-     let fm = inv.inputs.get(canon);
-     if (!fm) {
-      fm = new Map();
-      inv.inputs.set(canon, fm);
-     }
-     if (fm.get(rel) !== dig) {
-      fm.set(rel, dig);
-      inv.dirty = true;
-      if (!inv.scheduled) {
-       inv.scheduled = true;
-       queueMicrotask(() => flushInventory(out, inv));
-      }
-     }
-    }
-   }
-  }
-  return dig;
+  return recordContextInput(this, filePath, pre, process.cwd(), inputDigest, resolveEventsFile, recordDiscovery, INVENTORIES, flushInventory, path);
  }
  readFixture(filePath, encoding = 'utf8') {
   const raw = fs.readFileSync(path.resolve(process.cwd(), String(filePath)));
@@ -492,12 +392,7 @@ export async function runDriftCase({ contract, test, t, cases, level = 'unit' } 
  let passed = false, controlErr = null;
  try {
   await CTX_ALS.run(ctx, () => fn(ctx));
-  for (const [abs, { rel, dig }] of ctx.inputFiles) {
-   if (!fs.existsSync(abs)) aErr(`${contract}: recorded input "${rel}" was mutated during test "${test}"`);
-   const st = fs.statSync(abs), c = DIGESTS.get(abs);
-   const ok = st.size > 65536 ? Boolean(c && c.sig === `${st.mtimeMs}:${st.size}` && c.hex === dig) : hashBuf(fs.readFileSync(abs)) === dig;
-   if (!ok) aErr(`${contract}: recorded input "${rel}" was mutated during test "${test}"`);
-  }
+  verifyRecordedInputs(contract, test, ctx.inputFiles, DIGESTS, fs, hashBuf, aErr);
   passed = true;
  } catch (e) { controlErr = e; }
  const is03 = ctx.view.drift === '0.3';

@@ -254,6 +254,21 @@ jobs:
             assert c['ok'] is False and 'security.missing' in c['reasons'], c
           PY
 
+  verify-python-311:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Verify Open Verifier on Python 3.11 Floor
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
+
+          python3 -I verifier/drift_verify.py --self-test
+
   verify-macos-arm64:
     runs-on: macos-15
     steps:

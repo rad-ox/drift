@@ -30,7 +30,7 @@ export function registerSessionReleaseNotice(
     const command = windows ? "powershell.exe" : "python3";
     const args = windows
       ? ["-NoProfile", "-NonInteractive", "-File", join(releaseDirectory, "check.ps1"), "-DriftExe", bin]
-      : [join(releaseDirectory, "check.py"), bin];
+      : ["-I", join(releaseDirectory, "check.py"), bin];
     await new Promise<void>((done) => {
       execFile(command, args, { timeout: 3000, maxBuffer: 4096, encoding: "utf8" },
         (error, stdout, stderr) => {
@@ -604,11 +604,11 @@ export default function (pi: any) {
           `When changing code or contracts in DRIFT Free, use drift check, drift fmt, drift review --brief, drift approve --by <owner>, drift prove, and drift gate.]`
         : `[DRIFT area active at ${area}.${statsSummary} ` +
           `For read-only Q&A or explanations that do not edit code or contracts, answer directly without loading DRIFT skills or writing recall cards. ` +
-          `When changing code or contracts, follow the ${driftSkill} skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'sliceA @, sliceB @:') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. ` +
+          `When changing code or contracts, follow the ${driftSkill} skill: (0) Orient first in 1 call with drift recall query '<expr>' (e.g. 'contextSlice @:, editSlice @') before exploratory grep/view; on a MISS during contract/code work, record the discovered capsule in .drift-work/recall.jsonl and run drift recall sync. ` +
           `(1) Behaviour unchanged on covered code: 0 stops, use drift select HEAD --changed <p> --cmd and drift gate --base HEAD --changed <p>. On uncovered code (0 matching contracts), a DRIFT split/refactor is a Baseline Carve-out: scaffold the contract(s) (drift new --from-recall --code), sync scope (drift sweep sync-scope --root . --apply), bind proof tests, and run drift review --brief instead of ending with no contract. ` +
           `(2) Multi-slice Wave: use 1 cohesive contract for uniform dispatch/handler splits, or N contracts when slices have distinct rules (<path>#<symbol> on shared files, [invariants] + writes = [] on errors, decide_by = "execution" for reversible internal choices with 0 stops, speculative pick on multi-option owner choices), ` +
           `run drift fmt --sync-vocab and 1 batch drift review .drift/contracts --brief --base HEAD --delta --as md, present option trade-offs (~Xh, risk, undo, consumer impacts) with * default so 1 confirmation runs drift approve .drift/contracts --by <owner>, ` +
-          `then execute via drift plan --pack ready. Never piggyback new behaviour onto existing approved cases.]`;
+          `then execute via drift plan --pack ready --active. Never piggyback new behaviour onto existing approved cases.]`;
 
     const entries = ctx?.sessionManager?.getEntries?.() ?? [];
     for (let i = entries.length - 1; i >= 0; i--) {
