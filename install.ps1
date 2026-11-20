@@ -397,6 +397,26 @@ try {
             $sumsTmp = Join @($tmpD, 'SHA256SUMS')
             Invoke-WebRequest -Uri "$baseU/$pkgN.zip" -OutFile $zipFile -UseBasicParsing
             Invoke-WebRequest -Uri "$baseU/SHA256SUMS" -OutFile $sumsTmp -UseBasicParsing
+            $signersFile = Join @($here, 'release', 'RELEASE_SIGNERS')
+            if ((Test-Path -LiteralPath $signersFile) -and (Select-String -LiteralPath $signersFile -Pattern '^[^#\s]+\s+ssh-' -Quiet)) {
+                $sigTmp = Join @($tmpD, 'SHA256SUMS.sig')
+                Invoke-WebRequest -Uri "$baseU/SHA256SUMS.sig" -OutFile $sigTmp -UseBasicParsing
+                $verifyOut = Get-Content -LiteralPath $sumsTmp -Raw | & ssh-keygen -Y verify -f $signersFile -I 'release@rad-ox.github.io' -n 'drift-release' -s $sigTmp 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Install "OpenSSH signature verification failed for SHA256SUMS: $verifyOut" "Verifica della firma OpenSSH di SHA256SUMS fallita: $verifyOut"
+                }
+            }
+            $tufRoot = Join @($here, 'release', 'tuf', 'root.json')
+            $tufVerifier = Join @($here, 'release', 'tuf_verify.py')
+            if ((Test-Path -LiteralPath $tufRoot) -and (Test-Path -LiteralPath $tufVerifier) -and (Select-String -LiteralPath $tufRoot -Pattern '"version"\s*:\s*[1-9]' -Quiet)) {
+                foreach ($tf in @('tuf-root.json', 'tuf-timestamp.json', 'tuf-snapshot.json', 'tuf-targets.json')) {
+                    Invoke-WebRequest -Uri "$baseU/$tf" -OutFile (Join @($tmpD, $tf)) -UseBasicParsing
+                }
+                & python $tufVerifier verify --root $tufRoot --meta-dir $tmpD --target "$pkgN.zip" --file $zipFile | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Stop-Install 'TUF release verification failed.' 'Verifica TUF della release fallita.'
+                }
+            }
             $mLine = Select-String -LiteralPath $sumsTmp -Pattern "  $([regex]::Escape($pkgN))\.zip$" | Select-Object -First 1
             if (-not $mLine -or (($mLine.Line -split '\s+')[0].ToLowerInvariant() -ne (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLowerInvariant())) {
                 Stop-Install 'Downloaded archive failed SHA256SUMS verification.' "Verifica SHA256SUMS dell'archivio scaricato fallita."

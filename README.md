@@ -44,7 +44,7 @@ When an agent breaks `GET /items/1` and "fixes" the failing build by weakening o
 
 ## How It Works (One Slice, Four Steps)
 
-Write one compact schema `0.3` contract per slice (CLI release `0.8.0`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
+Write one compact schema `0.3` contract per slice (CLI release `0.8.1`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
 
 ```toml
 drift = "0.3"
@@ -159,7 +159,7 @@ test('GET /items/1 returns existing item', async (t) => {
 
 | Runtimes | Artifacts | Guide |
 |---|---|---|
-| **Java 17–25 & Scala 2.12–3.9** | `drift-junit` + `drift-maven-plugin` (`0.8.0`) | [JVM & Scala](docs/bridges.md#primary-bridges) |
+| **Java 17–25 & Scala 2.12–3.9** | `drift-junit` + `drift-maven-plugin` (`0.8.1`) | [JVM & Scala](docs/bridges.md#primary-bridges) |
 | **JS / TS, Python 3, Rust, V** | `drift.mjs`, `drift.py`, `bridges/rust`, `bridges/v/drift_v` | [Primary Bridges](docs/bridges.md#primary-bridges) |
 | **C++20, C# / .NET / Unity, Godot 4** | `drift_cpp.hpp`, `Drift.cs`, `drift.gd` | [Native & Game](docs/bridges.md#native-game--simulation-bridges) |
 | **JUnit 4, PHP 8.2+, COBOL 85** | `DriftJUnit4.java`, `Drift.php`, `drift_cobol.py` | [Legacy & Mainframe](docs/bridges.md#legacy-php--mainframe-bridges) |

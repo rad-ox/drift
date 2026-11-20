@@ -2,6 +2,18 @@
 
 User-visible changes and capabilities by release.
 
+## 0.8.1
+
+- Release `0.8.1`.
+- Set 180-day TUF timestamp/snapshot expiry, add `rotate_signed_root`, export passphrase-encrypted offline TUF root key + `DRIFT_PUBLIC_REPO_TOKEN` in `setup-github-env`.
+- Replace DFS relay clamping cache with Tarjan SCC topological and bounded 8-round Jacobi refinement in `sweep`.
+- Attribute Saga compensation channels in `sweep --flow` to failure-guarded reads, per-case `writes` frames, and isolated `#anchor` partitions.
+- Scope multi-producer hop-1 replay read-side envelopes and case diffs per `(pid, base_r)` edge while keeping write-side global fallbacks.
+- Collect all eligible producer candidate values in `resource.unreachable_when.values` on exact integer relay refutations, invariant to relay case ID order.
+- De-golf `drift_verify.py` into clean loading (`drift_verify_events.py`), evaluation (`drift_verify_eval.py`), and CLI modules with readability guardrails in `verifier_dag_test.py`.
+- Add differential JSON fuzzer, anti-false-green red-team benchmark, honest bridge CI status matrix, and Rust/C++20/COBOL/PHP/C# public CI checks.
+- Fix verifier JSON escaped-quote depth scan, align threat/mirror docs & live HTTP CI, and add OpenSSH/SLSA/Sigstore/TUF supply chain + `drift-src` release workflow.
+
 ## 0.8.0
 
 - Release `0.8.0`.

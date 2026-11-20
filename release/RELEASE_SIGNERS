@@ -1,0 +1,3 @@
+# DRIFT OpenSSH Release Signers (allowed_signers format, namespace: drift-release)
+# Private key stored exclusively in protected GitHub Environment 'release' on rad-ox/drift-src.
+release@rad-ox.github.io ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPsuSy2oNRwpaNcX2ZGHh37v02mKAqebgNyjLPvQeLV0 drift-release@rad-ox.github.io

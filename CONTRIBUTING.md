@@ -9,7 +9,15 @@ DRIFT is distributed under a dual-surface license model (see [`LICENSE`](LICENSE
 1. **Open Integration Surface (MIT License)** — All polyglot test bridges (`bridges/`), the independent reference proof verifier (`verifier/`), agent and Git hooks (`hooks/`), editor JSON Schemas (`schemas/`), the Free agent skill (`skill/drift/`), the synthetic example service (`example/`), installers (`install.sh`, `install.ps1`, `install.cmd`, `uninstall.cmd`), and documentation (`*.md`).
 2. **DRIFT CLI Engine (`drift` / `drift.exe`)** — The precompiled CLI binary is proprietary software governed by the DRIFT Free Edition License.
 
-Community pull requests are welcome across the entire **Open Integration Surface**, including:
+## Release Mirror & Contribution Workflow
+
+`rad-ox/drift` is a **generated public release mirror** of the DRIFT Free distribution and Open Integration Surface:
+
+- `main` and `v*` release tags are protected against deletion and force-pushes; each release is exported cleanly from the canonical upstream source repository.
+- Commits merged directly into `rad-ox/drift` without upstream integration would be overwritten on the next release export.
+- **How to contribute:** Open an [issue](https://github.com/rad-ox/drift/issues) or submit a patch / pull request against `rad-ox/drift` (which runs pre-merge CI checks on the verifier, TUF guard, and bridges). Accepted changes are integrated into the canonical upstream source and published in the next release export with full attribution.
+
+Community contributions are welcome across the entire **Open Integration Surface**, including:
 
 - Bug fixes, diagnostics, and runtime hardening for language bridges (JVM/JUnit 5, Legacy JUnit 4, Scala/MUnit, JavaScript/TypeScript, Python, Rust, V, PHP, COBOL, C++20, C#/.NET, and GDScript).
 - Improvements and parity tests for the independent reference verifier (`verifier/drift_verify*.py`).

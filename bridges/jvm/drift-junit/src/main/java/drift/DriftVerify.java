@@ -513,7 +513,7 @@ final class DriftVerify {
         out.put("capabilities", new ArrayList<>(new java.util.TreeSet<>(CAPABILITIES)));
         out.put("runtime_baseline", "java-25-lts");
         out.put("schema", "drift.bridge-capabilities/1");
-        out.put("version", "0.8.0");
+        out.put("version", "0.8.1");
         return out;
     }
 

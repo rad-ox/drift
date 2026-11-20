@@ -104,8 +104,11 @@ def _decode_no_dup_keys(text: str) -> Any:
     d, ins, esc = 0, False, False
     for ch in text:
         if ins:
-            esc = (not esc) if ch == "\\" else False
-            if ch == '"' and not esc:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
                 ins = False
         elif ch == '"':
             ins = True

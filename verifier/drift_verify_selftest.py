@@ -10,6 +10,7 @@ from typing import Any
 
 from drift_verify_base import (
     ENV_KEYS,
+    _decode_no_dup_keys,
     _has_approval_blocker,
     _is_unanchored_prose_source,
     canonical_json,
@@ -104,6 +105,16 @@ def run_verifier_self_test(dv_mod: Any) -> int:
     for b in (f'"test":"t#1","test":"t#2",{eb}', f'"test":"t#1",{eb},"extra":1', f'"test":"t#1",{eb},"read":["other"]', '"test":"t#1","contract":"Bad_Id","cases":["c"],"level":"unit","outcome":"passed"', '"test":"t#1","contract":"a","cases":["c"],"level":"Unit","outcome":"passed"', f'"test":"t#1",{eb},"digest":"dr1:UPPER0000000"'):
         _expect_err(dv_mod.validate_event_line, "{" + b + "}")
     _expect_err(dv_mod.validate_event_line, '{"a":' * 65 + "1" + "}" * 65)
+    esc_s = '"' + "[" * 65
+    assert _decode_no_dup_keys(json.dumps({"x": esc_s}))["x"] == esc_s
+    assert _decode_no_dup_keys(json.dumps({"x": '\\"' + "{" * 65}))["x"] == '\\"' + "{" * 65
+    _expect_err(_decode_no_dup_keys, '{"a":"\\"","b":' + "[" * 64 + "1" + "]" * 64 + "}")
+    _expect_err(_decode_no_dup_keys, '{"a":"\\\\","b":' + "[" * 64 + "1" + "]" * 64 + "}")
+    _expect_err(_decode_no_dup_keys, '{"a":"\\"","a":1}')
+    ev_esc = json.dumps({"test": "T#esc", "contract": "a", "cases": ["c"], "level": "unit", "outcome": "passed", "schema": "0.3", "capabilities": [], "observations": {"c": {"schema": "drift.observation/1", "payload": {"msg": esc_s}}}})
+    ev_u22 = ev_esc.replace('\\"', "\\u0022")
+    assert dv_mod.validate_event_line(ev_esc)["observations"]["c"]["payload"]["msg"] == esc_s
+    assert dv_mod.validate_event_line(ev_u22)["observations"]["c"]["payload"]["msg"] == esc_s
     assert len(dv_mod.validate_inventory_text(json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0" * 40, "pack_ref": "dr1:" + "0" * 12, "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": dict.fromkeys(ENV_KEYS, "v")}))["tests"]) == 2
     assert dv_mod.validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))["version"] == 2
     ib = '"version":1,"classes":["a"],"tests":["a#t1"]'

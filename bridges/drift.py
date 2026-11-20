@@ -81,7 +81,7 @@ def _resolve_env() -> dict[str, str] | None:
     if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
-    base = _probes.build_env_dict('drift.py@0.8.0', raw, _strip_bom, _ENV_KEYS)
+    base = _probes.build_env_dict('drift.py@0.8.1', raw, _strip_bom, _ENV_KEYS)
     _env_cache = (cache_key, base)
     return base
 

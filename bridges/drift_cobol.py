@@ -27,7 +27,7 @@ try:
 except ImportError:
     _checks = _load_sibling("drift_cobol_checks", "drift_cobol_checks.py")
 
-VERSION = "drift_cobol.py@0.8.0"
+VERSION = "drift_cobol.py@0.8.1"
 BRIDGE_RUNTIME_BASELINE = "cobol-85-batch"
 CAPABILITIES = [
     "predicates", "projections", "forbid_keys", "not_in", "case_frames",
@@ -179,7 +179,7 @@ def emit_cobol_proof_shard(
         "deps": "copybook-lock-1",
         "config": "cobc-batch-1",
         "runner": "drift-cobol",
-        "drift": "0.8.0",
+        "drift": "0.8.1",
         "adapter": VERSION,
         "policy": "core@1",
         **(env_meta or {}),

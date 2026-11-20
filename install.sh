@@ -332,6 +332,16 @@ if [ ! -x "$here/bin/drift" ] && [ -f "$here/VERSION" ]; then
 	tmp_d=$(mktemp -d "${TMPDIR:-/tmp}/drift-dl.XXXXXX")
 	curl -fsSL "$base_u/${pkg_n}.tar.gz" -o "$tmp_d/${pkg_n}.tar.gz"
 	curl -fsSL "$base_u/SHA256SUMS" -o "$tmp_d/SHA256SUMS"
+	if [ -f "$here/release/RELEASE_SIGNERS" ] && grep -qE '^[^#[:space:]]+[[:space:]]+ssh-' "$here/release/RELEASE_SIGNERS"; then
+		curl -fsSL "$base_u/SHA256SUMS.sig" -o "$tmp_d/SHA256SUMS.sig" || { rm -rf "$tmp_d"; die "Missing OpenSSH signature SHA256SUMS.sig for pinned release signer." "Firma OpenSSH SHA256SUMS.sig mancante per il firmatario configurato."; }
+		ssh-keygen -Y verify -f "$here/release/RELEASE_SIGNERS" -I release@rad-ox.github.io -n drift-release -s "$tmp_d/SHA256SUMS.sig" < "$tmp_d/SHA256SUMS" >/dev/null 2>&1 || { rm -rf "$tmp_d"; die "OpenSSH signature verification failed for SHA256SUMS." "Verifica della firma OpenSSH di SHA256SUMS fallita."; }
+	fi
+	if [ -f "$here/release/tuf/root.json" ] && [ -f "$here/release/tuf_verify.py" ] && grep -qE '"version"[[:space:]]*:[[:space:]]*[1-9]' "$here/release/tuf/root.json"; then
+		for tuf_f in tuf-root.json tuf-timestamp.json tuf-snapshot.json tuf-targets.json; do
+			curl -fsSL "$base_u/$tuf_f" -o "$tmp_d/$tuf_f" || { rm -rf "$tmp_d"; die "Missing TUF metadata $tuf_f." "Metadato TUF $tuf_f mancante."; }
+		done
+		python3 "$here/release/tuf_verify.py" verify --root "$here/release/tuf/root.json" --meta-dir "$tmp_d" --target "${pkg_n}.tar.gz" --file "$tmp_d/${pkg_n}.tar.gz" >/dev/null || { rm -rf "$tmp_d"; die "TUF release verification failed." "Verifica TUF della release fallita."; }
+	fi
 	(cd "$tmp_d" && grep "  ${pkg_n}\.tar\.gz$" SHA256SUMS > SHA256SUMS.one && (sha256sum --quiet -c SHA256SUMS.one 2>/dev/null || shasum -a 256 --status -c SHA256SUMS.one)) || { rm -rf "$tmp_d"; die "Downloaded archive failed SHA256SUMS verification." "Verifica SHA256SUMS dell'archivio scaricato fallita."; }
 	tar -xzf "$tmp_d/${pkg_n}.tar.gz" -C "$here" --strip-components=1 "${pkg_n}/bin" "${pkg_n}/maven" 2>/dev/null || tar -xzf "$tmp_d/${pkg_n}.tar.gz" -C "$here" --strip-components=1 "${pkg_n}/bin"
 	rm -rf "$tmp_d"

@@ -3,7 +3,12 @@ name: Verify DRIFT Release & Bridges
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   verify-linux-x64:
@@ -19,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-      - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
+      - name: Verify Open Verifier, TUF Metadata Guard & JVM Bridge (Pre-Merge Safe)
         run: |
           git init -q .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
@@ -27,6 +32,66 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python3 verifier/drift_verify.py --self-test
+          python3 release/tuf_verify.py --self-test
+          mvn -q -B -f bridges/jvm/drift-junit/pom.xml test install
+
+      - name: Verify Polyglot Bridges (Rust, C++20, COBOL, PHP, C#/.NET)
+        run: |
+          if command -v cargo >/dev/null 2>&1; then
+            cargo test --manifest-path bridges/rust/Cargo.toml --quiet
+          fi
+          if command -v g++ >/dev/null 2>&1; then
+            g++ -std=c++20 -Ibridges -x c++ - -o /tmp/drift-cpp-smoke <<'CPP'
+          #include "drift_cpp.hpp"
+          #include <cassert>
+          int main() {
+            drift::checkMonotonic("hp", {10.0, 20.0, 30.0}, "strictly_increasing");
+            bool threw = false;
+            try { drift::checkMonotonic("hp", {30.0, 10.0}, "strictly_increasing"); } catch (const std::runtime_error&) { threw = true; }
+            assert(threw);
+            bool capThrew = false;
+            try { drift::requireCapabilities({"unsupported_cap"}); } catch (const std::runtime_error&) { capThrew = true; }
+            assert(capThrew);
+            return 0;
+          }
+          CPP
+            /tmp/drift-cpp-smoke && rm -f /tmp/drift-cpp-smoke
+          fi
+          PYTHONPATH=./bridges python3 - <<'PY'
+          import drift_cobol
+          layout = drift_cobol.parse_copybook_layout("       01 REC.\n       05 ITEM-ID PIC 9(4).\n       05 ITEM-NAME PIC X(6).\n")
+          dec = drift_cobol.unmarshal_record(layout, drift_cobol.marshal_record(layout, {"item_id": 42, "item_name": "lamp"}))
+          assert dec["item_id"] == 42 and dec["item_name"] == "lamp", dec
+          drift_cobol.check_value("status", 200, {"eq": 200})
+          try: drift_cobol.check_value("status", 500, {"eq": 200}); raise SystemExit("expected error")
+          except RuntimeError: pass
+          try: drift_cobol.require_capabilities(["unsupported_cap"]); raise SystemExit("expected error")
+          except RuntimeError: pass
+          PY
+          if command -v php >/dev/null 2>&1; then
+            php -r 'require "bridges/Drift.php"; Drift\Drift::checkValue("status", 200, ["eq" => 200]); $ok=false; try { Drift\Drift::checkValue("status", 500, ["eq" => 200]); } catch (RuntimeException $e) { $ok=true; } if (!$ok) exit(1); $cap=false; try { Drift\Drift::requireCapabilities(["unsupported_cap"]); } catch (RuntimeException $e) { $cap=true; } if (!$cap) exit(1);'
+          fi
+          if command -v dotnet >/dev/null 2>&1; then
+            mkdir -p /tmp/drift-cs-smoke && cp bridges/Drift.cs /tmp/drift-cs-smoke/
+            cat > /tmp/drift-cs-smoke/Smoke.csproj <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>disable</ImplicitUsings></PropertyGroup></Project>
+          CSPROJ
+            cat > /tmp/drift-cs-smoke/Program.cs <<'CS'
+          using System; using Drift;
+          class Program { static int Main() {
+            DriftBridge.CheckMonotonic("hp", new double[]{1, 2, 3}, "strictly_increasing");
+            bool threw = false; try { DriftBridge.CheckMonotonic("hp", new double[]{3, 1}, "strictly_increasing"); } catch (InvalidOperationException) { threw = true; }
+            if (!threw) return 1;
+            bool cap = false; try { DriftBridge.RequireCapabilities(new[]{"unsupported_cap"}); } catch (InvalidOperationException) { cap = true; }
+            return cap ? 0 : 1;
+          }}
+          CS
+            dotnet run --project /tmp/drift-cs-smoke/Smoke.csproj -v q && rm -rf /tmp/drift-cs-smoke
+          fi
+
+      - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
           ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && ok=1 && break || sleep 3; done; [ "$ok" = 1 ]
           export PATH="$HOME/.local/bin:$PATH"
           drift version && drift check example/.drift && drift status example/.drift/contracts && drift review example/.drift/contracts --brief
@@ -80,11 +145,24 @@ jobs:
           PY
 
           PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/events/py.jsonl python3 - <<'PY'
-          import drift
-          def handle_get_item(req: str) -> dict:
-              return {'status': 200, 'name': 'lamp'} if req.rsplit('/', 1)[-1] == '1' else {'status': 404, 'error': 'item not found'}
-          assert drift.run_drift_case('item-get', 'ci.py#not_found', ['not-found'], lambda d: d.check('not-found', handle_get_item(d.when('not-found', 'request'))), 'http') == 'passed'
-          assert drift.run_drift_case('item-get', 'ci.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': handle_get_item(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
+          import json, subprocess, urllib.error, urllib.request, drift
+          proc = subprocess.Popen(
+              ['node', '--input-type=module', '-e', "import { createItemServer } from './example/server.mjs'; const s = createItemServer(); s.listen(0, '127.0.0.1', () => console.log(s.address().port));"],
+              stdout=subprocess.PIPE, text=True,
+          )
+          try:
+              base = f'http://127.0.0.1:{proc.stdout.readline().strip()}'
+              def call_live_sut(req: str) -> dict:
+                  path = req.split(' ', 1)[1]
+                  try:
+                      with urllib.request.urlopen(f'{base}{path}', timeout=5) as r:
+                          return {'status': r.status, **json.loads(r.read().decode('utf-8'))}
+                  except urllib.error.HTTPError as e:
+                      return {'status': e.code, **json.loads(e.read().decode('utf-8'))}
+              assert drift.run_drift_case('item-get', 'ci.py#not_found', ['not-found'], lambda d: d.check('not-found', call_live_sut(d.when('not-found', 'request'))), 'http') == 'passed'
+              assert drift.run_drift_case('item-get', 'ci.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': call_live_sut(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
+          finally:
+              proc.terminate(); proc.wait(timeout=5)
           PY
 
           test -f /tmp/drift-ci/events/js.meta.json && test -f /tmp/drift-ci/events/py.meta.json
@@ -253,6 +331,7 @@ jobs:
             c = json.load(open(p))['contracts'][0]
             assert c['ok'] is False and 'security.missing' in c['reasons'], c
           PY
+          python3 verifier/json_diff_fuzz.py --drift "$(command -v drift)" --cases 25
 
   verify-python-311:
     runs-on: ubuntu-24.04
@@ -260,7 +339,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      - name: Verify Open Verifier on Python 3.11 Floor
+      - name: Verify Open Verifier & TUF Guard on Python 3.11 Floor
         run: |
           git init -q .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
@@ -268,8 +347,10 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python3 -I verifier/drift_verify.py --self-test
+          python3 -I release/tuf_verify.py --self-test
 
   verify-macos-arm64:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-15
     steps:
       - name: Verify macOS arm64 Release Archive, Bridges & Verifier
@@ -280,6 +361,7 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python3 verifier/drift_verify.py --self-test
+          python3 release/tuf_verify.py --self-test
           ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && ok=1 && break || sleep 3; done; [ "$ok" = 1 ]
           export PATH="$HOME/.local/bin:$PATH"
           drift version
@@ -287,6 +369,7 @@ jobs:
           drift review example/.drift/contracts --brief
 
   verify-windows-x64:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-2025
     steps:
       - name: Verify Windows x64 Release Archive, PowerShell Installer & Verifier
@@ -298,6 +381,7 @@ jobs:
           git checkout -q FETCH_HEAD
 
           python verifier/drift_verify.py --self-test
+          python release/tuf_verify.py --self-test
           $ver = (Get-Content VERSION -TotalCount 1).Trim()
           $pkg = "drift-$ver-windows-x64.zip"
           $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$ver"
