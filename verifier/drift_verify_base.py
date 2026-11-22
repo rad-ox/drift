@@ -364,6 +364,21 @@ def validate_config_ext_py(raw: dict[str, Any], pol: dict[str, Any]) -> bool:
                 return False
             if "match" in prof and (not isinstance(m := prof["match"], list) or not m or len(set(m)) != len(m) or not all(_rel_glob(g) for g in m)):
                 return False
+    if pol.get("pack") == "core@1" and "autonomy" in pol:
+        aut, apprs = pol.get("autonomy"), set(pol.get("approvers") or [])
+        if (
+            not isinstance(aut, dict)
+            or set(aut) - {"max_class", "principals", "max_targets"}
+            or aut.get("max_class") not in ("C0", "C1")
+            or not isinstance(aut.get("principals"), list)
+            or not aut["principals"]
+            or len(set(aut["principals"])) != len(aut["principals"])
+            or any(not isinstance(x, str) or not x.startswith("agent:") or len(x) <= 6 or x in apprs for x in aut["principals"])
+            or isinstance(aut.get("max_targets"), bool)
+            or not isinstance(aut.get("max_targets"), int)
+            or aut["max_targets"] < 1
+        ):
+            return False
     return True
 
 

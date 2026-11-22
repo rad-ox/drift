@@ -45,6 +45,7 @@ drift-ask-ui --off                     # Fall back to CLI review/approve
 drift-ask-ui --on                      # Re-enable desktop review UI
 ```
 
+- **Omnichannel Packet & Surface Contract `/2`:** `drift review <file|dir> --as packet [--tier 0|1|2]` projects computed `C0–C4` decision classes and independent slice groups into `drift.decision-packet/1`; `drift-ask-ui` speaks the channel-agnostic surface contract (`drift.ui-surface/1`, `ui-request/2`, `ui-gesture/2`).
 - **Renderers:** Native WPF window on Windows 10/11 and WSL2; single-use `127.0.0.1` loopback Observatory Deck on macOS and Linux Desktop; automatic CLI fallback in SSH, headless, or CI sessions (`DRIFT_UI=off`).
 - **Decision Clarity:** Anchors trade-off options to a single non-dominated reference, flags dominated choices, surfaces baseline relaxations (`coarsened` / `relaxation_witnesses`), keeps the approver name editable per seal, and requires an intentional `Ctrl+Enter` / `Cmd+Enter` gesture after an anti-clickjacking arming window.
 - **Strict Local Boundary:** Zero external network calls, strict CSP, one-time `0600` bootstrap secret, and `0700` staging outside `.drift-work`. Configure dark/light/auto theme in `~/.config/drift/ui.toml` (or `%APPDATA%\drift\ui.toml`) via `[ui].theme = "auto|dark|light"`.

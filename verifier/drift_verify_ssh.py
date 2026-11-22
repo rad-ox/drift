@@ -217,15 +217,16 @@ def verify_ssh_sig_envelope_impl(payload: dict[str, Any], sig_text: str, trust_r
  v_opt = _valid_verify_time(verify_time) if verify_time else ""
  if verify_time and not v_opt:
   return False, "trust.verify_time_required"
+ ns = "drift-signature@v2" if payload.get("schema") == "drift.signature-payload/2" else "drift-signature@v1"
  payload_bytes = canonical_json_fn(payload).encode("utf-8")
  with tempfile.NamedTemporaryFile("w", suffix=".sig", encoding="utf-8", delete=False) as tf:
   tf.write(sig_text if sig_text.endswith("\n") else sig_text + "\n")
   tmp_sig = tf.name
  try:
   keygen = ssh_keygen_executable()
-  if subprocess.run([keygen, "-Y", "check-novalidate", "-q", "-n", "drift-signature@v1", "-s", tmp_sig], input=payload_bytes, capture_output=True).returncode != 0:
+  if subprocess.run([keygen, "-Y", "check-novalidate", "-q", "-n", ns, "-s", tmp_sig], input=payload_bytes, capture_output=True).returncode != 0:
    return False, "signature.invalid"
-  v_args = [keygen, "-Y", "verify", "-q", "-f", str(trust_root), "-I", str(payload["signer"]), "-n", "drift-signature@v1", "-s", tmp_sig, *(["-O", f"verify-time={v_opt}"] if v_opt else [])]
+  v_args = [keygen, "-Y", "verify", "-q", "-f", str(trust_root), "-I", str(payload["signer"]), "-n", ns, "-s", tmp_sig, *(["-O", f"verify-time={v_opt}"] if v_opt else [])]
   return (True, "") if subprocess.run(v_args, input=payload_bytes, capture_output=True).returncode == 0 else (False, "signature.invalid")
  finally:
   try:
@@ -239,17 +240,40 @@ def evaluate_detached_signatures_impl(verdicts: list[dict[str, Any]], parsed_con
  sig_files, sig_pol_file = collect_files_fn(sig_paths, ".sig.json"), getattr(args, "signature_policy", None)
  if not sig_files and not sig_pol_file:
   return verdicts
+ v2_keys = set(sig_payload_keys) | {"class", "packet_ref", "surface_tier"}
+ req_tier_map = {"C0": 0, "C1": 0, "C2": 1, "C3": 2, "C4": 2}
+ snap_by_ref: dict[str, tuple[str, list[str]]] = {}
+ for sp in collect_files_fn(sig_paths, ".snapshot.json"):
+  try:
+   sdoc = decode_fn(sp.read_text("utf-8"))
+   if isinstance(sdoc, dict) and sdoc.get("schema") == "drift.review-snapshot/1":
+    body = {k: val for k, val in sdoc.items() if k != "review_ref"}
+    recomp = "sha256:" + hashlib.sha256(canonical_json_fn(body).encode("utf-8")).hexdigest()
+    if sdoc.get("review_ref") in (None, "", recomp):
+     snap_by_ref[recomp] = (str(sdoc.get("policy_ref", "")), [str(t.get("digest", "")) for t in (sdoc.get("targets") or []) if isinstance(t, dict) and t.get("digest")])
+  except Exception:
+   pass
  envelopes = []
  for sf in sig_files:
   doc = decode_fn(sf.read_text("utf-8"))
   if not isinstance(doc, dict) or set(doc) != sig_env_keys or doc.get("schema") != "drift.signature-envelope/1":
    raise ValueError("sig_env")
   pl, sig_arm = doc.get("payload"), str(doc.get("signature", "")).strip()
-  if not isinstance(pl, dict) or set(pl) != sig_payload_keys or pl.get("schema") != "drift.signature-payload/1" or not sig_arm.startswith("-----BEGIN SSH SIGNATURE-----"):
+  if not isinstance(pl, dict) or not sig_arm.startswith("-----BEGIN SSH SIGNATURE-----"):
    raise ValueError("sig_payload")
-  norm_pl = {k: str(pl[k]).strip() for k in sig_payload_keys}
-  if any(not norm_pl[k] for k in sig_payload_keys) or norm_pl["target_kind"] not in ("contract", "review_snapshot", "attestation", "pact_lock", "shard_bundle"):
-   raise ValueError("sig_fields")
+  if pl.get("schema") == "drift.signature-payload/2":
+   st = pl.get("surface_tier")
+   if set(pl) != v2_keys or pl.get("target_kind") != "review_snapshot" or pl.get("class") not in req_tier_map or isinstance(st, bool) or not isinstance(st, int) or st not in (0, 1, 2) or not SHA256_REF_RE.match(str(pl.get("packet_ref", ""))):
+    raise ValueError("sig_payload")
+   norm_pl: dict[str, Any] = {k: (st if k == "surface_tier" else str(pl[k]).strip()) for k in v2_keys}
+   if any(k != "surface_tier" and not norm_pl[k] for k in v2_keys):
+    raise ValueError("sig_fields")
+  elif set(pl) == sig_payload_keys and pl.get("schema") == "drift.signature-payload/1":
+   norm_pl = {k: str(pl[k]).strip() for k in sig_payload_keys}
+   if any(not norm_pl[k] for k in sig_payload_keys) or norm_pl["target_kind"] not in ("contract", "review_snapshot", "attestation", "pact_lock", "shard_bundle"):
+    raise ValueError("sig_fields")
+  else:
+   raise ValueError("sig_payload")
   envelopes.append((norm_pl, sig_arm))
  pol_spec = {"active": False, "required_meanings": [], "min_signers": 1, "distinct_signers": True, "enforce": "release"}
  if sig_pol_file:
@@ -260,7 +284,7 @@ def evaluate_detached_signatures_impl(verdicts: list[dict[str, Any]], parsed_con
    raise ValueError("invalid_sig_policy")
   enf = str(pdoc.get("enforce", "release")).strip()
   pol_spec = {"active": True, "required_meanings": [str(x).strip() for x in (pdoc.get("required_meanings") or []) if str(x).strip()], "min_signers": max(1, int(pdoc.get("min_signers", 1))), "distinct_signers": bool(pdoc.get("distinct_signers", True)), "enforce": (enf if enf in ("execution", "release") else "release")}
- if not pol_spec["active"] and not any(pl["target_kind"] == "contract" and pl["meaning"] != "break_glass" for pl, _ in envelopes):
+ if not pol_spec["active"] and not any(((pl["target_kind"] == "contract" and pl["schema"] == "drift.signature-payload/1") or (pl["target_kind"] == "review_snapshot" and pl["schema"] == "drift.signature-payload/2")) and pl["meaning"] != "break_glass" for pl, _ in envelopes):
   return verdicts
  by_id, phase = {c["id"]: c for c in parsed_contracts}, (getattr(args, "phase", "") or "")
  enforced_now = phase == "release" or (pol_spec["active"] and pol_spec["enforce"] == "execution")
@@ -274,11 +298,16 @@ def evaluate_detached_signatures_impl(verdicts: list[dict[str, Any]], parsed_con
   eval_sigs, rsn, valid_signers, cov_meanings, valid_cnt = [], [], {}, set(), 0
   has_own_env = any(pl["target_kind"] == "contract" and pl["meaning"] != "break_glass" and (digest_matches_fn(pl["target_ref"], v["digest"]) or pl["target_ref"] == v["digest"]) for pl, _ in envelopes)
   for pl, sig_txt in envelopes:
-   if pl["target_kind"] != "contract" or pl["meaning"] == "break_glass" or (has_own_env and not digest_matches_fn(pl["target_ref"], v["digest"]) and pl["target_ref"] != v["digest"]):
+   is_v2_snap = pl["schema"] == "drift.signature-payload/2" and pl["target_kind"] == "review_snapshot"
+   if (not is_v2_snap and pl["target_kind"] != "contract") or pl["meaning"] == "break_glass" or (not is_v2_snap and has_own_env and not digest_matches_fn(pl["target_ref"], v["digest"]) and pl["target_ref"] != v["digest"]):
     continue
    ok, s_rsn = verify_sig_fn(pl, sig_txt, getattr(args, "trust_root", None), getattr(args, "verify_time", ""), canonical_json_fn)
-   if pl["signer"].startswith("runner:"):
+   if pl["signer"].startswith("runner:") or (is_v2_snap and pl["signer"].startswith("agent:") and pl["meaning"] == "owner_approval"):
     ok, s_rsn = False, "signature.unauthorized_role"
+   elif ok and is_v2_snap:
+    snap_entry = snap_by_ref.get(pl["target_ref"])
+    if pl["surface_tier"] < req_tier_map[pl["class"]] or not snap_entry or not any(digest_matches_fn(d, v["digest"]) or d == v["digest"] for d in snap_entry[1]) or (cfg_dig and not digest_matches_fn(pl["policy_ref"], cfg_dig) and pl["policy_ref"] != cfg_dig and pl["policy_ref"] != snap_entry[0]):
+     ok, s_rsn = False, "signature.target_mismatch"
    elif ok and ((not digest_matches_fn(pl["target_ref"], v["digest"]) and pl["target_ref"] != v["digest"]) or (cfg_dig and not digest_matches_fn(pl["policy_ref"], cfg_dig) and pl["policy_ref"] != cfg_dig) or (exp_ctx and pl["context_ref"] not in ("none", exp_ctx))):
     ok, s_rsn = False, "signature.target_mismatch"
    if ok:

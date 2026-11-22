@@ -28,6 +28,18 @@ procedure, not a guarantee that a host or agent correlates consent correctly.
    `gate --execution-context <file>` for strict context consumption. Keep
    behavioral approval, execution mandate and proof validity distinct.
 
+## Text fallback relay and choice conservation
+
+- When falling back to text (clients without a native question UI, or after
+  `drift-ask-ui` exits with `fallback`), relay the opening `drift.guided/1`
+  summary block verbatim (verdict, scope/qualifier, contract/proof/decision
+  counts, `--previous-guided` continuity delta counts, every `claim_limits`
+  entry, `Next:`, and `Next command:`) before any prose commentary. Never
+  paraphrase away `ok`, blocking IDs, exit status, or `claim_limits`.
+- When more than 5 open or proposed owner choices exist and presentation is
+  capped at 5 choices, emit an explicit conservation receipt (`showing 5 of N
+  choices; N-5 folded` / `5 di N`) so no pending choice is silently truncated.
+
 ## Universal desktop decision and approval broker (`drift-ask-ui`)
 
 At owner approval checkpoints in interactive foreground sessions, invoke

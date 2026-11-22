@@ -199,6 +199,15 @@ def _core_gate_reasons(
         if approval_state == "stale":
             reasons.append("contract.findings")
         reasons.append(f"contract.approval.{approval_state}")
+    elif pol_on and contract.get("approver", "").startswith("agent:"):
+        aut = policy.get("autonomy")
+        if (
+            not isinstance(aut, dict)
+            or contract.get("approver", "") not in (aut.get("principals") or [])
+            or contract.get("open_cnt", 0) > 0
+            or aut.get("max_class") not in ("C0", "C1")
+        ):
+            reasons.append("autonomy.out_of_envelope")
     elif (
         pol_on
         and isinstance(policy.get("approvers"), list)

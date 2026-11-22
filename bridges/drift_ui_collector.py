@@ -243,7 +243,7 @@ def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, 
 def build_env_dict(adapter_id: str, raw: str, strip_bom: Callable[[str], str], env_keys: tuple[str, ...]) -> dict[str, str]:
     import json
     import platform
-    base = {'adapter': adapter_id, 'config': 'default', 'deps': 'none', 'drift': '0.9.1', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+    base = {'adapter': adapter_id, 'config': 'default', 'deps': 'none', 'drift': '0.10.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(strip_bom(raw))
         if not isinstance(parsed, dict):

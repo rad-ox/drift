@@ -251,7 +251,8 @@ drift review <file|dir>... [--brief] [--base <file|dir|ref> [--delta]] [--upstre
 
 Options:
   --brief                 short review of what changed
-  --as FORMAT             output: json, summary or text (md needs Pro)
+  --as FORMAT             output: json, packet, summary or text (md needs Pro)
+  --tier 0|1|2            decision packet projection tier for --as packet (default: 2)
   --detail LEVEL          detail level: full, summary or guided
   --previous-guided FILE  earlier guided output to continue (needs --detail guided)
   --profiles DIR          profile directory (default: nearest .drift/profiles)
@@ -261,6 +262,8 @@ Options:
   --base-profiles DIR     profile directory of the baseline [Pro]
   --events FILE|DIR...    proof events (*.jsonl files or directories) [Pro]
   --upstream FILE|DIR...  upstream contracts or profiles [Pro]
+  --max-items N           maximum items in --as digest output (default: 20) [Pro]
+  --rho FLOAT             owner attention load rho for --as digest backpressure [Pro]
   --measurements FILE     performance measurement bundle [Pro]
   --subject FILE          binary subject the measurements describe [Pro]
   --subject-artifact REF  artifact reference of the measured subject [Pro]
@@ -616,6 +619,7 @@ drift recall record <id> [--dead-end TEXT [--revisit-if ANCHOR...]] [--retire MA
 Options:
   --share                  print the shareable form of the result [Pro]
   --max-degraded-lenses N  fail closed if degraded @ code lenses exceed N (N >= 0) [Pro]
+  --lens-diagnostics       emit per-clause requested/emitted/degraded/unavailable lens diagnostics [Pro]
   --shard-dir DIR...       shard directory of run-local ring and log files [Pro]
   --profiles DIR           profile directory (default: nearest .drift/profiles) [Pro]
   --json                   print JSON instead of text [Pro]

@@ -149,6 +149,8 @@ namespace DriftDesktopUi
         [DataMember(Name = "edition")] public string Edition;
         [DataMember(Name = "theme")] public string Theme;
         [DataMember(Name = "owner")] public string Owner;
+        [DataMember(Name = "surface_id")] public string SurfaceId;
+        [DataMember(Name = "packet_ref")] public string PacketRef;
         [DataMember(Name = "review_ref")] public string ReviewRef;
         [DataMember(Name = "quiet_arm_ms")] public int QuietArmMs;
         [DataMember(Name = "timeout_s")] public int TimeoutSec;
@@ -193,8 +195,10 @@ namespace DriftDesktopUi
         [DataMember(Name = "schema")] public string Schema;
         [DataMember(Name = "request_id")] public string RequestId;
         [DataMember(Name = "action")] public string Action;
+        [DataMember(Name = "confirmed_packet_ref")] public string ConfirmedPacketRef;
         [DataMember(Name = "confirmed_review_ref")] public string ConfirmedReviewRef;
         [DataMember(Name = "confirmed_owner")] public string ConfirmedOwner;
+        [DataMember(Name = "confirmed_groups")] public List<string> ConfirmedGroups;
         [DataMember(Name = "note")] public string Note;
         [DataMember(Name = "selections")] public List<UiSelectionItem> Selections;
     }
@@ -925,13 +929,16 @@ namespace DriftDesktopUi
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
 
+            bool isV2 = req.Schema == "drift.ui-request/2";
             ResultGesture = new UiGestureEnvelope
             {
-                Schema = "drift.ui-gesture/1",
+                Schema = isV2 ? "drift.ui-gesture/2" : "drift.ui-gesture/1",
                 RequestId = TextSanitizer.SanitizeText(req.RequestId),
                 Action = "cancel",
+                ConfirmedPacketRef = string.Empty,
                 ConfirmedReviewRef = string.Empty,
                 ConfirmedOwner = string.Empty,
+                ConfirmedGroups = new List<string>(),
                 Note = string.Empty,
                 Selections = new List<UiSelectionItem>()
             };
@@ -5517,14 +5524,17 @@ namespace DriftDesktopUi
             }
 
             bool amend = HasAmendments() || !_req.CanSealDirectly || string.IsNullOrEmpty(_req.ReviewRef);
+            bool isV2Submit = _req.Schema == "drift.ui-request/2";
             string finalNote = (_changeRequestOpen && !string.IsNullOrEmpty(_noteVal)) ? TextSanitizer.SanitizeText(_noteVal.Trim()) : string.Empty;
             ResultGesture = new UiGestureEnvelope
             {
-                Schema = "drift.ui-gesture/1",
+                Schema = isV2Submit ? "drift.ui-gesture/2" : "drift.ui-gesture/1",
                 RequestId = TextSanitizer.SanitizeText(_req.RequestId),
                 Action = amend ? "amend" : "approve",
+                ConfirmedPacketRef = amend ? string.Empty : TextSanitizer.SanitizeText(_req.PacketRef),
                 ConfirmedReviewRef = amend ? string.Empty : TextSanitizer.SanitizeText(_req.ReviewRef),
                 ConfirmedOwner = TextSanitizer.SanitizeText((_ownerVal ?? string.Empty).Trim()),
+                ConfirmedGroups = new List<string>(),
                 Note = finalNote,
                 Selections = sels
             };
@@ -5711,17 +5721,20 @@ namespace DriftDesktopUi
                 if (args.Length == 3 && args[0] == "--self-test")
                 {
                     UiRequestEnvelope sreq = ReadRequest(args[1]);
-                    if (sreq == null || sreq.Schema != "drift.ui-request/1") return 2;
+                    if (sreq == null || (sreq.Schema != "drift.ui-request/2" && sreq.Schema != "drift.ui-request/1")) return 2;
+                    bool isV2Test = sreq.Schema == "drift.ui-request/2";
                     DecisionWindow probeWin = new DecisionWindow(sreq);
                     probeWin.Close();
                     string cleaned = TextSanitizer.SanitizeText(sreq.KernelBanner + "\u202E\u0007");
                     UiGestureEnvelope g = new UiGestureEnvelope
                     {
-                        Schema = "drift.ui-gesture/1",
+                        Schema = isV2Test ? "drift.ui-gesture/2" : "drift.ui-gesture/1",
                         RequestId = TextSanitizer.SanitizeText(sreq.RequestId),
                         Action = "self_test_ok",
+                        ConfirmedPacketRef = TextSanitizer.SanitizeText(sreq.PacketRef),
                         ConfirmedReviewRef = TextSanitizer.SanitizeText(sreq.ReviewRef),
                         ConfirmedOwner = TextSanitizer.SanitizeText(sreq.Owner),
+                        ConfirmedGroups = new List<string>(),
                         Note = cleaned,
                         Selections = new List<UiSelectionItem>()
                     };
@@ -5731,7 +5744,7 @@ namespace DriftDesktopUi
 
                 if (args.Length != 2) return 2;
                 UiRequestEnvelope req = ReadRequest(args[0]);
-                if (req == null || req.Schema != "drift.ui-request/1") return 2;
+                if (req == null || (req.Schema != "drift.ui-request/2" && req.Schema != "drift.ui-request/1")) return 2;
 
                 string reqId = TextSanitizer.SanitizeText(req.RequestId);
                 bool createdReq;

@@ -154,13 +154,32 @@ def save_local_ui_fields(updates: dict) -> Path:
             if out_lines:
                 out_lines.append("")
             out_lines.append(f"[{sec_name}]")
+            nested_tables = []
             for sk, sv in sec_val.items():
-                if isinstance(sv, bool):
+                if isinstance(sv, dict):
+                    nested_tables.append((sk, sv))
+                elif isinstance(sv, bool):
                     out_lines.append(f"{sk} = {'true' if sv else 'false'}")
                 elif isinstance(sv, int):
                     out_lines.append(f"{sk} = {sv}")
+                elif isinstance(sv, list):
+                    items = ", ".join(toml_quote(str(x)) for x in sv)
+                    out_lines.append(f"{sk} = [{items}]")
                 else:
                     out_lines.append(f"{sk} = {toml_quote(str(sv))}")
+            for sub_name, sub_val in nested_tables:
+                out_lines.append("")
+                out_lines.append(f"[{sec_name}.{sub_name}]")
+                for tk, tv in sub_val.items():
+                    if isinstance(tv, bool):
+                        out_lines.append(f"{tk} = {'true' if tv else 'false'}")
+                    elif isinstance(tv, int):
+                        out_lines.append(f"{tk} = {tv}")
+                    elif isinstance(tv, list):
+                        items = ", ".join(toml_quote(str(x)) for x in tv)
+                        out_lines.append(f"{tk} = [{items}]")
+                    else:
+                        out_lines.append(f"{tk} = {toml_quote(str(tv))}")
         out_lines.append("")
         tmp_p = cfg_dir / f".local.toml.tmp.{os.getpid()}"
         fd = os.open(str(tmp_p), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -938,6 +957,110 @@ def build_ui_request(
     return env, cur_hashes
 
 
+def load_surface_descriptor(ui_cfg: dict, backend_kind: str) -> dict:
+    """Load drift.ui-surface/1 strictly from host-local [ui.surface] (never repo or env)."""
+    raw = ui_cfg.get("surface") if isinstance(ui_cfg.get("surface"), dict) else {}
+    if backend_kind == "custom":
+        raw_protos = raw.get("protocols") if isinstance(raw.get("protocols"), list) else []
+        protos = [str(p).strip() for p in raw_protos if str(p).strip()]
+        if not protos:
+            protos = ["drift.ui-request/1", "drift.ui-gesture/1"]
+        default_id = "custom-surface"
+        default_tier = 2
+        default_binding = "host_account"
+    elif backend_kind == "wsl-popup":
+        protos = ["drift.ui-request/2", "drift.ui-gesture/2"]
+        default_id = "builtin-wpf"
+        default_tier = 2
+        default_binding = "host_account"
+    elif backend_kind == "web-deck":
+        protos = ["drift.ui-request/2", "drift.ui-gesture/2"]
+        default_id = "builtin-web-deck"
+        default_tier = 2
+        default_binding = "host_account"
+    else:
+        raw_protos = raw.get("protocols") if isinstance(raw.get("protocols"), list) else []
+        protos = [str(p).strip() for p in raw_protos if str(p).strip()] or ["drift.ui-request/2", "drift.ui-gesture/2"]
+        default_id = "builtin-capture"
+        default_tier = 2
+        default_binding = "host_account"
+
+    if isinstance(raw.get("protocols"), list) and backend_kind != "custom":
+        custom_protos = [str(p).strip() for p in raw["protocols"] if str(p).strip()]
+        if custom_protos:
+            protos = custom_protos
+
+    tier_val = raw.get("tier", default_tier)
+    if isinstance(tier_val, bool) or not isinstance(tier_val, int) or tier_val not in (0, 1, 2):
+        fail("invalid host-local [ui.surface].tier (expected 0, 1 or 2)", 2)
+
+    max_bytes_val = raw.get("max_bytes", 2048 if tier_val == 1 else (240 if tier_val == 0 else 0))
+    if isinstance(max_bytes_val, bool) or not isinstance(max_bytes_val, int) or max_bytes_val < 0:
+        fail("invalid host-local [ui.surface].max_bytes", 2)
+
+    id_bind = str(raw.get("identity_binding") or default_binding).strip()
+    if id_bind not in ("none", "host_account", "ssh_key"):
+        fail(f"invalid host-local [ui.surface].identity_binding '{id_bind}'", 2)
+
+    raw_mods = raw.get("modalities") if isinstance(raw.get("modalities"), list) else ["pointer", "keyboard"]
+    modalities = [str(m).strip() for m in raw_mods if str(m).strip()]
+
+    return {
+        "schema": "drift.ui-surface/1",
+        "surface_id": str(raw.get("surface_id") or default_id).strip() or default_id,
+        "tier": tier_val,
+        "max_bytes": max_bytes_val,
+        "modalities": modalities,
+        "protocols": protos,
+        "identity_binding": id_bind,
+        "can_sign": bool(raw.get("can_sign", False)),
+    }
+
+
+def acquire_decision_packet(drift_bin: str, area: Path, eff_selectors: list[str], use_delta: bool, tier: int) -> dict:
+    pkt_cmd = [drift_bin, "review", *eff_selectors, "--as", "packet", "--tier", str(tier)]
+    if use_delta:
+        pkt_cmd.extend(["--base", "HEAD", "--delta"])
+    proc = subprocess.run(pkt_cmd, cwd=str(area), capture_output=True, text=True)
+    if proc.returncode not in (0, 1):
+        fail(proc.stderr.strip() or proc.stdout.strip() or "drift review --as packet failed", 2)
+    try:
+        doc = json.loads(proc.stdout)
+    except Exception as exc:
+        fail(f"invalid JSON from drift review --as packet: {exc}", 2)
+    if doc.get("schema") != "drift.decision-packet/1":
+        fail("unexpected schema from drift review --as packet", 2)
+    return doc
+
+
+def build_ui_request_v2(base_req: dict, surface: dict, packet: dict) -> dict:
+    tier = int(surface["tier"])
+    if tier < 2:
+        env = {
+            "schema": "drift.ui-request/2",
+            "request_id": base_req["request_id"],
+            "surface_id": surface["surface_id"],
+            "surface_tier": tier,
+            "packet_ref": str(packet.get("packet_ref") or ""),
+            "review_ref": str(packet.get("review_ref") or base_req.get("review_ref") or ""),
+            "packet": packet,
+            "owner": base_req["owner"],
+            "needs_owner_enrollment": base_req["needs_owner_enrollment"],
+            "suggested_owner": base_req["suggested_owner"],
+            "policy_approvers": base_req["policy_approvers"],
+            "quiet_arm_ms": base_req["quiet_arm_ms"],
+            "timeout_s": base_req["timeout_s"],
+        }
+        return env
+    env = dict(base_req)
+    env["schema"] = "drift.ui-request/2"
+    env["surface_id"] = surface["surface_id"]
+    env["surface_tier"] = tier
+    env["packet_ref"] = str(packet.get("packet_ref") or "")
+    env["packet"] = packet
+    return env
+
+
 def inspect_target_states(drift_bin: str, area: Path, targets: list[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     if not targets:
@@ -1200,7 +1323,10 @@ def main() -> int:
             sentinel_for_req = ""
 
     ws_meta = resolve_workspace_identity(area)
-    ui_req, cur_hashes = build_ui_request(
+    surface = load_surface_descriptor(ui_cfg, backend_kind)
+    use_v2 = "drift.ui-request/2" in surface["protocols"]
+
+    base_req, cur_hashes = build_ui_request(
         area,
         report,
         attempt_id,
@@ -1216,6 +1342,14 @@ def main() -> int:
         sentinel_for_req,
         prev_hashes,
     )
+    decision_packet = None
+    packet_ref = ""
+    if use_v2:
+        decision_packet = acquire_decision_packet(drift_bin, area, eff_selectors, use_delta, int(surface["tier"]))
+        packet_ref = str(decision_packet.get("packet_ref") or "")
+        ui_req = build_ui_request_v2(base_req, surface, decision_packet)
+    else:
+        ui_req = base_req
     req_file = req_dir / "request.json"
     res_file = req_dir / "gesture.json"
     res_file.unlink(missing_ok=True)
@@ -1251,7 +1385,8 @@ def main() -> int:
         return fallback_out("renderer_busy_or_unavailable" if r_proc.returncode in (3, 10) else "renderer_failed")
 
     gesture = json.loads(res_file.read_text(encoding="utf-8"))
-    if gesture.get("schema") != "drift.ui-gesture/1":
+    expected_gesture_schema = "drift.ui-gesture/2" if use_v2 else "drift.ui-gesture/1"
+    if gesture.get("schema") != expected_gesture_schema:
         fail("renderer returned unsupported gesture schema", 2)
 
     act = str(gesture.get("action") or "cancel")
@@ -1264,6 +1399,25 @@ def main() -> int:
     if act == "disable_ui":
         save_local_ui_fields({"mode": "off"})
         return fallback_out("user_switched_to_terminal")
+
+    if act == "step_up":
+        if not use_v2:
+            fail("step_up action requires drift.ui-gesture/2", 2)
+        state_file.write_text("step_up_requested\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "packet_ref": packet_ref,
+                    "request_id": attempt_id,
+                    "review_ref": rev_ref,
+                    "schema": "drift.ui-result/1",
+                    "status": "step_up_requested",
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
 
     if act == "cancel":
         state_file.write_text("cancelled\n", encoding="utf-8")
@@ -1307,11 +1461,64 @@ def main() -> int:
     if not rev_ref or confirmed_ref != rev_ref:
         fail("gesture confirmed_review_ref does not match active review_ref", 2)
 
+    confirmed_groups: list[str] = []
+    if use_v2:
+        confirmed_packet_ref = str(gesture.get("confirmed_packet_ref") or "")
+        if not packet_ref or confirmed_packet_ref != packet_ref:
+            fail("gesture confirmed_packet_ref does not match active packet_ref", 2)
+        raw_groups = gesture.get("confirmed_groups")
+        if raw_groups is not None and not isinstance(raw_groups, list):
+            fail("gesture confirmed_groups must be an array", 2)
+        confirmed_groups = [str(g).strip() for g in (raw_groups or []) if str(g).strip()]
+
     effective_owner = str(gesture.get("confirmed_owner") or "").strip()
-    if backend_kind == "custom" and "confirmed_owner" not in gesture:
+    if not use_v2 and backend_kind == "custom" and "confirmed_owner" not in gesture:
         effective_owner = owner
     if not effective_owner:
         fail("approve gesture requires a non-empty owner identity", 2)
+
+    def reject_zero_writes(reason_msg: str) -> int:
+        state_file.write_text("rejected\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "approval_writes": 0,
+                    "error": reason_msg,
+                    "packet_ref": packet_ref,
+                    "request_id": attempt_id,
+                    "review_ref": rev_ref,
+                    "schema": "drift.ui-result/1",
+                    "status": "rejected",
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+
+    selected_group_objs: list[dict] = []
+    if use_v2 and decision_packet is not None:
+        surf_tier = int(surface["tier"])
+        pkt_req_tier = int(decision_packet.get("required_tier", 2))
+        pkt_truncated = bool(decision_packet.get("truncated", False))
+        if not confirmed_groups:
+            if pkt_truncated:
+                return reject_zero_writes("cannot approve truncated packet as a whole; confirm shown groups or step up")
+            if surf_tier < pkt_req_tier:
+                return reject_zero_writes(f"surface tier {surf_tier} below required_tier {pkt_req_tier}; step_up required")
+        else:
+            groups_by_ref = {
+                str(g.get("review_ref") or ""): g
+                for g in (decision_packet.get("groups") or [])
+                if isinstance(g, dict) and g.get("review_ref")
+            }
+            for gref in confirmed_groups:
+                gobj = groups_by_ref.get(gref)
+                if gobj is None:
+                    return reject_zero_writes(f"confirmed group {gref} not present in active packet")
+                g_req = int(gobj.get("required_tier", 2))
+                if surf_tier < g_req:
+                    return reject_zero_writes(f"surface tier {surf_tier} below group required_tier {g_req}; step_up required")
+                selected_group_objs.append(gobj)
 
     targets = [str(t.get("path")) for t in (snap.get("targets") or []) if t.get("path")]
     area_lock = rt / f"area-{area_short}.lock"
@@ -1321,6 +1528,78 @@ def main() -> int:
         if cur_state != "pending":
             fail(f"request {attempt_id} is '{cur_state}', refusing commit", 2)
         state_file.write_text("committing\n", encoding="utf-8")
+
+        if use_v2 and selected_group_objs:
+            partial_targets: list[str] = []
+            for gobj in selected_group_objs:
+                for tp in gobj.get("targets") or []:
+                    if str(tp) not in partial_targets:
+                        partial_targets.append(str(tp))
+            pre_states = inspect_target_states(drift_bin, area, partial_targets)
+            commit_err = ""
+            commit_rc = 0
+            for idx, gobj in enumerate(selected_group_objs):
+                g_targets = [str(tp) for tp in (gobj.get("targets") or []) if str(tp)]
+                g_ref = str(gobj.get("review_ref") or "")
+                g_rev_cmd = [drift_bin, "review", *g_targets, "--detail", "guided", "--as", "json"]
+                g_rev = subprocess.run(g_rev_cmd, cwd=str(area), capture_output=True, text=True)
+                if g_rev.returncode not in (0, 1):
+                    commit_rc = 2
+                    commit_err = g_rev.stderr.strip() or g_rev.stdout.strip()
+                    break
+                g_snap_file = req_dir / f"group-review-{idx}.json"
+                fd_g = os.open(str(g_snap_file), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                with os.fdopen(fd_g, "w", encoding="utf-8") as fh:
+                    fh.write(g_rev.stdout)
+                g_appr_cmd = [drift_bin, "approve", "--reviewed", str(g_snap_file), "--expect-review", g_ref, "--by", effective_owner]
+                if ssh_sign_key:
+                    g_appr_cmd.extend(["--ssh-sign", ssh_sign_key])
+                g_appr = subprocess.run(g_appr_cmd, cwd=str(area), capture_output=True, text=True)
+                if g_appr.returncode != 0:
+                    commit_rc = g_appr.returncode
+                    commit_err = g_appr.stderr.strip() or g_appr.stdout.strip()
+                    break
+            targets_state = inspect_target_states(drift_bin, area, partial_targets)
+            all_confirmed_current = len(partial_targets) > 0 and all(targets_state.get(t) == "current" for t in partial_targets)
+            newly_approved = sum(1 for t in partial_targets if targets_state.get(t) == "current" and pre_states.get(t) != "current")
+            if all_confirmed_current and commit_rc == 0:
+                if not owner:
+                    save_local_ui_fields({"owner": effective_owner})
+                state_file.write_text("committed\n", encoding="utf-8")
+                print(
+                    json.dumps(
+                        {
+                            "approval_writes": newly_approved if newly_approved > 0 else len(partial_targets),
+                            "confirmed_groups": confirmed_groups,
+                            "owner": effective_owner,
+                            "packet_ref": packet_ref,
+                            "request_id": attempt_id,
+                            "review_ref": rev_ref,
+                            "schema": "drift.ui-result/1",
+                            "status": "approved",
+                            "targets_state": targets_state,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            state_file.write_text("rejected\n", encoding="utf-8")
+            print(
+                json.dumps(
+                    {
+                        "approval_writes": newly_approved,
+                        "error": commit_err,
+                        "packet_ref": packet_ref,
+                        "request_id": attempt_id,
+                        "review_ref": rev_ref,
+                        "schema": "drift.ui-result/1",
+                        "status": "rejected",
+                        "targets_state": targets_state,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return commit_rc if commit_rc in (1, 2) else 1
 
         pre_states = inspect_target_states(drift_bin, area, targets)
 

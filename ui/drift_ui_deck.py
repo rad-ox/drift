@@ -538,9 +538,11 @@ def run_self_test(req_path: Path, res_path: Path) -> int:
                 return 2
 
         # 4. Immediate POST before quiet_arm_ms must fail 409
+        is_v2 = req_doc.get("schema") == "drift.ui-request/2"
+        gest_schema = "drift.ui-gesture/2" if is_v2 else "drift.ui-gesture/1"
         early_req = urllib.request.Request(
             f"http://127.0.0.1:{state.port}/api/gesture",
-            data=json.dumps({"schema": "drift.ui-gesture/1", "request_id": req_doc.get("request_id", ""), "action": "self_test_ok"}).encode("utf-8"),
+            data=json.dumps({"schema": gest_schema, "request_id": req_doc.get("request_id", ""), "action": "self_test_ok"}).encode("utf-8"),
             headers={"Cookie": cookie_kv, "X-Drift-Token": state.csrf_token, "Content-Type": "application/json"},
             method="POST",
         )
@@ -554,19 +556,21 @@ def run_self_test(req_path: Path, res_path: Path) -> int:
         # 5. Advance past quiet_arm_ms deterministically and confirm clean gesture commit
         with state.lock:
             state.first_render_mono -= 0.50
+        ok_body = {
+            "schema": gest_schema,
+            "request_id": req_doc.get("request_id", ""),
+            "action": "self_test_ok",
+            "confirmed_review_ref": req_doc.get("review_ref", ""),
+            "confirmed_owner": req_doc.get("owner", ""),
+            "note": "",
+            "selections": [],
+        }
+        if is_v2:
+            ok_body["confirmed_packet_ref"] = req_doc.get("packet_ref", "")
+            ok_body["confirmed_groups"] = []
         ok_req = urllib.request.Request(
             f"http://127.0.0.1:{state.port}/api/gesture",
-            data=json.dumps(
-                {
-                    "schema": "drift.ui-gesture/1",
-                    "request_id": req_doc.get("request_id", ""),
-                    "action": "self_test_ok",
-                    "confirmed_review_ref": req_doc.get("review_ref", ""),
-                    "confirmed_owner": req_doc.get("owner", ""),
-                    "note": "",
-                    "selections": [],
-                }
-            ).encode("utf-8"),
+            data=json.dumps(ok_body).encode("utf-8"),
             headers={"Cookie": cookie_kv, "X-Drift-Token": state.csrf_token, "Content-Type": "application/json"},
             method="POST",
         )
@@ -617,8 +621,9 @@ def run_live_deck(req_path: Path, res_path: Path, sentinel_path: Path | None) ->
             if conn and (now - last_hb) > 90.0:
                 return 10
             if conn and timeout_s > 0 and (now - last_inp) >= timeout_s:
+                is_v2_live = req_doc.get("schema") == "drift.ui-request/2"
                 state.result_gesture = {
-                    "schema": "drift.ui-gesture/1",
+                    "schema": "drift.ui-gesture/2" if is_v2_live else "drift.ui-gesture/1",
                     "request_id": str(req_doc.get("request_id") or ""),
                     "action": "timeout",
                     "confirmed_review_ref": "",
@@ -626,6 +631,9 @@ def run_live_deck(req_path: Path, res_path: Path, sentinel_path: Path | None) ->
                     "note": "",
                     "selections": [],
                 }
+                if is_v2_live:
+                    state.result_gesture["confirmed_packet_ref"] = ""
+                    state.result_gesture["confirmed_groups"] = []
                 break
         if state.result_gesture is None:
             return 10

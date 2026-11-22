@@ -44,7 +44,7 @@ When an agent breaks `GET /items/1` and "fixes" the failing build by weakening o
 
 ## How It Works (One Slice, Four Steps)
 
-Write one compact schema `0.3` contract per slice (CLI release `0.9.1`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
+Write one compact schema `0.3` contract per slice (CLI release `0.10.0`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
 
 ```toml
 drift = "0.3"
@@ -116,8 +116,8 @@ Credit existing JUnit XML runs (capped at `bound`) with `verifier/drift_shadow_j
 
 ## Trust Without Taking Our Word For It
 
-- **Open verification (`MIT`):** The `drift` Free CLI binary is proprietary, but **[`verifier/drift_verify.py`](verifier/drift_verify.py)** (100% Python 3.11+ stdlib, MIT License) independently recomputes `dr2b:`/`dr2a:`/`dr1:` digests, validates `.jsonl` proof events, `drift.observation/1` envelopes, and `.meta.json` inventories, and enforces the single-contract fail-closed gate verdict offline without invoking `drift` (CLI-only area-wide checks such as `policy.sweep = "soundness"` are surfaced explicitly as unevaluated).
-- **Honest trust boundaries:** Approval seals detect content edits; authenticating *who* approved belongs to Git signed commits + `CODEOWNERS` on `.drift/**` (and optional OpenSSH signatures verified against `--trust-root`). Proving tests genuinely ran requires a trusted CI runner. See **[GUARANTEES.md](GUARANTEES.md)**.
+- **Native V CLI + open MIT verification:** The `drift` CLI engine is a compiled V binary (proprietary, zero runtime dependencies), while **[`verifier/drift_verify.py`](verifier/drift_verify.py)** (100% Python 3.11+ stdlib, MIT License) independently recomputes `dr2b:`/`dr2a:`/`dr1:` digests, validates `.jsonl` proof events, `drift.observation/1` envelopes, and `.meta.json` inventories, and enforces the single-contract fail-closed gate verdict offline without invoking `drift` (CLI-only area-wide checks such as `policy.sweep = "soundness"` are surfaced explicitly as unevaluated).
+- **Honest trust boundaries:** Approval seals detect content edits; authenticating *who* approved belongs to Git signed commits + `CODEOWNERS` on `.drift/**` (and optional OpenSSH signatures verified against `--trust-root`). Proving tests genuinely ran requires a trusted CI runner. See **[GUARANTEES.md](GUARANTEES.md)** and **[Red-Team Benchmark](docs/redteam-benchmark.md)**.
 
 ---
 
@@ -157,12 +157,11 @@ test('GET /items/1 returns existing item', async (t) => {
 });
 ```
 
-| Runtimes | Artifacts | Guide |
+| Runtimes | CI Verification Tier | Artifacts & Guide |
 |---|---|---|
-| **Java 17–25 & Scala 2.12–3.9** | `drift-junit` + `drift-maven-plugin` (`0.9.1`) | [JVM & Scala](docs/bridges.md#primary-bridges) |
-| **JS / TS, Python 3, Rust, V** | `drift.mjs`, `drift.py`, `bridges/rust`, `bridges/v/drift_v` | [Primary Bridges](docs/bridges.md#primary-bridges) |
-| **C++20, C# / .NET / Unity, Godot 4** | `drift_cpp.hpp`, `Drift.cs`, `drift.gd` | [Native & Game](docs/bridges.md#native-game--simulation-bridges) |
-| **JUnit 4, PHP 8.2+, COBOL 85** | `DriftJUnit4.java`, `Drift.php`, `drift_cobol.py` | [Legacy & Mainframe](docs/bridges.md#legacy-php--mainframe-bridges) |
+| **Java 17–25 (JUnit 5), JS/TS, Python 3** | **Public CI E2E** (live HTTP + CLI/verifier parity) | `drift-junit`, `drift.mjs`, `drift.py` · [Primary](docs/bridges.md#primary-bridges) |
+| **Rust, C++20, C#/.NET, PHP 8.2+, COBOL 85** | **Public CI Smoke & `cargo test`** + Private E2E | `bridges/rust`, `drift_cpp.hpp`, `Drift.cs`, `Drift.php`, `drift_cobol.py` · [Bridges](docs/bridges.md) |
+| **V, Scala 2.12–3.9, JUnit 4, Godot 4** | **Private CI / Shared JVM / Experimental** | `drift_v`, `drift-junit`, `DriftJUnit4.java`, `drift.gd` · [Matrix](docs/bridges.md#bridge-matrix) |
 
 ---
 

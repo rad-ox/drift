@@ -31,7 +31,7 @@ private static IllegalStateException err(String m) { return new IllegalStateExce
 public static void clearCache() { synchronized (CACHE) { CACHE.clear(); } }
 public static Map<String, Object> bridgeCapabilities() {
  return mapOf("bridge", "drift-junit4-legacy", "capabilities", new ArrayList(CAPABILITIES),
-  "runtime_baseline", "java-8-legacy", "schema", "drift.bridge-capabilities/1", "version", "0.9.1");
+  "runtime_baseline", "java-8-legacy", "schema", "drift.bridge-capabilities/1", "version", "0.10.0");
 }
 public static void requireCapabilities(Collection<String> r) {
  if (r == null) throw err("bridge.capability_unsupported:null");

@@ -2,6 +2,19 @@
 
 User-visible changes and capabilities by release.
 
+## 0.10.0
+
+- Release `0.10.0`.
+- Sync public docs for `0.10.0` (`--as packet|digest`, `--lens-diagnostics`, `[policy.autonomy]`, `drift-signature@v2`, surface contract `/2`).
+- Add remote snapshot seal `drift.signature-payload/2` (`@v2`), `[policy.autonomy]` envelope, and Pro `review --as digest` backpressure.
+- Add Free `review --as packet [--tier 0|1|2]` omnichannel IR (`drift.decision-packet/1`, computed `C0–C4`) and `drift-ask-ui` surface contract `/2`.
+- Upgrade red-team benchmark to live unittest/read-only isolation control arms, Free `--edition` skip, fail-closed accounting & P01–P08; add PR live HTTP verifier E2E & README tiers.
+- Preserve multi-selector, spaced-path, and repeated `--events` operands in guided `next_command`, omitting unsafe shell commands with an explanatory `next_action`.
+- Open guided summaries with verdict, qualifier, `--previous-guided` counts, and all `claim_limits` within 12 lines while keeping JSON/`view_ref`/exit unchanged.
+- Preserve advisory `budget-at-risk:` warnings on unchanged `current` contracts in `review --base --delta` without widening `review_snapshot.targets`.
+- Reject empty `--max-degraded-lenses=` with exit `2` and add opt-in Pro `--lens-diagnostics` per-clause `requested/emitted/degraded/unavailable` accounting.
+- Add objective `relay` skill eval check, verbatim guided-summary relay + `5 of N` choice receipts in `native-flow.md`, and folded-surface quadrature conformance.
+
 ## 0.9.1
 
 - Release `0.9.1`.

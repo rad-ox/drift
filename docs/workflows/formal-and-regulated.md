@@ -39,6 +39,8 @@ Declare `[assurance.formal.<id>]` targeting `cbmc`, `kani`, `loom`, `tlc`, `allo
 ## 4. Regulated Controls, Detached Multi-Party Quorums & Release Attestations (`Free` + `Enterprise`)
 
 - **Many-to-many risk/control bindings:** `[assurance.risks]` and `[assurance.controls]` separate `implementation_status` from `effectiveness_status`, consuming validity-scoped usability study (`*.study.json`) and planned corpus / `stochastic_experiment` evaluation (`*.evaluation.json`) receipts with subgroup anti-masking.
+- **Autonomy envelope (`[policy.autonomy]`):** Configure computed-fact bounds (`max_class = "C0" | "C1"`, `max_targets`, and `principals = ["agent:..."]`) in `.drift/config.toml` so changes outside the approved autonomy envelope surface `autonomy.out_of_envelope`.
+- **Remote detached snapshot seals (`drift-signature@v2`):** Sign canonical `drift.signature-payload/2` review snapshots binding `target_ref`, `packet_ref`, `policy_ref`, `class`, and `surface_tier` offline; both `drift` and `verifier/drift_verify.py` enforce minimum surface tier per class, role checks, and namespace verification against `--trust-root`.
 - **OpenSSH attestations & detached quorums (`Enterprise`):**
 
 ```bash

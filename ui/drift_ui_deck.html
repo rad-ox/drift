@@ -3725,8 +3725,9 @@
       selected_pick: c.card_kind === "question" ? "" : (picks[i] || ""),
       answer: c.card_kind === "question" ? (answers[i] || "").trim() : ""
     }));
+    const isV2 = REQ.schema === "drift.ui-request/2";
     const payload = {
-      schema: "drift.ui-gesture/1",
+      schema: isV2 ? "drift.ui-gesture/2" : "drift.ui-gesture/1",
       request_id: REQ.request_id || "",
       action: action,
       confirmed_review_ref: action === "approve" ? (REQ.review_ref || "") : "",
@@ -3734,6 +3735,10 @@
       note: (changeOpen && noteVal.trim()) ? noteVal.trim() : "",
       selections: sels
     };
+    if (isV2) {
+      payload.confirmed_packet_ref = action === "approve" ? (REQ.packet_ref || "") : "";
+      payload.confirmed_groups = [];
+    }
     try {
       const res = await fetch("/api/gesture", {
         method: "POST",

@@ -35,9 +35,9 @@ In Maven builds, `-Ddrift.changed=auto` snapshots the Git tree during `prepare` 
 drift impact .drift --writes items --transitive
 
 # L0–L2 hierarchical domain tree and token-budgeted symbolic recall capsules
-# (add --max-degraded-lenses N to fail closed if over-compressed @ lenses exceed N)
+# (add --max-degraded-lenses N to fail closed on over-compression; --lens-diagnostics for per-clause accounting)
 drift recall query "@tree" .drift
-drift recall query "item lookup #getItem /800t" .drift --max-degraded-lenses 0
+drift recall query "item lookup #getItem /800t" .drift --max-degraded-lenses 0 --lens-diagnostics
 
 # Record standing or anchor-triggered negative analysis findings (surfaced as [due] on drift)
 drift recall record item-get --dead-end "Keep lookup stateless" --revisit-if src/items/handler.js#getItem --shared
@@ -58,8 +58,11 @@ drift new .drift/profiles/items-events@1.toml --asyncapi asyncapi.json
 drift new .drift/contracts/item-legacy.toml --from-upstream .drift-work/observed.jsonl --profile http-json@1
 
 # Semantic baseline diff: detects renames, moved cases, contravariant when.narrowed, then.widened,
-# relaxation witnesses, budget referent shifts, and undiscriminated added cases
+# relaxation witnesses, budget referent shifts, budget-at-risk on unchanged current slices, and undiscriminated added cases
 drift review .drift/contracts --brief --base HEAD --delta --as md
+
+# Cluster attention digest with owner-load backpressure (drift.cluster-digest/1)
+drift review .drift/contracts --as digest --max-items 20 --rho 0.8
 
 # Three-way structural and semantic TOML merge (usable as a Git merge driver)
 drift merge base.toml ours.toml theirs.toml --out -

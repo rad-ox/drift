@@ -161,6 +161,36 @@
             "type": "array",
             "uniqueItems": true
           },
+          "autonomy": {
+            "additionalProperties": false,
+            "properties": {
+              "max_class": {
+                "enum": [
+                  "C0",
+                  "C1"
+                ]
+              },
+              "max_targets": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "principals": {
+                "items": {
+                  "pattern": "^agent:\\S+$",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "max_class",
+              "principals",
+              "max_targets"
+            ],
+            "type": "object"
+          },
           "block_redundancy_erosion": {
             "type": "boolean"
           },
@@ -278,6 +308,9 @@
             "minItems": 1,
             "type": "array",
             "uniqueItems": true
+          },
+          "signatures": {
+            "type": "object"
           },
           "sweep": {
             "anyOf": [

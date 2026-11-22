@@ -495,6 +495,14 @@ def main(argv: list[str]) -> int:
         raw_verdicts, events_paths, snap_list, _decode_no_dup_keys, canonical_json
     )
     raw_verdicts = evaluate_containment_py(raw_verdicts, parsed, events_by_contract, digest_matches)
+    aut_cfg = policy.get("autonomy") if isinstance(policy.get("autonomy"), dict) else {}
+    agent_cnt = sum(1 for c in parsed if c.get("approval") == "current" and c.get("approver", "").startswith("agent:"))
+    if agent_cnt > 0 and (not aut_cfg or agent_cnt > int(aut_cfg.get("max_targets", 0))):
+        by_id_p = {c["id"]: c for c in parsed}
+        for rv in raw_verdicts:
+            if by_id_p.get(rv["id"], {}).get("approver", "").startswith("agent:") and "autonomy.out_of_envelope" not in rv["reasons"]:
+                rv["reasons"].append("autonomy.out_of_envelope")
+                rv["ok"] = False
 
     has_ev_sig = _has_event_signature_files(events_paths)
     skip_legacy_openssh = (

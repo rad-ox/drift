@@ -116,6 +116,73 @@ jobs:
           drift.run_drift_case('item-get', 'pr.py#ok', ['found'], lambda d: d.check('found', {'status': lambda e: 200 == e, 'name': lambda e: 'lamp' == e}), 'http')
           PY
 
+      - name: Verify Live HTTP Bridge & Open Verifier E2E (Pre-Merge)
+        run: |
+          mkdir -p /tmp/drift-pr/e2e-resolved /tmp/drift-pr/e2e-events
+          PYTHONPATH=./verifier python3 - <<'PY'
+          import json, pathlib, drift_verify as dv
+          v = dv.verify_contract_toml(pathlib.Path('example/.drift/contracts/item-get.toml'), pathlib.Path('example/.drift/profiles'))
+          cases = {}
+          for cid, cm in v['cases'].items():
+            when = {k: (val['eq'] if isinstance(val, dict) and list(val) == ['eq'] else val) for k, val in cm.get('when', {}).items()}
+            cases[cid] = {'at': cm['at'], 'when': when, 'then': cm['then']}
+          view = {'drift': '0.3', 'id': v['id'], 'digest': v['digest'], 'ref': v['ref'], 'required_capabilities': v['required_capabilities'], 'cases': cases}
+          pathlib.Path('/tmp/drift-pr/e2e-resolved/item-get.json').write_text(json.dumps(view), encoding='utf-8')
+          PY
+          DRIFT_RESOLVED=/tmp/drift-pr/e2e-resolved DRIFT_EVENTS=/tmp/drift-pr/e2e-events/js.jsonl node --input-type=module - <<'EOF'
+          import { runDriftCase } from './bridges/drift.mjs';
+          import { createItemServer } from './example/server.mjs';
+          const srv = createItemServer();
+          await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+          const base = `http://127.0.0.1:${srv.address().port}`;
+          try {
+            await runDriftCase({ contract: 'item-get', test: 'pr_e2e.mjs#found', cases: ['found', 'bad-id'], level: 'http' }, async (d) => {
+              const res1 = await fetch(`${base}${d.when('found', 'request').split(' ')[1]}`);
+              const body1 = await res1.json();
+              await d.check('found', { status: res1.status, name: body1.name });
+              const res2 = await fetch(`${base}${d.when('bad-id', 'request').split(' ')[1]}`);
+              const body2 = await res2.json();
+              await d.check('bad-id', { status: res2.status, error: body2.error });
+            });
+          } finally { srv.close(); }
+          EOF
+          PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-pr/e2e-resolved DRIFT_EVENTS=/tmp/drift-pr/e2e-events/py.jsonl python3 - <<'PY'
+          import json, subprocess, urllib.error, urllib.request, drift
+          proc = subprocess.Popen(
+              ['node', '--input-type=module', '-e', "import { createItemServer } from './example/server.mjs'; const s = createItemServer(); s.listen(0, '127.0.0.1', () => console.log(s.address().port));"],
+              stdout=subprocess.PIPE, text=True,
+          )
+          try:
+              base = f'http://127.0.0.1:{proc.stdout.readline().strip()}'
+              def call_live_sut(req: str) -> dict:
+                  path = req.split(' ', 1)[1]
+                  try:
+                      with urllib.request.urlopen(f'{base}{path}', timeout=5) as r:
+                          return {'status': r.status, **json.loads(r.read().decode('utf-8'))}
+                  except urllib.error.HTTPError as e:
+                      return {'status': e.code, **json.loads(e.read().decode('utf-8'))}
+              assert drift.run_drift_case('item-get', 'pr_e2e.py#not_found', ['not-found'], lambda d: d.check('not-found', call_live_sut(d.when('not-found', 'request'))), 'http') == 'passed'
+              assert drift.run_drift_case('item-get', 'pr_e2e.py#read_only', ['read-only'], lambda d: d.check('read-only', {'status': call_live_sut(d.when('read-only', 'request'))['status']}), 'unit') == 'passed'
+          finally:
+              proc.terminate(); proc.wait(timeout=5)
+          PY
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-pr/e2e-events --json > /tmp/drift-pr/e2e-ver.json
+          mkdir -p /tmp/drift-pr/e2e-tampered && cp -R example/.drift /tmp/drift-pr/e2e-tampered/.drift
+          sed -i 's/status = 200/status = 201/' /tmp/drift-pr/e2e-tampered/.drift/contracts/item-get.toml
+          python3 verifier/drift_verify.py /tmp/drift-pr/e2e-tampered/.drift/contracts --config /tmp/drift-pr/e2e-tampered/.drift/config.toml --events /tmp/drift-pr/e2e-events --json > /tmp/drift-pr/e2e-tamp.json || true
+          mkdir -p /tmp/drift-pr/e2e-gone && cp /tmp/drift-pr/e2e-events/* /tmp/drift-pr/e2e-gone/
+          printf '{"version":1,"classes":[],"tests":[]}\n' > /tmp/drift-pr/e2e-gone/js.meta.json
+          python3 verifier/drift_verify.py example/.drift/contracts --config example/.drift/config.toml --events /tmp/drift-pr/e2e-gone --json > /tmp/drift-pr/e2e-gone.json || true
+          python3 - <<'PY'
+          import json
+          ok = json.load(open('/tmp/drift-pr/e2e-ver.json'))['contracts'][0]
+          assert ok['ok'] is True and all(r['state'] == 'verified' for r in ok['results']), ok
+          tamp = json.load(open('/tmp/drift-pr/e2e-tamp.json'))['contracts'][0]
+          assert tamp['ok'] is False and 'contract.approval.stale' in tamp['reasons'] and 'proof.not_green' in tamp['reasons'], tamp
+          gone = json.load(open('/tmp/drift-pr/e2e-gone.json'))['contracts'][0]
+          assert gone['ok'] is False and gone['gone'] == 1 and gone['reasons'] == ['proof.not_green'], gone
+          PY
+
       - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
         if: ${{ github.event_name != 'pull_request' }}
         run: |
@@ -346,6 +413,7 @@ jobs:
           PY
           python3 verifier/json_diff_fuzz.py --drift "$(command -v drift)" --cases 25
           python3 verifier/verdict_diff_fuzz.py --drift "$(command -v drift)" --cases 60
+          python3 verifier/redteam_false_green_bench.py --drift "$(command -v drift)" --edition free
 
   verify-python-311:
     runs-on: ubuntu-24.04

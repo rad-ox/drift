@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest released `0.9.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
+Security fixes are provided for the latest released `0.10.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
 
 | Version | Supported |
 |---|---|
-| `0.9.x` | Yes |
-| `< 0.9.0` | No (upgrade to `0.9.x`) |
+| `0.10.x` | Yes |
+| `< 0.10.0` | No (upgrade to `0.10.x`) |
 
 ## Reporting a Vulnerability
 
@@ -30,7 +30,7 @@ Instead, report suspected vulnerabilities privately using one of the following c
 DRIFT is designed around fail-closed verification and zero-trust execution boundaries:
 
 - **Deterministic Offline Kernel**: Contract validation (`drift check`), formatting (`drift fmt`), diffing (`drift diff`), review (`drift review`), proof evaluation (`drift prove`), and gating (`drift gate`) execute offline without network access, ambient clock reads, or randomness.
-- **Independent Open Verifier (`verifier/drift_verify.py`)**: Every release ships a zero-dependency Python 3 reference verifier under the MIT License so teams and auditors can independently verify `dr2b:`/`dr2a:`/`dr2r:`/`dr2x:` (`0.3`) contract digests (and `dr1:` area config digests), `.jsonl` proof events, `.observation.jsonl` lossless records, `.meta.json` test inventories (`forbid_touched`), `--measurements` budgets (`alloc_bytes_total` / `alloc_count_total` / `cpu_time_ns`, `[requires].budget_metrics`), `.security.json` receipts, `drift.grant-lock/1` clean-room grant locks, `drift.pact-lock/1` bilateral pact locks, and OpenSSH trust-root signatures (`--trust-root`) without trusting the precompiled CLI binary.
+- **Independent Open Verifier (`verifier/drift_verify.py`)**: Every release ships a zero-dependency Python 3 reference verifier under the MIT License so teams and auditors can independently verify `dr2b:`/`dr2a:`/`dr2r:`/`dr2x:` (`0.3`) contract digests (and `dr1:` area config digests), `.jsonl` proof events, `.observation.jsonl` lossless records, `.meta.json` test inventories (`forbid_touched`), `--measurements` budgets (`alloc_bytes_total` / `alloc_count_total` / `cpu_time_ns`, `[requires].budget_metrics`), `.security.json` receipts, `drift.grant-lock/1` clean-room grant locks, `drift.pact-lock/1` bilateral pact locks, `[policy.autonomy]` envelopes, and OpenSSH trust-root signatures including `drift-signature@v2` (`drift.signature-payload/2`) remote snapshot seals (`--trust-root`) without trusting the precompiled CLI binary.
 - **Release Supply-Chain Verification (Deterministic Archives, OpenSSH, SLSA v1.0, Sigstore & TUF)**:
   - Release archives are packaged with normalized timestamps/ownership and verified against `SHA256SUMS`.
   - Protected CI releases publish an in-toto **SLSA v1.0 provenance statement** (`drift-<ver>.slsa.intoto.jsonl`), detached **OpenSSH signatures** (`SHA256SUMS.sig`, verified against pinned `release/RELEASE_SIGNERS` in namespace `drift-release`), **Sigstore Cosign keyless OIDC bundles** (`*.sigstore.json`), and **TUF v1.0-aligned signed update metadata** (`tuf-{root,timestamp,snapshot,targets}.json`, verified offline by `release/tuf_verify.py` against freeze, rollback, mix-and-match, and tampering attacks).

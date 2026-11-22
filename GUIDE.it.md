@@ -147,9 +147,9 @@ drift review .drift/contracts/item-get.toml --brief   # Pacchetto di revisione p
 drift approve .drift/contracts/item-get.toml --by alice
 ```
 
-Per un handoff vincolato alla versione, esegui `drift review <file|dir> --detail guided --as json` e conserva il JSON nella sessione dell'host. Approvalo con `drift approve --reviewed FILE --expect-review REF --by OWNER`, dove `REF` è esattamente il valore `review_snapshot.review_ref` mostrato nel JSON. Lo snapshot vincola area, selettori, target, policy e contesto decisionale; non è una firma e non prova chi ha acconsentito. Il comando `approve` legacy resta disponibile per approvazioni esplicite senza protezione dello snapshot.
+Per un handoff vincolato alla versione, esegui `drift review <file|dir> --detail guided --as json` e conserva il JSON nella sessione dell'host. Approvalo con `drift approve --reviewed FILE --expect-review REF --by OWNER`, dove `REF` è esattamente il valore `review_snapshot.review_ref` mostrato nel JSON. Lo snapshot vincola area, selettori, target, policy e contesto decisionale; non è una firma e non prova chi ha acconsentito (per sigilli crittografici remoti, firma `drift.signature-payload/2` con `drift-signature@v2` e verifica contro `--trust-root`). Per adapter multicanale e code ad alto volume, `drift review <file|dir> --as packet [--tier 0|1|2]` emette l'IR compatto `drift.decision-packet/1` con classi calcolate `C0–C4`, mentre **Pro** `drift review <file|dir> --as digest [--max-items N] [--rho X]` aggrega il cluster con backpressure `drift.cluster-digest/1`. Il comando `approve` legacy resta disponibile per approvazioni esplicite senza protezione dello snapshot.
 
-Sulle postazioni desktop, `drift-ask-ui <file|dir>` automatizza questo handoff senza alcun demone in background: apre la finestra nativa Atmospheric DRIFT Observatory su Windows 10/11 e WSL2 (o un Observatory Deck locale monouso su `127.0.0.1` su macOS e Linux Desktop) per confrontare le card decisionali ancorate al riferimento non dominato con marker di dominanza, ispezionare i flussi `WHEN → THEN` e sigillare lo snapshot `--reviewed`, passando automaticamente alla CLI in sessioni headless/SSH/CI (`drift-ask-ui --status|--off|--on`; `[ui].theme = "auto|dark|light"` in `~/.config/drift/ui.toml` o `%APPDATA%\drift\ui.toml`).
+Sulle postazioni desktop, `drift-ask-ui <file|dir>` automatizza questo handoff tramite il surface contract `/2` (`drift.ui-surface/1`, `ui-request/2`, `ui-gesture/2`) senza alcun demone in background: apre la finestra nativa Atmospheric DRIFT Observatory su Windows 10/11 e WSL2 (o un Observatory Deck locale monouso su `127.0.0.1` su macOS e Linux Desktop) per confrontare le card decisionali ancorate al riferimento non dominato con marker di dominanza, ispezionare i flussi `WHEN → THEN` e sigillare lo snapshot `--reviewed`, passando automaticamente alla CLI in sessioni headless/SSH/CI (`drift-ask-ui --status|--off|--on`; `[ui].theme = "auto|dark|light"` in `~/.config/drift/ui.toml` o `%APPDATA%\drift\ui.toml`).
 
 Se `drift check` segnala un errore, esegui `drift explain <codice>` (ad esempio `drift explain DR-E601`) per vedere causa e correzione. `drift doctor` riassume l'intera area in una sola esecuzione in sola lettura (edizione, approvazione della config, profili, contratti, eventi, merge driver) e `drift completion <bash|zsh|fish|pwsh>` stampa uno script di completamento per la shell.
 
@@ -220,7 +220,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.9.1</version>
+    <version>0.10.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -230,7 +230,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.9.1</version>
+      <version>0.10.0</version>
       <executions>
         <execution>
           <goals>
@@ -257,7 +257,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.9.1`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.10.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift
