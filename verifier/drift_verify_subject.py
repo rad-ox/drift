@@ -135,6 +135,10 @@ def verify_config_toml_impl(path: Path, dr1_digest_fn: Callable[[Any], str], dr1
         return "invalid", "", {}
     if pol.get("pack") == "core@1" and "require_signed_approval" in pol and not isinstance(pol.get("require_signed_approval"), bool):
         return "invalid", "", {}
+    if pol.get("pack") == "core@1" and "require_observations" in pol and not isinstance(pol.get("require_observations"), bool):
+        return "invalid", "", {}
+    if pol.get("pack") == "core@1" and "block_redundancy_erosion" in pol and not isinstance(pol.get("block_redundancy_erosion"), bool):
+        return "invalid", "", {}
     if not validate_config_ext_py(raw, pol):
         return "invalid", "", {}
     if not isinstance(appr, dict) or not appr.get("ref"):

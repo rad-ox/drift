@@ -29,22 +29,22 @@ When an agent breaks `GET /items/1` and "fixes" the failing build by weakening o
 |---|---|---|
 | **Drops `name` assertion** | **PASS (False Green)** — status `200` passes; runner exits `0`. | **FAIL** — `d.check` throws `no check for then.name`; incomplete reads stay `bound`, never `verified`. |
 | **Edits `then.status = 500` in contract** | **PASS (False Green)** — test reads `500` and passes. | **FAIL (`DR-E601`)** — `dr2b:` behaviour digest changes; stale approval blocks the gate. |
-| **Deletes the failing test** | **PASS (False Green)** — remaining tests pass. | **FAIL (`gone: 1`)** — `.meta.json` inventory discards orphaned events and blocks the gate. |
+| **Deletes the failing test** | **PASS (False Green)** — remaining tests pass. | **FAIL (`gone: 1`, when coverage drops)** — `.meta.json` inventory discards orphaned events and blocks the gate whenever remaining evidence no longer covers the requirement. |
 
 <details>
-<summary>More anti-cheat guards (no-op callbacks, self-stubbed tests, and proof states)</summary>
+<summary>More anti-cheat guards (no-op/tautology callbacks, self-stubbed tests, and proof states)</summary>
 
-- **Empty / no-op callbacks** (`(v) => {}`, `lambda v: None`) fail immediately with `AssertionError`.
+- **Empty / tautology callbacks** (`(v) => {}`, `() => true`, `(v) => true`, `lambda v: None`, `lambda v: True`) fail immediately with `AssertionError`.
 - **Self-stubbed tests** (`d.buildOutput('found')` fed back into assertions) never record `then.*` reads (`bound` only) and surface `oracle.self_stubbed` in `review` / `gate --explain`.
-- **Strict proof states:** `missing` (never green) → `red` (failed) → `bound` (passed without checking every `then` key) → `verified` (checked every `then` key against the approved `dr2b:` digest) → `killed` *(Enterprise: rejected synthetic mutations via `drift mutants`)*.
-- Full threat model and 9 CI adversarial scenarios: **[GUARANTEES.md](GUARANTEES.md)**.
+- **Strict proof states:** `missing` (never green) → `red` (failed) → `bound` (passed without reading every `then` key) → `verified` (bridge recorded full `then` reads/checks against the approved `dr2b:` digest, independently re-judged when `observations` are attached) → `killed` *(Enterprise: rejected synthetic mutations via `drift mutants`)*.
+- Full threat model and CI adversarial scenarios: **[GUARANTEES.md](GUARANTEES.md)**.
 </details>
 
 ---
 
 ## How It Works (One Slice, Four Steps)
 
-Write one compact schema `0.3` contract per slice (CLI release `0.8.1`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
+Write one compact schema `0.3` contract per slice (CLI release `0.9.0`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
 
 ```toml
 drift = "0.3"
@@ -116,7 +116,7 @@ Credit existing JUnit XML runs (capped at `bound`) with `verifier/drift_shadow_j
 
 ## Trust Without Taking Our Word For It
 
-- **Open verification (`MIT`):** The `drift` Free CLI binary is proprietary, but **[`verifier/drift_verify.py`](verifier/drift_verify.py)** (100% Python 3.11+ stdlib, MIT License) independently recomputes `dr2b:`/`dr2a:`/`dr1:` digests, validates `.jsonl` proof events and `.meta.json` inventories, and enforces the exact same gate verdict offline without invoking `drift`.
+- **Open verification (`MIT`):** The `drift` Free CLI binary is proprietary, but **[`verifier/drift_verify.py`](verifier/drift_verify.py)** (100% Python 3.11+ stdlib, MIT License) independently recomputes `dr2b:`/`dr2a:`/`dr1:` digests, validates `.jsonl` proof events, `drift.observation/1` envelopes, and `.meta.json` inventories, and enforces the single-contract fail-closed gate verdict offline without invoking `drift` (CLI-only area-wide checks such as `policy.sweep = "soundness"` are surfaced explicitly as unevaluated).
 - **Honest trust boundaries:** Approval seals detect content edits; authenticating *who* approved belongs to Git signed commits + `CODEOWNERS` on `.drift/**` (and optional OpenSSH signatures verified against `--trust-root`). Proving tests genuinely ran requires a trusted CI runner. See **[GUARANTEES.md](GUARANTEES.md)**.
 
 ---
@@ -159,7 +159,7 @@ test('GET /items/1 returns existing item', async (t) => {
 
 | Runtimes | Artifacts | Guide |
 |---|---|---|
-| **Java 17–25 & Scala 2.12–3.9** | `drift-junit` + `drift-maven-plugin` (`0.8.1`) | [JVM & Scala](docs/bridges.md#primary-bridges) |
+| **Java 17–25 & Scala 2.12–3.9** | `drift-junit` + `drift-maven-plugin` (`0.9.0`) | [JVM & Scala](docs/bridges.md#primary-bridges) |
 | **JS / TS, Python 3, Rust, V** | `drift.mjs`, `drift.py`, `bridges/rust`, `bridges/v/drift_v` | [Primary Bridges](docs/bridges.md#primary-bridges) |
 | **C++20, C# / .NET / Unity, Godot 4** | `drift_cpp.hpp`, `Drift.cs`, `drift.gd` | [Native & Game](docs/bridges.md#native-game--simulation-bridges) |
 | **JUnit 4, PHP 8.2+, COBOL 85** | `DriftJUnit4.java`, `Drift.php`, `drift_cobol.py` | [Legacy & Mainframe](docs/bridges.md#legacy-php--mainframe-bridges) |

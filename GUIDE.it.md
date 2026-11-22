@@ -220,7 +220,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.8.1</version>
+    <version>0.9.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -230,7 +230,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.8.1</version>
+      <version>0.9.0</version>
       <executions>
         <execution>
           <goals>
@@ -257,7 +257,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.8.1`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.9.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift
@@ -343,9 +343,9 @@ Quando i Livelli 0–1 sono verdi sulle prime slice, aggiungi solo i moduli di w
 
 ## Autocompletamento nell'Editor (VS Code e JetBrains)
 
-DRIFT include gli JSON Schema per contratti, profili e `.drift/config.toml` (installati in `~/.local/share/drift/schemas/` su Linux/macOS e `%LOCALAPPDATA%\Programs\drift\schemas\` su Windows, oppure in `schemas/` nel repository).
+DRIFT include gli JSON Schema con descrizioni inline dei campi per contratti, profili, eventi di prova e `.drift/config.toml` (installati in `~/.local/share/drift/schemas/` su Linux/macOS e `%LOCALAPPDATA%\Programs\drift\schemas\` su Windows, oppure in `schemas/` nel repository).
 
-Aggiungi a `.vscode/settings.json` (con l'estensione **Even Better TOML** / Taplo):
+Esegui `drift init <owner> . --taplo` per generare automaticamente `.taplo.toml` collegato a tutti i file `.drift/**/*.toml`, oppure aggiungi a `.vscode/settings.json` (con l'estensione **Even Better TOML** / Taplo):
 
 ```json
 {

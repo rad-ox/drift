@@ -396,15 +396,13 @@ function computeUnobservedControls(controls, thenTable, proj) {
   return ctrls.filter((c) => !obs.has(c));
 }
 
-export async function invokeVerifiedCallback(fn, contractId, caseId, key, exp, extra) {
-  const src = Function.prototype.toString.call(fn).trim();
-  const body = src.includes('=>') ? src.slice(src.indexOf('=>') + 2).trim() : src;
-  if (/^\{\s*\}$/u.test(body)) throwAssertionError(`${contractId}.${caseId}: check for then.${key} must inspect the expected value`);
-  const res = await fn(exp, extra);
-  if (res === false) throwAssertionError(`${contractId}.${caseId}: check for then.${key} returned false`);
-  if (res !== true && !/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(body)) {
-    throwAssertionError(`${contractId}.${caseId}: check for then.${key} must inspect and assert the expected value`);
-  }
+export async function invokeVerifiedCallback(fn, cid, caseId, key, exp, extra) {
+  const s = `${fn}`.trim(), b = s.includes('=>') ? s.slice(s.indexOf('=>') + 2).trim() : s;
+  const p = `${cid}.${caseId}: check for then.${key}`;
+  if ((!fn.length && !/\barguments\b/u.test(b) && /^(?:async\s+)?(?:\(\s*\)\s*=>|function\b[^(]*\(\s*\))/u.test(s)) || /^\{\s*\}$/u.test(b)) throwAssertionError(`${p} must inspect the expected value`);
+  const r = await fn(exp, extra);
+  if (r === false) throwAssertionError(`${p} returned false`);
+  if (!/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(b) && (r !== true || !/\w\s*\(/u.test(b))) throwAssertionError(`${p} must inspect and assert the expected value`);
 }
 
 export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj, whenEnv = null) {

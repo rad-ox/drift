@@ -10,8 +10,8 @@ DRIFT ships **11 zero-dependency, MIT-licensed test bridges**. Expected values l
 
 | Runtime | Artifact | Baseline | CI Verification Status | Proof & Anti-Cheat Capabilities |
 |---|---|---|---|---|
-| **Java 17–25 (JUnit 5)** | `drift-junit` + `drift-maven-plugin` (`0.8.1`) | Java 25 LTS (Java 17 floor) | **Public CI E2E** (live HTTP + CLI/verifier parity) | `@DriftCase`, `Drift.expect`, `verify`, Maven `prepare`/`gate`, `-Ddrift.changed=auto` |
-| **Scala 2.12–3.9 (MUnit / sbt)** | `drift-junit` (`0.8.1`) | Scala 3.9 / sbt | **Shared JVM Artifact** (uses verified `drift-junit`; no sbt job in public CI) | Closure-based `Drift.expect(contract, case, level)` + `c.verify(...)` |
+| **Java 17–25 (JUnit 5)** | `drift-junit` + `drift-maven-plugin` (`0.9.0`) | Java 25 LTS (Java 17 floor) | **Public CI E2E** (live HTTP + CLI/verifier parity) | `@DriftCase`, `Drift.expect`, `verify`, Maven `prepare`/`gate`, `-Ddrift.changed=auto` |
+| **Scala 2.12–3.9 (MUnit / sbt)** | `drift-junit` (`0.9.0`) | Scala 3.9 / sbt | **Shared JVM Artifact** (uses verified `drift-junit`; no sbt job in public CI) | Closure-based `Drift.expect(contract, case, level)` + `c.verify(...)` |
 | **JavaScript / TypeScript** | `bridges/drift.mjs` | Node.js 24 LTS (18+) | **Public CI E2E** (live HTTP, concurrency, adversarial, parity) | `runDriftCase`, `d.check`, `node --test`, Vitest, Jest, in-process mutants |
 | **Python 3** | `bridges/drift.py` | Python 3.14 (3.11+) | **Public CI E2E** (live HTTP, concurrency, adversarial, parity) | `run_drift_case`, `d.check`, `pytest`, `unittest`, in-process mutants |
 | **Rust** | `bridges/rust` (`drift_rust`) | Rust Edition 2024 | **Public CI `cargo test`** + Private E2E parity | `#![forbid(unsafe_code)]`, `run_drift_case`, `check_projection`, subprocess mutants |
@@ -33,13 +33,13 @@ All bridges support compiled zero-binary verification plans (`.plans/<id>.plan.j
 
 ### Java (JUnit 5 & Maven Plugin)
 
-Add `drift-junit` and `drift-maven-plugin` (`0.8.1`) to `pom.xml`, annotate tests with `@DriftCase`, and run `mvn verify`:
+Add `drift-junit` and `drift-maven-plugin` (`0.9.0`) to `pom.xml`, annotate tests with `@DriftCase`, and run `mvn verify`:
 
 ```xml
 <dependency>
   <groupId>io.github.rad-ox</groupId>
   <artifactId>drift-junit</artifactId>
-  <version>0.8.1</version>
+  <version>0.9.0</version>
   <scope>test</scope>
 </dependency>
 ```
@@ -64,7 +64,7 @@ class ItemHttpTest {
 
 ### Scala 3 / sbt (MUnit)
 
-Resolve `drift-junit` from local Maven (`resolvers += Resolver.mavenLocal`, `"io.github.rad-ox" % "drift-junit" % "0.8.1" % Test`) and call `Drift.expect` + `c.verify(...)` inside closure tests:
+Resolve `drift-junit` from local Maven (`resolvers += Resolver.mavenLocal`, `"io.github.rad-ox" % "drift-junit" % "0.9.0" % Test`) and call `Drift.expect` + `c.verify(...)` inside closure tests:
 
 ```scala
 import drift.Drift

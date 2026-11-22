@@ -216,7 +216,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.8.1</version>
+    <version>0.9.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -226,7 +226,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.8.1</version>
+      <version>0.9.0</version>
       <executions>
         <execution>
           <goals>
@@ -253,7 +253,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.8.1`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.9.0`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift
@@ -339,9 +339,9 @@ Once Level 0–1 is green on your first slices, add only the workflow modules yo
 
 ## Editor Autocompletion (VS Code & JetBrains)
 
-DRIFT ships JSON Schemas for contracts, profiles, and `.drift/config.toml` (installed in `~/.local/share/drift/schemas/` on Linux/macOS and `%LOCALAPPDATA%\Programs\drift\schemas\` on Windows, or `schemas/` in this repository).
+DRIFT ships JSON Schemas with inline property descriptions for contracts, profiles, proof events, and `.drift/config.toml` (installed in `~/.local/share/drift/schemas/` on Linux/macOS and `%LOCALAPPDATA%\Programs\drift\schemas\` on Windows, or `schemas/` in this repository).
 
-Add the following to `.vscode/settings.json` (with the **Even Better TOML** / Taplo extension installed):
+Run `drift init <owner> . --taplo` to scaffold a `.taplo.toml` wiring all `.drift/**/*.toml` files automatically, or add the following to `.vscode/settings.json` (with the **Even Better TOML** / Taplo extension installed):
 
 ```json
 {

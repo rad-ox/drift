@@ -89,6 +89,33 @@ jobs:
             dotnet run --project /tmp/drift-cs-smoke/Smoke.csproj -v q && rm -rf /tmp/drift-cs-smoke
           fi
 
+      - name: Verify JS/Py Bridge Negatives & Tautology Guards (Pre-Merge)
+        run: |
+          mkdir -p /tmp/drift-pr/resolved
+          python3 -c 'import json,pathlib;pathlib.Path("/tmp/drift-pr/resolved/item-get.json").write_text(json.dumps({"drift":"0.3","id":"item-get","digest":"dr2b:sha256:"+"0"*63+"1","ref":"dr2b:000000000001","required_capabilities":[],"cases":{"found":{"at":["http"],"when":{"request":"GET /items/1"},"then":{"status":{"eq":200},"name":{"eq":"lamp"}}}}}))'
+          DRIFT_RESOLVED=/tmp/drift-pr/resolved DRIFT_EVENTS=/tmp/drift-pr/neg.jsonl node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict';
+          import { runDriftCase } from './bridges/drift.mjs';
+          const run = (t, fn) => runDriftCase({ contract: 'item-get', test: `pr.mjs#${t}`, cases: ['found'], level: 'http' }, fn);
+          await assert.rejects(() => run('incomplete', (d) => d.check('found', { status: 200 })), /no check for then\.name/);
+          await assert.rejects(() => run('regression', (d) => d.check('found', { status: 500, name: 'lamp' })), /expected then\.status=200, got 500/);
+          await assert.rejects(() => run('noop', (d) => d.check('found', { status: (v) => {}, name: (v) => {} })), /must inspect the expected value/);
+          await assert.rejects(() => run('zero_arg_true', (d) => d.check('found', { status: () => true, name: () => true })), /must inspect the expected value/);
+          await assert.rejects(() => run('const_true', (d) => d.check('found', { status: (v) => true, name: (v) => true })), /must inspect and assert/);
+          await assert.rejects(() => run('non_asserting', (d) => d.check('found', { status: (e) => { const x = e; }, name: (e) => { const x = e; } })), /must inspect and assert/);
+          await assert.rejects(() => run('view_non_asserting', (d) => d.checkView('found', { status: 200, name: 'lamp' }, { status: (e) => { const x = e; } })), /must inspect and assert/);
+          await run('valid_cb', async (d) => { await d.check('found', { status: (e) => 200 === e, name: (e) => 'lamp' === e }); assert.deepEqual(d.fullyReadCases(), ['found']); });
+          await run('build_only', async (d) => { assert.equal(d.buildOutput('found').status, 200); assert.deepEqual(d.fullyReadCases(), []); });
+          EOF
+          PYTHONPATH=./bridges DRIFT_RESOLVED=/tmp/drift-pr/resolved DRIFT_EVENTS=/tmp/drift-pr/neg-py.jsonl python3 - <<'PY'
+          import drift
+          def ign(v): _ = v; return True
+          for t, cb in (('z', lambda: True), ('c', lambda v: True), ('i', ign)):
+            try: drift.run_drift_case('item-get', f'pr.py#{t}', ['found'], lambda d, f=cb: d.check('found', {'status': f, 'name': f}), 'http'); raise SystemExit('expected fail')
+            except AssertionError: pass
+          drift.run_drift_case('item-get', 'pr.py#ok', ['found'], lambda d: d.check('found', {'status': lambda e: 200 == e, 'name': lambda e: 'lamp' == e}), 'http')
+          PY
+
       - name: Verify Release Package, Live HTTP Service, JVM/JS/Py Bridges, Concurrency & Open Verifier
         if: ${{ github.event_name != 'pull_request' }}
         run: |
@@ -98,20 +125,6 @@ jobs:
 
           mkdir -p /tmp/drift-ci/resolved /tmp/drift-ci/events
           drift show example/.drift/contracts --out /tmp/drift-ci/resolved
-
-          DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/neg.jsonl node --input-type=module - <<'EOF'
-          import assert from 'node:assert/strict';
-          import { runDriftCase } from './bridges/drift.mjs';
-          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#incomplete', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: 200 })), /no check for then\.name/);
-          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#regression', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: 500, name: 'lamp' })), /expected then\.status=200, got 500/);
-          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#noop', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: (v) => {}, name: (v) => {} })), /must inspect the expected value/);
-          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#non_asserting', cases: ['found'], level: 'http' }, async (d) => d.check('found', { status: (expected) => { const ignored = expected; }, name: (expected) => { const ignored = expected; } })), /must inspect and assert the expected value/);
-          await assert.rejects(() => runDriftCase({ contract: 'item-get', test: 'ci.mjs#view_non_asserting', cases: ['found'], level: 'http' }, async (d) => d.checkView('found', { status: 200, name: 'lamp' }, { status: (expected) => { const ignored = expected; } })), /must inspect and assert the expected value/);
-          await runDriftCase({ contract: 'item-get', test: 'ci.mjs#build_only', cases: ['found'], level: 'http' }, async (d) => {
-            assert.equal(d.buildOutput('found').status, 200);
-            assert.deepEqual(d.fullyReadCases(), []);
-          });
-          EOF
 
           DRIFT_RESOLVED=/tmp/drift-ci/resolved DRIFT_EVENTS=/tmp/drift-ci/events/js.jsonl node --input-type=module - <<'EOF'
           import { runDriftCase } from './bridges/drift.mjs';
@@ -332,6 +345,7 @@ jobs:
             assert c['ok'] is False and 'security.missing' in c['reasons'], c
           PY
           python3 verifier/json_diff_fuzz.py --drift "$(command -v drift)" --cases 25
+          python3 verifier/verdict_diff_fuzz.py --drift "$(command -v drift)" --cases 60
 
   verify-python-311:
     runs-on: ubuntu-24.04
@@ -350,10 +364,9 @@ jobs:
           python3 -I release/tuf_verify.py --self-test
 
   verify-macos-arm64:
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-15
     steps:
-      - name: Verify macOS arm64 Release Archive, Bridges & Verifier
+      - name: Verify Open Verifier & TUF Metadata Guard on macOS arm64 (Pre-Merge Safe)
         run: |
           git init -q .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
@@ -362,6 +375,9 @@ jobs:
 
           python3 verifier/drift_verify.py --self-test
           python3 release/tuf_verify.py --self-test
+      - name: Verify macOS arm64 Release Archive & CLI
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
           ok=0; for i in 1 2 3 4 5 6 7 8 9 10; do ./install.sh --no-maven && ok=1 && break || sleep 3; done; [ "$ok" = 1 ]
           export PATH="$HOME/.local/bin:$PATH"
           drift version
@@ -369,10 +385,9 @@ jobs:
           drift review example/.drift/contracts --brief
 
   verify-windows-x64:
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-2025
     steps:
-      - name: Verify Windows x64 Release Archive, PowerShell Installer & Verifier
+      - name: Verify Open Verifier & TUF Metadata Guard on Windows x64 (Pre-Merge Safe)
         shell: pwsh
         run: |
           git init -q .
@@ -382,6 +397,10 @@ jobs:
 
           python verifier/drift_verify.py --self-test
           python release/tuf_verify.py --self-test
+      - name: Verify Windows x64 Release Archive & PowerShell Installer
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: pwsh
+        run: |
           $ver = (Get-Content VERSION -TotalCount 1).Trim()
           $pkg = "drift-$ver-windows-x64.zip"
           $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$ver"

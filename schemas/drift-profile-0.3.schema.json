@@ -12,6 +12,7 @@
       },
       "properties": {
         "at": {
+          "description": "Verification levels where this case must be proven (for example unit, http, or ui).",
           "items": {
             "pattern": "^[a-z][a-z0-9_]*$",
             "type": "string"
@@ -20,17 +21,21 @@
           "uniqueItems": true
         },
         "because": {
+          "description": "Mandatory rationale explaining why a case has a non-active status (such as deferred).",
           "minLength": 1,
           "type": "string"
         },
         "note": {
+          "description": "Case-specific context note outside the behavioral digest.",
           "type": "string"
         },
         "scenario": {
+          "description": "Short human-readable scenario label for reports and reviews.",
           "minLength": 1,
           "type": "string"
         },
         "status": {
+          "description": "Lifecycle exemption status (such as deferred or reviewed); omit for active cases.",
           "enum": [
             "deferred",
             "reviewed"
@@ -40,6 +45,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/constraint-value"
           },
+          "description": "Expected postcondition predicate clauses or literals that must hold.",
           "minProperties": 1,
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_]*$"
@@ -50,12 +56,14 @@
           "additionalProperties": {
             "$ref": "#/$defs/constraint-value"
           },
+          "description": "Input precondition predicate clauses or literals selecting this case.",
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "type": "object"
         },
         "writes": {
+          "description": "Case-specific subset of scope.writes permitted to mutate ([] enforces a pure read/error frame).",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -73,6 +81,7 @@
       "additionalProperties": false,
       "properties": {
         "aliases": {
+          "description": "Alternative terms normalized to preferred during vocabulary and recall checks.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -81,11 +90,13 @@
           "uniqueItems": true
         },
         "means": {
+          "description": "Single-sentence domain definition of the concept.",
           "minLength": 1,
           "type": "string"
         },
         "predicates": {
           "additionalProperties": false,
+          "description": "Profile when/then predicates governed by this concept.",
           "properties": {
             "then": {
               "items": {
@@ -107,10 +118,12 @@
           "type": "object"
         },
         "preferred": {
+          "description": "Canonical domain identifier to use in contracts and code.",
           "pattern": "^[a-z][a-z0-9_]*$",
           "type": "string"
         },
         "replaced_by": {
+          "description": "Successor concept identifier when deprecating a legacy term.",
           "pattern": "^(?:|[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*)$",
           "type": "string"
         }
@@ -198,16 +211,20 @@
               "minItems": 1,
               "type": "array"
             }
-          ]
+          ],
+          "description": "Substring or element that the observed string or collection must contain."
         },
         "convert_from": {
+          "description": "Source unit key converted via profile [units] before comparison.",
           "minLength": 1,
           "type": "string"
         },
         "eq": {
-          "$ref": "#/$defs/toml-value"
+          "$ref": "#/$defs/toml-value",
+          "description": "Exact scalar, array, or map value expected."
         },
         "in": {
+          "description": "Finite set of allowed values.",
           "items": {
             "$ref": "#/$defs/toml-value"
           },
@@ -216,6 +233,7 @@
         },
         "keys": {
           "additionalProperties": false,
+          "description": "Map key allowlist or forbidlist constraints.",
           "minProperties": 1,
           "properties": {
             "allow": {
@@ -241,6 +259,7 @@
         },
         "len": {
           "additionalProperties": false,
+          "description": "Collection or string length bounds ({min, max}).",
           "minProperties": 1,
           "properties": {
             "max": {
@@ -259,18 +278,21 @@
           "type": "object"
         },
         "max": {
+          "description": "Inclusive upper numeric bound.",
           "type": [
             "number",
             "string"
           ]
         },
         "min": {
+          "description": "Inclusive lower numeric bound.",
           "type": [
             "number",
             "string"
           ]
         },
         "not_in": {
+          "description": "Finite set of forbidden values.",
           "items": {
             "$ref": "#/$defs/toml-value"
           },
@@ -279,6 +301,7 @@
         },
         "peer": {
           "additionalProperties": false,
+          "description": "Relational coupling against sibling when/then predicates (eq, le, ge, sum, or balance).",
           "minProperties": 1,
           "properties": {
             "balance": {
@@ -328,11 +351,13 @@
           "type": "object"
         },
         "prefix": {
+          "description": "Required string prefix.",
           "minLength": 1,
           "type": "string"
         },
         "series": {
           "additionalProperties": false,
+          "description": "Sequence monotonicity, step delta, or sum-total invariant over ordered observations.",
           "minProperties": 1,
           "properties": {
             "monotonic": {
@@ -359,11 +384,13 @@
           "type": "object"
         },
         "suffix": {
+          "description": "Required string suffix.",
           "minLength": 1,
           "type": "string"
         },
         "tol": {
           "additionalProperties": false,
+          "description": "Numeric approximation tolerance ({abs, rel}) paired with eq.",
           "minProperties": 1,
           "properties": {
             "abs": {
@@ -406,6 +433,7 @@
       "additionalProperties": false,
       "properties": {
         "cases": {
+          "description": "Contract cases verifying this control.",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -414,14 +442,17 @@
           "uniqueItems": true
         },
         "context_ref": {
+          "description": "Validity-context envelope reference scoping external evidence.",
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
         "criteria_ref": {
+          "description": "Acceptance criteria reference for control evaluation.",
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
         "effectiveness_evidence": {
+          "description": "Receipt kinds proving operational effectiveness of the control.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -430,12 +461,14 @@
           "uniqueItems": true
         },
         "enforce": {
+          "description": "Phase at which control evidence is required.",
           "enum": [
             "execution",
             "release"
           ]
         },
         "implementation_evidence": {
+          "description": "Proof or receipt kinds attesting control implementation.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -444,6 +477,7 @@
           "uniqueItems": true
         },
         "kind": {
+          "description": "Control classification (preventive, detective, or corrective).",
           "enum": [
             "software",
             "interface",
@@ -452,6 +486,7 @@
           ]
         },
         "mitigates": {
+          "description": "Risk identifiers reciprocally mitigated by this control.",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -461,6 +496,7 @@
           "uniqueItems": true
         },
         "note": {
+          "description": "Supplemental control context outside the behavioral digest.",
           "type": "string"
         }
       },
@@ -508,10 +544,12 @@
       ],
       "properties": {
         "ask": {
+          "description": "Concise question (<= 120 chars) settled by this decision card.",
           "maxLength": 120,
           "type": "string"
         },
         "cases": {
+          "description": "Contract or inherited profile cases affected by this decision.",
           "items": {
             "type": "string"
           },
@@ -519,6 +557,7 @@
           "type": "array"
         },
         "decide_by": {
+          "description": "Latest phase by which pick must be chosen (approval, execution, or release).",
           "enum": [
             "approval",
             "execution",
@@ -526,6 +565,7 @@
           ]
         },
         "evidence": {
+          "description": "Epistemic grounding of the decision (observed, inferred, or assumed).",
           "enum": [
             "observed",
             "inferred",
@@ -533,6 +573,7 @@
           ]
         },
         "kind": {
+          "description": "Decision card category (choice, assumption, or divergence).",
           "enum": [
             "choice",
             "assumption",
@@ -540,12 +581,14 @@
           ]
         },
         "note": {
+          "description": "Supporting prose outside the digest.",
           "type": "string"
         },
         "options": {
           "additionalProperties": {
             "$ref": "#/$defs/option"
           },
+          "description": "1 to 4 candidate options (<opt-id>) with effort, risk, undo, and complexity trade-offs.",
           "maxProperties": 4,
           "minProperties": 1,
           "propertyNames": {
@@ -554,18 +597,23 @@
           "type": "object"
         },
         "owner": {
+          "description": "Accountable decision owner notified on revisit or consumer impact.",
           "type": "string"
         },
         "pick": {
+          "description": "Chosen option identifier, or '' while the decision remains open.",
           "type": "string"
         },
         "revisit_if": {
+          "description": "Observable condition that reopens the card (required unless evidence is observed).",
           "type": "string"
         },
         "source": {
+          "description": "Supporting ADR, specification section, or legacy file (required on assumption/divergence).",
           "type": "string"
         },
         "why": {
+          "description": "One-line justification (required when pick costs more effort_h than an undominated option).",
           "type": "string"
         }
       },
@@ -583,6 +631,7 @@
       "additionalProperties": false,
       "properties": {
         "complexity": {
+          "description": "Anchored structural complexity rating ('1/4' to '4/4').",
           "enum": [
             "1/4",
             "2/4",
@@ -591,6 +640,7 @@
           ]
         },
         "confidence": {
+          "description": "Anchored confidence in the estimate ('1/4' to '4/4').",
           "enum": [
             "1/4",
             "2/4",
@@ -599,20 +649,24 @@
           ]
         },
         "deps": {
+          "description": "External components, libraries, or upstream contracts required by this option.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "does": {
+          "description": "Concise summary (<= 100 chars) of what this option implements.",
           "maxLength": 100,
           "type": "string"
         },
         "effort_h": {
+          "description": "Estimated implementation effort in hours.",
           "minimum": 0,
           "type": "number"
         },
         "leverage": {
+          "description": "Anchored cross-slice reuse or simplification value ('1/4' to '4/4').",
           "enum": [
             "1/4",
             "2/4",
@@ -621,6 +675,7 @@
           ]
         },
         "parity": {
+          "description": "Behavioral relationship to legacy/upstream baseline (same, extends, or diverges).",
           "enum": [
             "same",
             "diverges",
@@ -628,6 +683,7 @@
           ]
         },
         "risk": {
+          "description": "Anchored operational or regression risk ('1/4' to '4/4').",
           "enum": [
             "1/4",
             "2/4",
@@ -636,6 +692,7 @@
           ]
         },
         "undo": {
+          "description": "Reversibility cost once deployed (easy, costly, or one-way).",
           "enum": [
             "easy",
             "costly",
@@ -656,6 +713,7 @@
       "additionalProperties": false,
       "properties": {
         "controls": {
+          "description": "Control identifiers reciprocally mitigating this risk.",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -665,9 +723,11 @@
           "uniqueItems": true
         },
         "note": {
+          "description": "Additional risk context.",
           "type": "string"
         },
         "summary": {
+          "description": "Concise description of the failure mode or threat.",
           "minLength": 1,
           "type": "string"
         }
@@ -682,6 +742,7 @@
       "additionalProperties": false,
       "properties": {
         "compensating": {
+          "description": "Whether this predicate represents a saga compensation action.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -691,6 +752,7 @@
           "uniqueItems": true
         },
         "enum": {
+          "description": "Closed list of allowed string values for this predicate.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -701,6 +763,7 @@
         },
         "len": {
           "additionalProperties": false,
+          "description": "Length bounds ({min, max}) enforced on every value of this predicate.",
           "minProperties": 1,
           "properties": {
             "max": {
@@ -715,16 +778,20 @@
           "type": "object"
         },
         "max": {
+          "description": "Upper numeric domain bound enforced by the profile.",
           "type": "number"
         },
         "min": {
+          "description": "Lower numeric domain bound enforced by the profile.",
           "type": "number"
         },
         "ptr": {
+          "description": "RFC 6901 JSON Pointer (optionally <store>:/ptr) projecting payload observations.",
           "minLength": 1,
           "type": "string"
         },
         "role": {
+          "description": "Semantic security or domain role (such as principal_tenant or resource_tenant).",
           "enum": [
             "state",
             "delivery_attempt",
@@ -735,6 +802,7 @@
           ]
         },
         "transient": {
+          "description": "Whether the predicate models a transient fault/retry state.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -744,6 +812,7 @@
           "uniqueItems": true
         },
         "type": {
+          "description": "Static IR value type (bool, int, float, string, bytes, enum, array, map, or any).",
           "enum": [
             "bool",
             "int",
@@ -755,6 +824,7 @@
           ]
         },
         "unit": {
+          "description": "Canonical physical or monetary unit attached to this predicate.",
           "minLength": 1,
           "type": "string"
         }
@@ -805,6 +875,7 @@
   "properties": {
     "assurance": {
       "additionalProperties": false,
+      "description": "Shared risk and control definitions inherited by contracts using this profile.",
       "properties": {
         "controls": {
           "additionalProperties": {
@@ -831,6 +902,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/case"
       },
+      "description": "Baseline behavioral cases inherited by contracts (unless waived in [use].waive).",
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
@@ -840,6 +912,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/concept"
       },
+      "description": "Context-qualified domain concepts mapping canonical terms and aliases to profile predicates.",
       "minProperties": 1,
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
@@ -850,15 +923,18 @@
       "additionalProperties": {
         "$ref": "#/$defs/decision"
       },
+      "description": "Reusable decision cards inherited by contracts using this profile.",
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
       "type": "object"
     },
     "drift": {
-      "const": "0.3"
+      "const": "0.3",
+      "description": "Normative DRIFT schema version ('0.3')."
     },
     "extends": {
+      "description": "Parent profile references (<name>@<N>) whose schema, cases, and invariants this profile refines.",
       "items": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
         "type": "string"
@@ -871,6 +947,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/constraint-value"
       },
+      "description": "Postcondition constraints merged into every non-exempt case of contracts using this profile.",
       "minProperties": 1,
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]*$"
@@ -878,6 +955,7 @@
       "type": "object"
     },
     "kit": {
+      "description": "Optional bridge helper or fixture kit identifier associated with this profile.",
       "type": "string"
     },
     "params": {
@@ -976,17 +1054,20 @@
           }
         ]
       },
+      "description": "Typed profile parameters that contracts must supply (and optionally bound) in [use].params.",
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]*$"
       },
       "type": "object"
     },
     "profile": {
+      "description": "Versioned profile identifier (<name>@<N>) matching the file name.",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
       "type": "string"
     },
     "requires": {
       "additionalProperties": false,
+      "description": "Mandatory scope, proof floor, security categories, or static code guards enforced on contracts.",
       "properties": {
         "budget_metrics": {
           "items": {
@@ -1164,6 +1245,7 @@
     },
     "schema": {
       "additionalProperties": false,
+      "description": "Typed precondition ([schema.when]) and postcondition ([schema.then]) predicate declarations.",
       "minProperties": 1,
       "properties": {
         "then": {
@@ -1180,6 +1262,7 @@
         "exclusiveMinimum": 0,
         "type": "number"
       },
+      "description": "Deterministic unit conversion factors (<from>-><to>) available to relational clauses.",
       "minProperties": 1,
       "propertyNames": {
         "pattern": "^[^\\s-]+->[^\\s-]+$"

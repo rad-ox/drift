@@ -62,7 +62,11 @@ def eval_sim_opt_blocks(rec: dict[str, Any], eff: str) -> tuple[str, str]:
     if isinstance(oc := rec.get("observed_convergence"), dict):
         gs, es, rf, mo, vp = oc["grid_steps"], oc["errors"], oc["roundoff_floor"], oc["min_expected_order"], 0
         for i in range(len(gs) - 1):
-            if es[i] <= rf or es[i + 1] <= rf:
+            if es[i] <= rf:
+                if es[i + 1] > rf:
+                    return "violated", "sim.convergence_degraded"
+                continue
+            if es[i + 1] <= rf:
                 continue
             vp += 1
             if es[i + 1] >= es[i] or (math.log(es[i] / es[i + 1]) / math.log(gs[i] / gs[i + 1])) + 1e-9 < mo:

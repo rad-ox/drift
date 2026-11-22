@@ -4,18 +4,22 @@
       "additionalProperties": false,
       "properties": {
         "assurance_ref": {
+          "description": "0.3 assurance seal (dr2a:)",
           "pattern": "^dr2a:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
           "type": "string"
         },
         "at": {
+          "description": "UTC RFC 3339 approval time",
           "format": "date-time",
           "type": "string"
         },
         "behavior_ref": {
+          "description": "0.3 behavioral seal (dr2b:)",
           "pattern": "^dr2b:(?:sha256:[0-9a-f]{64}|[0-9a-f]{12})$",
           "type": "string"
         },
         "by": {
+          "description": "Approving owner ID",
           "minLength": 1,
           "type": "string"
         }
@@ -39,6 +43,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/budget"
           },
+          "description": "Performance budgets",
           "propertyNames": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
@@ -48,30 +53,35 @@
           "additionalProperties": {
             "$ref": "#/$defs/control"
           },
+          "description": "Risk-mitigating controls",
           "propertyNames": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
           "type": "object"
         },
         "cutover": {
-          "$ref": "#/$defs/cutover"
+          "$ref": "#/$defs/cutover",
+          "description": "Parity and migration cutover gate"
         },
         "formal": {
           "additionalProperties": {
             "$ref": "#/$defs/formal"
           },
+          "description": "Formal verification obligations",
           "propertyNames": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
           "type": "object"
         },
         "guards": {
-          "$ref": "#/$defs/guards"
+          "$ref": "#/$defs/guards",
+          "description": "Line-count and import guards"
         },
         "risks": {
           "additionalProperties": {
             "$ref": "#/$defs/risk"
           },
+          "description": "Declared risks",
           "propertyNames": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
@@ -84,6 +94,7 @@
       "additionalProperties": false,
       "properties": {
         "code": {
+          "description": "Owned globs or <path>#<symbol>",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -91,6 +102,7 @@
           "type": "array"
         },
         "sources": {
+          "description": "Spec, ADR, or schema files",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -145,6 +157,7 @@
       ],
       "properties": {
         "aggregation": {
+          "description": "Statistic (p50, p95, p99, max, mean)",
           "enum": [
             "p99",
             "rate",
@@ -152,36 +165,44 @@
           ]
         },
         "baseline_ref": {
-          "$ref": "#/$defs/artifact-ref"
+          "$ref": "#/$defs/artifact-ref",
+          "description": "Baseline receipt for regression"
         },
         "case": {
+          "description": "Exercised contract case",
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
           "type": "string"
         },
         "enforce": {
+          "description": "Gated phase (execution/release)",
           "enum": [
             "execution",
             "release"
           ]
         },
         "environment_ref": {
-          "$ref": "#/$defs/artifact-ref"
+          "$ref": "#/$defs/artifact-ref",
+          "description": "Required runner environment"
         },
         "evidence": {
+          "description": "Measurement evidence mode",
           "enum": [
             "statistical",
             "observed"
           ]
         },
         "limit": {
+          "description": "Threshold in declared unit",
           "minimum": 0,
           "type": "number"
         },
         "max_regression": {
+          "description": "Max relative degradation",
           "minimum": 0,
           "type": "number"
         },
         "metric": {
+          "description": "Measured metric kind",
           "enum": [
             "request_latency",
             "successful_throughput",
@@ -199,23 +220,28 @@
           ]
         },
         "min_confidence": {
+          "description": "Minimum confidence level",
           "exclusiveMaximum": 1,
           "exclusiveMinimum": 0,
           "type": "number"
         },
         "note": {
+          "description": "Budget note",
           "type": "string"
         },
         "op": {
+          "description": "Comparison operator",
           "enum": [
             "le",
             "ge"
           ]
         },
         "protocol_ref": {
-          "$ref": "#/$defs/artifact-ref"
+          "$ref": "#/$defs/artifact-ref",
+          "description": "Sampling/warmup protocol"
         },
         "unit": {
+          "description": "Unit (ms, us, ns, B, req_per_s)",
           "enum": [
             "ns",
             "request/s",
@@ -224,12 +250,14 @@
           ]
         },
         "warn_ratio": {
+          "description": "Advisory warning ratio",
           "exclusiveMaximum": 1,
           "exclusiveMinimum": 0,
           "type": "number"
         },
         "workload_ref": {
-          "$ref": "#/$defs/artifact-ref"
+          "$ref": "#/$defs/artifact-ref",
+          "description": "Workload definition ref"
         }
       },
       "required": [
@@ -259,6 +287,7 @@
       },
       "properties": {
         "at": {
+          "description": "Target verification levels",
           "items": {
             "pattern": "^[a-z][a-z0-9_]*$",
             "type": "string"
@@ -267,17 +296,21 @@
           "uniqueItems": true
         },
         "because": {
+          "description": "Reason for non-active status",
           "minLength": 1,
           "type": "string"
         },
         "note": {
+          "description": "Case note outside digest",
           "type": "string"
         },
         "scenario": {
+          "description": "Readable scenario label",
           "minLength": 1,
           "type": "string"
         },
         "status": {
+          "description": "Exemption (deferred/reviewed)",
           "enum": [
             "deferred",
             "reviewed"
@@ -287,6 +320,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/constraint-value"
           },
+          "description": "Expected postcondition clauses",
           "minProperties": 1,
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_]*$"
@@ -297,12 +331,14 @@
           "additionalProperties": {
             "$ref": "#/$defs/constraint-value"
           },
+          "description": "Input precondition clauses",
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "type": "object"
         },
         "writes": {
+          "description": "Allowed writes ([] = pure read)",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -394,16 +430,20 @@
               "minItems": 1,
               "type": "array"
             }
-          ]
+          ],
+          "description": "Required substring/element"
         },
         "convert_from": {
+          "description": "Source unit in [units]",
           "minLength": 1,
           "type": "string"
         },
         "eq": {
-          "$ref": "#/$defs/toml-value"
+          "$ref": "#/$defs/toml-value",
+          "description": "Exact expected value"
         },
         "in": {
+          "description": "Allowed value set",
           "items": {
             "$ref": "#/$defs/toml-value"
           },
@@ -412,6 +452,7 @@
         },
         "keys": {
           "additionalProperties": false,
+          "description": "Map key allow/forbid rules",
           "minProperties": 1,
           "properties": {
             "allow": {
@@ -437,6 +478,7 @@
         },
         "len": {
           "additionalProperties": false,
+          "description": "Length bounds ({min, max})",
           "minProperties": 1,
           "properties": {
             "max": {
@@ -455,18 +497,21 @@
           "type": "object"
         },
         "max": {
+          "description": "Inclusive upper bound",
           "type": [
             "number",
             "string"
           ]
         },
         "min": {
+          "description": "Inclusive lower bound",
           "type": [
             "number",
             "string"
           ]
         },
         "not_in": {
+          "description": "Forbidden value set",
           "items": {
             "$ref": "#/$defs/toml-value"
           },
@@ -475,6 +520,7 @@
         },
         "peer": {
           "additionalProperties": false,
+          "description": "Sibling predicate coupling",
           "minProperties": 1,
           "properties": {
             "balance": {
@@ -524,11 +570,13 @@
           "type": "object"
         },
         "prefix": {
+          "description": "Required string prefix",
           "minLength": 1,
           "type": "string"
         },
         "series": {
           "additionalProperties": false,
+          "description": "Sequence invariant",
           "minProperties": 1,
           "properties": {
             "monotonic": {
@@ -555,11 +603,13 @@
           "type": "object"
         },
         "suffix": {
+          "description": "Required string suffix",
           "minLength": 1,
           "type": "string"
         },
         "tol": {
           "additionalProperties": false,
+          "description": "Tolerance ({abs, rel})",
           "minProperties": 1,
           "properties": {
             "abs": {
@@ -602,6 +652,7 @@
       "additionalProperties": false,
       "properties": {
         "cases": {
+          "description": "Verifying cases",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -610,14 +661,17 @@
           "uniqueItems": true
         },
         "context_ref": {
+          "description": "Validity-context ref",
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
         "criteria_ref": {
+          "description": "Acceptance criteria ref",
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
         "effectiveness_evidence": {
+          "description": "Effectiveness receipt kinds",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -626,12 +680,14 @@
           "uniqueItems": true
         },
         "enforce": {
+          "description": "Gated phase",
           "enum": [
             "execution",
             "release"
           ]
         },
         "implementation_evidence": {
+          "description": "Implementation receipt kinds",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -640,6 +696,7 @@
           "uniqueItems": true
         },
         "kind": {
+          "description": "preventive, detective, corrective",
           "enum": [
             "software",
             "interface",
@@ -648,6 +705,7 @@
           ]
         },
         "mitigates": {
+          "description": "Mitigated risk IDs",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -657,6 +715,7 @@
           "uniqueItems": true
         },
         "note": {
+          "description": "Control note",
           "type": "string"
         }
       },
@@ -670,20 +729,24 @@
       "additionalProperties": false,
       "properties": {
         "candidate_target": {
+          "description": "Candidate target ID",
           "minLength": 1,
           "type": "string"
         },
         "corpus_ref": {
+          "description": "Replay corpus ID",
           "pattern": "^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
           "type": "string"
         },
         "enforce": {
+          "description": "Parity gate phase",
           "enum": [
             "release",
             "always"
           ]
         },
         "intentional_diffs": {
+          "description": "Allowed parity diffs",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*\\.[a-z][a-z0-9_]*$",
             "type": "string"
@@ -692,10 +755,12 @@
           "uniqueItems": true
         },
         "legacy_target": {
+          "description": "Legacy baseline ID",
           "minLength": 1,
           "type": "string"
         },
         "migration_ids": {
+          "description": "Required migration epochs",
           "items": {
             "pattern": "^(?:[a-z0-9]+(?:-[a-z0-9]+)*|[a-z][a-z0-9_]*)$",
             "type": "string"
@@ -705,13 +770,16 @@
           "uniqueItems": true
         },
         "normalization_ref": {
+          "description": "Payload normalization ref",
           "pattern": "^(?:sha256:[0-9a-f]{64}|(?:dr1|dr2b):(?:sha256:[0-9a-f]{64}|[0-9a-f]{12}))$",
           "type": "string"
         },
         "note": {
+          "description": "Cutover note",
           "type": "string"
         },
         "rollback_readback": {
+          "description": "Require rollback parity",
           "enum": [
             "required",
             "not_applicable"
@@ -764,10 +832,12 @@
       ],
       "properties": {
         "ask": {
+          "description": "Question (<=120 chars)",
           "maxLength": 120,
           "type": "string"
         },
         "cases": {
+          "description": "Affected cases",
           "items": {
             "type": "string"
           },
@@ -775,6 +845,7 @@
           "type": "array"
         },
         "decide_by": {
+          "description": "Phase deadline for pick",
           "enum": [
             "approval",
             "execution",
@@ -782,6 +853,7 @@
           ]
         },
         "evidence": {
+          "description": "observed, inferred, assumed",
           "enum": [
             "observed",
             "inferred",
@@ -789,6 +861,7 @@
           ]
         },
         "kind": {
+          "description": "choice, assumption, divergence",
           "enum": [
             "choice",
             "assumption",
@@ -796,12 +869,14 @@
           ]
         },
         "note": {
+          "description": "Prose outside digest",
           "type": "string"
         },
         "options": {
           "additionalProperties": {
             "$ref": "#/$defs/option"
           },
+          "description": "1..4 candidate options",
           "maxProperties": 4,
           "minProperties": 1,
           "propertyNames": {
@@ -810,18 +885,23 @@
           "type": "object"
         },
         "owner": {
+          "description": "Decision owner",
           "type": "string"
         },
         "pick": {
+          "description": "Chosen option ID or ''",
           "type": "string"
         },
         "revisit_if": {
+          "description": "Reopen condition",
           "type": "string"
         },
         "source": {
+          "description": "Supporting spec/ADR/file",
           "type": "string"
         },
         "why": {
+          "description": "Rationale for costlier pick",
           "type": "string"
         }
       },
@@ -869,6 +949,7 @@
       ],
       "properties": {
         "cases": {
+          "description": "Backed cases",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -882,6 +963,7 @@
             "minimum": 1,
             "type": "integer"
           },
+          "description": "Required unwind/bit bounds",
           "minProperties": 1,
           "propertyNames": {
             "enum": [
@@ -898,12 +980,14 @@
           "type": "object"
         },
         "enforce": {
+          "description": "Formal gate phase",
           "enum": [
             "execution",
             "release"
           ]
         },
         "fairness": {
+          "description": "Liveness fairness rule",
           "enum": [
             "none",
             "weak",
@@ -911,10 +995,12 @@
           ]
         },
         "harness": {
+          "description": "In-code <path>#<symbol>",
           "minLength": 3,
           "type": "string"
         },
         "linkage": {
+          "description": "in_code_harness/external_model",
           "enum": [
             "in_code_harness",
             "conformance_traced",
@@ -922,6 +1008,7 @@
           ]
         },
         "min_evidence": {
+          "description": "Minimum proof depth",
           "enum": [
             "deductive",
             "bounded_exhaustive",
@@ -929,13 +1016,16 @@
           ]
         },
         "note": {
+          "description": "Formal note",
           "type": "string"
         },
         "property": {
+          "description": "Formal property ID",
           "pattern": "^[a-z][a-z0-9_-]*$",
           "type": "string"
         },
         "property_kind": {
+          "description": "safety, liveness, equivalence",
           "enum": [
             "safety",
             "liveness",
@@ -943,6 +1033,7 @@
           ]
         },
         "verifier": {
+          "description": "Formal tool name",
           "enum": [
             "kani",
             "loom",
@@ -994,6 +1085,7 @@
       ],
       "properties": {
         "forbid_imports": {
+          "description": "Forbidden import prefixes",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -1003,6 +1095,7 @@
           "uniqueItems": true
         },
         "forbid_touched": {
+          "description": "Paths/globs tests must not touch (enforced in dr2a and observations).",
           "items": {
             "minLength": 3,
             "type": "string"
@@ -1012,10 +1105,12 @@
           "uniqueItems": true
         },
         "max_lines": {
+          "description": "Max lines per target file",
           "minimum": 1,
           "type": "integer"
         },
         "require_containment": {
+          "description": "Require proof runners to run inside a verified containment sandbox.",
           "items": {
             "enum": [
               "no_network",
@@ -1027,6 +1122,7 @@
           "uniqueItems": true
         },
         "target": {
+          "description": "Guarded file globs",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -1045,10 +1141,12 @@
       "additionalProperties": false,
       "properties": {
         "ask": {
+          "description": "Question (<=120 chars)",
           "maxLength": 120,
           "type": "string"
         },
         "blocks": {
+          "description": "Blocked phase",
           "enum": [
             "approval",
             "execution",
@@ -1056,6 +1154,7 @@
           ]
         },
         "owner": {
+          "description": "Responsible owner",
           "type": "string"
         }
       },
@@ -1069,6 +1168,7 @@
       "additionalProperties": false,
       "properties": {
         "complexity": {
+          "description": "Complexity ('1/4'..'4/4')",
           "enum": [
             "1/4",
             "2/4",
@@ -1077,6 +1177,7 @@
           ]
         },
         "confidence": {
+          "description": "Confidence ('1/4'..'4/4')",
           "enum": [
             "1/4",
             "2/4",
@@ -1085,20 +1186,24 @@
           ]
         },
         "deps": {
+          "description": "Required dependencies",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "does": {
+          "description": "Summary (<=100 chars)",
           "maxLength": 100,
           "type": "string"
         },
         "effort_h": {
+          "description": "Estimated hours",
           "minimum": 0,
           "type": "number"
         },
         "leverage": {
+          "description": "Leverage ('1/4'..'4/4')",
           "enum": [
             "1/4",
             "2/4",
@@ -1107,6 +1212,7 @@
           ]
         },
         "parity": {
+          "description": "same, extends, diverges",
           "enum": [
             "same",
             "diverges",
@@ -1114,6 +1220,7 @@
           ]
         },
         "risk": {
+          "description": "Risk ('1/4'..'4/4')",
           "enum": [
             "1/4",
             "2/4",
@@ -1122,6 +1229,7 @@
           ]
         },
         "undo": {
+          "description": "easy, costly, one-way",
           "enum": [
             "easy",
             "costly",
@@ -1142,6 +1250,7 @@
       "additionalProperties": false,
       "properties": {
         "controls": {
+          "description": "Mitigating control IDs",
           "items": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
             "type": "string"
@@ -1151,9 +1260,11 @@
           "uniqueItems": true
         },
         "note": {
+          "description": "Risk note",
           "type": "string"
         },
         "summary": {
+          "description": "Threat/failure summary",
           "minLength": 1,
           "type": "string"
         }
@@ -1168,9 +1279,11 @@
       "additionalProperties": false,
       "properties": {
         "env": {
+          "description": "Read env variables",
           "type": "string"
         },
         "indirect": {
+          "description": "'none', 'unknown', or list",
           "oneOf": [
             {
               "enum": [
@@ -1188,12 +1301,14 @@
           ]
         },
         "out": {
+          "description": "Exported resources",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "reads": {
+          "description": "Read resources",
           "items": {
             "type": "string"
           },
@@ -1207,9 +1322,11 @@
             {
               "type": "object"
             }
-          ]
+          ],
+          "description": "External entrypoint"
         },
         "writes": {
+          "description": "Mutated resources",
           "items": {
             "type": "string"
           },
@@ -1259,6 +1376,7 @@
       },
       "properties": {
         "concepts": {
+          "description": "Adopted <ctx>.<id> concepts",
           "items": {
             "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
             "type": "string"
@@ -1276,12 +1394,14 @@
               "boolean"
             ]
           },
+          "description": "Profile parameter values",
           "propertyNames": {
             "pattern": "^[a-z][a-z0-9_]*$"
           },
           "type": "object"
         },
         "profile": {
+          "description": "Profile ref (<name>@<N>)",
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$",
           "type": "string"
         },
@@ -1290,6 +1410,7 @@
             "minLength": 1,
             "type": "string"
           },
+          "description": "Waived inherited cases",
           "propertyNames": {
             "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
           },
@@ -1334,18 +1455,22 @@
   ],
   "properties": {
     "approval": {
-      "$ref": "#/$defs/approval"
+      "$ref": "#/$defs/approval",
+      "description": "Dual 0.3 owner seals (dr2b/dr2a)"
     },
     "assurance": {
-      "$ref": "#/$defs/assurance"
+      "$ref": "#/$defs/assurance",
+      "description": "Budgets, guards, formal, cutover, risks, controls"
     },
     "bind": {
-      "$ref": "#/$defs/bind"
+      "$ref": "#/$defs/bind",
+      "description": "Code globs/#symbols and reference sources"
     },
     "cases": {
       "additionalProperties": {
         "$ref": "#/$defs/case"
       },
+      "description": "Cases mapping when inputs to then outcomes",
       "minProperties": 1,
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
@@ -1356,19 +1481,23 @@
       "additionalProperties": {
         "$ref": "#/$defs/decision"
       },
+      "description": "Choice, assumption, or divergence cards",
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
       "type": "object"
     },
     "drift": {
-      "const": "0.3"
+      "const": "0.3",
+      "description": "Schema version ('0.3')"
     },
     "id": {
+      "description": "Kebab-case slice ID matching file stem",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
       "type": "string"
     },
     "intent": {
+      "description": "One-sentence slice behaviour summary",
       "minLength": 1,
       "type": "string"
     },
@@ -1376,6 +1505,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/constraint-value"
       },
+      "description": "Postconditions merged into active cases",
       "minProperties": 1,
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]*$"
@@ -1383,22 +1513,26 @@
       "type": "object"
     },
     "note": {
+      "description": "Context note outside digests",
       "type": "string"
     },
     "open": {
       "additionalProperties": {
         "$ref": "#/$defs/open"
       },
+      "description": "Unresolved phase-blocking questions",
       "propertyNames": {
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
       "type": "object"
     },
     "scope": {
-      "$ref": "#/$defs/scope"
+      "$ref": "#/$defs/scope",
+      "description": "Surface, reads, writes, out, indirect"
     },
     "use": {
-      "$ref": "#/$defs/use"
+      "$ref": "#/$defs/use",
+      "description": "Profile ref, params, concepts, waivers"
     }
   },
   "required": [

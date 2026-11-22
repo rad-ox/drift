@@ -25,7 +25,7 @@ Require deterministic simulation receipts (`*.sim.json`, `drift.sim-receipt/1`) 
 - **`tick_determinism`**: cross-platform trajectory digest and `divergent_ticks` (`sim.desync_detected`).
 - **`rollback_invariance`**: rollback window resimulation mismatches and leaked ambient mutations (`sim.rollback_drift`).
 - **`save_epoch_compatibility`**: active save epochs verified against all contract `[invariants]` (`sim.save_epoch_incompatible`).
-- **Numerical stability:** optional `observed_convergence` (grid refinement order vs `min_expected_order`) and `trajectory_stability` (finite-horizon drift, `NaN`/`Inf`, and optional `forbid_subnormals`).
+- **Numerical stability:** optional `observed_convergence` (grid refinement order vs `min_expected_order`; rebounds strictly above `roundoff_floor` fail as `sim.convergence_degraded` across CLI and MIT verifier) and `trajectory_stability` (finite-horizon drift, `NaN`/`Inf`, and optional `forbid_subnormals`).
 
 ```bash
 drift gate .drift/contracts --events .drift-work/events --phase release --explain

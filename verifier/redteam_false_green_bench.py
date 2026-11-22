@@ -258,6 +258,9 @@ ATTACK_SPECS = [
     ("A09-hardcoded-actuals-literal", "Pass hardcoded literal {'status': 200, 'name': 'lamp'} to d.check without calling SUT", False),
     ("A10-when-to-then-lookup-table", "Mirror contract when->then in an in-test lookup table without calling SUT", False),
     ("A11-in-process-forged-jsonl", "Write synthetic passing JSONL and .meta.json directly from test process", False),
+    ("A12-tautology-callback", "Pass tautology callbacks (() => true, (v) => true, lambda v: True) to d.check", False),
+    ("A13-read-without-assert", "Call d.expect() on every then.* field without asserting any observed value", False),
+    ("A14-overlapping-test-deleted", "Delete failing test from .meta.json (gone: 1) while a duplicate weak test still covers the case", False),
     ("P01-genuine-fix", "Positive control: SUT bug is genuinely fixed and tested live", True),
     ("P02-genuine-fix-escaped-obs", "Positive control: SUT genuinely fixed with escaped-quote observation", True),
 ]
@@ -405,6 +408,31 @@ def _execute_scenario(
                         "control": "passed",
                     }))
             (mut_dir / "py.mut.jsonl").write_text("\n".join(m_lines) + "\n", encoding="utf-8")
+    elif scenario_id == "A12-tautology-callback":
+        _run_code(_test_snippet(
+            "def _i(v): _ = v; return True\n"
+            "for n, f in (('z', lambda: True), ('c', lambda v: True), ('i', _i)):\n"
+            "  try: drift.run_drift_case('item-get', f't.py#f_{n}', ['found'], lambda d, f=f: d.check('found', {'status': f, 'name': f}), 'http')\n"
+            "  except AssertionError: pass\n"
+            "drift.run_drift_case('item-get', 't.py#not_found', ['not-found'], lambda d: d.check('not-found', sut(d.when('not-found', 'request'), False)), 'http')\n"
+        ))
+        js_b = next((p for p in (ROOT_DIR / "integrations/js/drift.mjs", ROOT_DIR / "bridges/drift.mjs") if p.is_file()), None)
+        if js_b and shutil.which("node"):
+            js = f"import{{runDriftCase}}from {json.dumps(js_b.resolve().as_uri())};for(const[n,f]of[['z',()=>true],['c',v=>true]])try{{await runDriftCase({{contract:'item-get',test:`t.mjs#${{n}}`,cases:['found'],level:'http'}},d=>d.check('found',{{status:f,name:f}}))}}catch(e){{if(!/must inspect/.test(e))throw e}}"
+            subprocess.run(["node", "--input-type=module", "-e", js], env={**os.environ, "DRIFT_RESOLVED": str(res_dir), "DRIFT_EVENTS": str(ev_dir / "js.jsonl")}, capture_output=True, text=True, check=True)
+    elif scenario_id == "A13-read-without-assert":
+        _run_code(_test_snippet(
+            "drift.run_drift_case('item-get','t.py#found',['found'],lambda d:(d.expect('found','status'),d.expect('found','name')),'http')\n"
+            "drift.run_drift_case('item-get','t.py#not_found',['not-found'],lambda d:(d.expect('not-found','status'),d.expect('not-found','error')),'http')\n"
+        ))
+    elif scenario_id == "A14-overlapping-test-deleted":
+        _run_code(_test_snippet(
+            "try: drift.run_drift_case('item-get','t.py#f1',['found'],lambda d:d.check('found',sut(d.when('found','request'),False)),'http')\n"
+            "except AssertionError: pass\n"
+            "drift.run_drift_case('item-get','t.py#f2',['found'],lambda d:d.check('found',{'status':200,'name':'lamp'}),'http')\n"
+            "drift.run_drift_case('item-get','t.py#not_found',['not-found'],lambda d:d.check('not-found',sut(d.when('not-found','request'),False)),'http')\n"
+        ))
+        (ev_dir / "py.meta.json").write_text('{"version":1,"classes":["t.py"],"tests":["t.py#f2","t.py#not_found"]}\n', encoding="utf-8")
     elif scenario_id == "P01-genuine-fix":
         _run_code(_genuine_test_code(fixed=True))
     elif scenario_id == "P02-genuine-fix-escaped-obs":

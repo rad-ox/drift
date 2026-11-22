@@ -47,7 +47,7 @@ drift gate ./checkout-repo/.drift/contracts --events ./checkout-repo/events --pa
 
 Local tightenings and internal refactors remain green without renegotiating the lock; envelope widenings, missing bilateral OpenSSH quorums, or unacknowledged revision retirements (`drift pact ack`) fail closed.
 
-In **Enterprise**, verify multi-hop fleet conservation (deadline squeeze, idempotency breaks, posture inversion, unmapped errors, revision hazards) across all pacts:
+In **Enterprise**, verify multi-hop fleet conservation (deadline squeeze, idempotency breaks, posture inversion, unmapped errors, revision hazards, and non-injective boundary projections `pact.boundary_non_injective`) across all pacts:
 
 ```bash
 drift sweep check .drift/contracts --root . --flow --pacts dist/pacts

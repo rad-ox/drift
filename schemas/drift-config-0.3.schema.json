@@ -16,18 +16,22 @@
       ],
       "properties": {
         "at": {
+          "description": "RFC 3339 UTC timestamp when the approval was recorded.",
           "format": "date-time",
           "type": "string"
         },
         "by": {
+          "description": "Identifier of the approving owner (must match policy.approvers when configured).",
           "minLength": 1,
           "type": "string"
         },
         "digest": {
+          "description": "Full SHA-256 configuration digest seal.",
           "pattern": "^dr1:sha256:[0-9a-f]{64}$",
           "type": "string"
         },
         "ref": {
+          "description": "Short or full digest reference sealing the configuration.",
           "pattern": "^dr1:[0-9a-f]{12}$",
           "type": "string"
         }
@@ -42,6 +46,7 @@
       "additionalProperties": false,
       "properties": {
         "argv": {
+          "description": "Command template executed for targeted/narrowed test runs.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -50,12 +55,14 @@
           "type": "array"
         },
         "compile_scope": {
+          "description": "Compilation boundary guaranteed by this runner (compile_and_run or test_only).",
           "enum": [
             "compile_and_run",
             "runtime_filter_only"
           ]
         },
         "cwd": {
+          "description": "Working directory relative to the area root where the runner command executes.",
           "minLength": 1,
           "type": "string"
         },
@@ -63,9 +70,11 @@
           "additionalProperties": {
             "type": "string"
           },
+          "description": "Extra static environment variables injected into runner invocations.",
           "type": "object"
         },
         "filter_mode": {
+          "description": "How narrowed test selectors are passed to the runner command.",
           "enum": [
             "append_after_double_dash",
             "append",
@@ -75,6 +84,7 @@
           ]
         },
         "match": {
+          "description": "File path globs that bind matching contracts or code paths to this runner profile.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -84,6 +94,7 @@
           "uniqueItems": true
         },
         "widen_argv": {
+          "description": "Fallback command template executed when selection widens to a full suite.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -120,15 +131,19 @@
   ],
   "properties": {
     "approval": {
-      "$ref": "#/$defs/approval"
+      "$ref": "#/$defs/approval",
+      "description": "Owner approval seal (dr1/dr2 ref, signer, and UTC timestamp) over the canonical configuration."
     },
     "drift": {
-      "const": "0.3"
+      "const": "0.3",
+      "description": "Normative DRIFT schema version ('0.3')."
     },
     "kind": {
-      "const": "config"
+      "const": "config",
+      "description": "Document kind discriminator ('config' for area configuration)."
     },
     "policy": {
+      "description": "Area governance policy (pack, authorized approvers, minimum proof floor, ignores, and sweep mode).",
       "if": {
         "required": [
           "pack"
@@ -145,6 +160,9 @@
             "minItems": 1,
             "type": "array",
             "uniqueItems": true
+          },
+          "block_redundancy_erosion": {
+            "type": "boolean"
           },
           "companion_edits": {
             "enum": [
@@ -242,6 +260,9 @@
               "killed"
             ]
           },
+          "require_observations": {
+            "type": "boolean"
+          },
           "require_signed_approval": {
             "type": "boolean"
           },
@@ -299,6 +320,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/runnerProfile"
       },
+      "description": "Named test-runner profiles used by drift select --cmd and worker-pack execution.",
       "minProperties": 1,
       "type": "object"
     }

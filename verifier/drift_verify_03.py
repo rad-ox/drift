@@ -44,7 +44,7 @@ def _norm_expr_03(raw, pred, side, units, params):
   if aff in raw: norm[aff] = str(raw[aff])
  for sk in ("in", "not_in"):
   if isinstance(raw.get(sk), list): norm[sk] = [_norm_num_03(_unesc_lit_03(it), p_typ) for it in raw[sk]]
- if isinstance(raw.get("contains"), list): norm["contains"] = _unesc_lit_03(raw["contains"])
+ if isinstance(raw.get("contains"), (list, str)): norm["contains"] = _unesc_lit_03(raw["contains"])
  if isinstance(raw.get("keys"), dict):
   caps.add("rel-keys-guard/1"); norm["keys"] = {kk: [str(x) for x in kv] for kk, kv in raw["keys"].items() if kk in ("allow", "forbid") and isinstance(kv, list)}
  if isinstance(raw.get("peer"), dict):

@@ -27,7 +27,7 @@ public final class MojoValidationSuite {
     private MojoValidationSuite() {}
 
     public static void main(String[] args) throws Exception {
-        String pluginVersion = (args.length > 0 && !args[0].isBlank()) ? args[0].trim() : "0.8.1";
+        String pluginVersion = (args.length > 0 && !args[0].isBlank()) ? args[0].trim() : "0.9.0";
         Path work = Files.createTempDirectory("drift-mojo-validation-");
         try {
             testFreshConflictsPreserveProofFiles(work.resolve("fresh-conflict"), pluginVersion);

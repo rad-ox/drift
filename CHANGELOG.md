@@ -2,6 +2,29 @@
 
 User-visible changes and capabilities by release.
 
+## 0.9.0
+
+- Release `0.9.0`.
+- Sync public docs and skill refs for `0.9.0` (`--taplo`, `require_observations`, `verdict_diff_fuzz.py`, `--pairs`, `--density`, `--max-degraded-lenses`, `--pack-base`).
+- Add Pro `plan --pack --pack-base` content-addressed backscatter delta (`drift.pack-delta/1`) with channel byte accounting and lossless reconstruction.
+- Add Pro `recall query --max-degraded-lenses <N>` fail-closed over-compression guard citing `first_degraded_anchor` over bounded lens counters.
+- Add Enterprise `stats --density` per-resource cost-per-verified-obligation (`C/U`) telemetry summing retries before obligation deduplication.
+- Add Enterprise `drift mutants --pairs` bounded 2nd-order pairs, `pact.boundary_non_injective` in `sweep --flow --pacts`, and `make confluence-fuzz`.
+- Add rewrite-diamond, Yang-Baxter braid replay, 2nd-order mutant pair V tests, and boundary-opacity/undeclared-seam non-collapse harness.
+- Deduplicate HyperedgeCollector members with -gc none safe growth in interference_compact.v and rank >8 critical what_if cuts across components in schedule_what_if_select.v.
+- Fix triple-conflict parallel-edge cycle masking, enforce simultaneous 3-way at-level overlap (levels_overlap3), and drop -gc none heap array literals in rel_domain.v.
+- Partition sparse polytope rows by connected components before the 64-row cap so disjoint rows preserve tightening, mutant witnesses, and `sweep --flow` refutations.
+- Add baseline proving-set erosion signal (`proving_tests_removed`, opt-in `block_redundancy_erosion`) and trusted-core LOC/parity ratchet.
+- Auto-emit `drift.observation/1` in JS/Py `d.check`, close verifier obs parity, add `policy.require_observations`, and add `verdict_diff_fuzz.py`.
+- Block tautology JS/Py callbacks (`() => true`/`lambda v: True`), move release-independent checks pre-merge on PRs, add red-team A12–A14, and align `verified`/`gone` docs.
+- Replace ±1e308 sweep sentinels with ±Inf, add Helly-1D triple & restricted-level fast paths, deterministic budget alias/op checks, and O(1) preflight sets in mutants.
+- Remove unreachable `apply_polytope_modular_congruence` branch, dead `fixed_pairs` slice allocation, and superseded `rel_balance.v` congruence helpers in `drift/model`.
+- Reject `observed_convergence` rebounds strictly above `roundoff_floor` as `sim.convergence_degraded` across V prove and Python verifier.
+- Replace quadratic rescan in `exact_relay_refutes_when` with stack/heap single-pass heapsort and per-pointer coverage cache in `sweep --flow`.
+- Add CLI remedy hygiene & DR-E602 hints, TTY ANSI/adaptive `show`, collapsible Wave/CI Markdown & `unread_then`, and 0.3 schema descriptions + `init --taplo`.
+- Add 128-bit `WideInt` balance/sum cancellation & pivots, GCD-reduced modular bands, signed `balance_fields` couplings, and `TwoSum` 0.3 linear eval.
+- Avoid quadratic map cloning in `drift/pact` via zero-clone `when_maps_overlap`, `cell_coverage` root fast-path, and single-pass equalizer `p_hits`.
+
 ## 0.8.1
 
 - Release `0.8.1`.

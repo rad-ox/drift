@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest released `0.8.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
+Security fixes are provided for the latest released `0.9.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
 
 | Version | Supported |
 |---|---|
-| `0.8.x` | Yes |
-| `< 0.8.0` | No (upgrade to `0.8.x`) |
+| `0.9.x` | Yes |
+| `< 0.9.0` | No (upgrade to `0.9.x`) |
 
 ## Reporting a Vulnerability
 

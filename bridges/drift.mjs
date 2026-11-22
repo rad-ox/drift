@@ -14,27 +14,8 @@ import { buildEnvObj, discoverEventsDirFrom, loadViewFromEnv, parseMutantsManife
 import { extractTestOrigin, forbiddenWritesOf, requiredProbesOf, resolveSeamMutatedThen, runAdverseChecks, runIdempotencyProbe, runLogSinkProbe, runProjectionChecks, runRollbackProbe, runSeamBoundsChecks, runSeamProbe, verifyCaseFrame } from './drift_security.mjs';
 import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
 export { bindUiEnvironment, captureSurfaceView, checkViewTable, collectPlaywrightSequence, collectUiSequence, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, observeUiSequence };
-const VIEWS = new Map();
-const METRICS = new Map();
-const DIGESTS = new Map();
-const TOML_DIRS = new Map();
-const WARMED = new Set();
-const BATCH = new Map();
-const INVENTORIES = new Map();
-const DERIVED = new Map();
-const DISCOVERED_CLASSES = new Set();
-const DISCOVERED_TESTS = new Set();
-const CTX_ALS = new AsyncLocalStorage();
-const MUT_ALS = new AsyncLocalStorage();
-let envCache = null;
-let selectionCache = null;
-let fastContractCache = null;
-let mutationCache = null;
-let eventsDirCache = null;
-let shardPath = null;
-let mutationShardPath = null;
-let shardSeq = 0;
-let exitHook = false;
+const VIEWS = new Map(), METRICS = new Map(), DIGESTS = new Map(), TOML_DIRS = new Map(), WARMED = new Set(), BATCH = new Map(), INVENTORIES = new Map(), DERIVED = new Map(), DISCOVERED_CLASSES = new Set(), DISCOVERED_TESTS = new Set(), CTX_ALS = new AsyncLocalStorage(), MUT_ALS = new AsyncLocalStorage();
+let envCache = null, selectionCache = null, fastContractCache = null, mutationCache = null, eventsDirCache = null, shardPath = null, mutationShardPath = null, shardSeq = 0, exitHook = false;
 const ENV_KEYS = ['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain'];
 const stripBom = (t) => (t.charCodeAt(0) === 0xfeff ? t.slice(1) : t);
 const parseJson = (s) => JSON.parse(stripBom(s));
@@ -52,7 +33,7 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- return (envCache = { key, value: buildEnvObj('drift.mjs@0.8.1', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
+ return (envCache = { key, value: buildEnvObj('drift.mjs@0.9.0', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
 }
 function flushInventory(out, inv) {
  inv.scheduled = false;
@@ -169,7 +150,7 @@ function activeMutationFor(contractId, cases) {
 export class DriftContext {
  constructor(contractId, testId, cases, level, mutationOverride = null) {
   if (!Array.isArray(cases) || !cases.length) err(`@DriftCase for "${testId}" requires at least one case id`);
-  Object.assign(this, { contractId, testId, cases: [...cases], level: level || 'unit', reads: new Map(), unobservedCases: new Set(), inputFiles: new Map() });
+  Object.assign(this, { contractId, testId, cases: [...cases], level: level || 'unit', reads: new Map(), unobservedCases: new Set(), inputFiles: new Map(), obs: {} });
   const m = (this.mutationOverride = mutationOverride ?? activeMutationFor(contractId, this.cases));
   this.view = loadView(contractId);
   const isW = Boolean(m && m.contract === contractId && (m.isWhen === true || (isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/when/`))));
@@ -255,19 +236,25 @@ export class DriftContext {
  bindUiEnvironment(p, o) { return bindUiEnvironment(this, p, o); }
  async check(caseId, checks, when = null) {
   this._tag(caseId);
-  const seen = this.reads.get(caseId);
-  const tt = this._tt(caseId);
-  const whenEnv = this._whenEnv(caseId, checks, when);
+  const seen = this.reads.get(caseId), tt = this._tt(caseId), whenEnv = this._whenEnv(caseId, checks, when);
   const src = isObj(checks) && isObj(checks.then) && !Object.keys(tt).some((k) => k in checks) ? checks.then : checks;
+  let decl = true;
+  const pay = {};
   for (const [k, exp] of Object.entries(tt)) {
    if (!isObj(src) || !(k in src)) aErr(`${this.contractId}.${caseId}: no check for then.${k}`);
    const fn = src[k];
-   if (typeof fn === 'function') {
-    await invokeVerifiedCallback(fn, this.contractId, caseId, k, unwrap03Eq(exp));
-   } else {
-    checkProjectedLeaf(this.contractId, caseId, k, exp, checks, {}, this.mutationOverride, false, 'no check for', whenEnv);
-   }
+   if (typeof fn === 'function') { decl = false; await invokeVerifiedCallback(fn, this.contractId, caseId, k, unwrap03Eq(exp)); }
+   else { checkProjectedLeaf(this.contractId, caseId, k, exp, checks, {}, this.mutationOverride, false, 'no check for', whenEnv); pay[k] = fn; }
    seen.add(k);
+  }
+  if (decl && this.view.drift === '0.3' && !this.mutationOverride && !this.inputFiles.has(`.drift/self-stub/${this.contractId}`) && !Object.keys(this._projMap('then')).length && !forbiddenWritesOf(this.view, caseId).length) {
+   let ok = true;
+   const s = JSON.stringify(pay, (_, v) => {
+    if ((typeof v === 'number' && !Number.isFinite(v)) || (typeof v === 'string' && v.length > 1024) || typeof v === 'bigint' || typeof v === 'function' || typeof v === 'symbol' || (Array.isArray(v) && v.length > 64)) ok = false;
+    else if (isObj(v)) { const ks = Object.keys(v); if (ks.length > 64) ok = false; else if (ks.some((x) => x[0] === '$')) return Object.fromEntries(ks.map((x) => [x[0] === '$' ? '$' + x : x, v[x]])); }
+    return v;
+   });
+   if (ok && s && s.length <= 4096) this.obs[caseId] = { schema: 'drift.observation/1', payload: JSON.parse(s) };
   }
  }
  async checkBounds(caseId, domain, checks) {
@@ -399,7 +386,7 @@ export async function runDriftCase({ contract, test, t, cases, level = 'unit' } 
  if (is03 && Array.isArray(ctx.view.required_capabilities)) {
   for (const rc of ctx.view.required_capabilities) if (!CAPS_03.includes(rc)) err(`bridge.capability_unsupported:${rc}`);
  }
- writeEvent({ test, contract, cases: ctx.cases, level: ctx.level, outcome: passed ? 'passed' : 'failed', read: ctx.fullyReadCases(), ...(version ? { digest: version } : {}), ...(is03 ? { schema: '0.3', capabilities: CAPS_03 } : {}) });
+ writeEvent({ test, contract, cases: ctx.cases, level: ctx.level, outcome: passed ? 'passed' : 'failed', read: ctx.fullyReadCases(), ...(version ? { digest: version } : {}), ...(is03 ? { schema: '0.3', capabilities: CAPS_03 } : {}), ...(is03 && passed && Object.keys(ctx.obs).length ? { observations: ctx.obs } : {}) });
  const elapsed = Math.max(1, performance.now() - start);
  if (mutCfg) await runCaseMutants(mutCfg, resolveMutationFile(mutCfg.outT), ctx, contract, passed, elapsed, performance, isAssertErr, withMutation, (target) => new DriftContext(contract, test, cases, level, target), fn, fs);
  if (!passed) throw controlErr;

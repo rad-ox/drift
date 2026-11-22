@@ -44,7 +44,7 @@
         "type": "string",
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       },
-      "description": "Subset of cases for which the test read and checked every top-level then.<key> expectation."
+      "description": "Subset of cases for which the test bridge recorded full reads of every top-level then.<key> expectation (and evaluated declarative checks when used); pair with observations for independent kernel/verifier re-judging."
     },
     "digest": {
       "type": "string",

@@ -58,7 +58,7 @@ def invoke_verified_callback(fn: Callable[..., Any], contract_id: str, case_id: 
     res = fn(exp, *extra)
     if res is False:
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} returned False')
-    if res is not True and not any(op.startswith(('RAISE_VARARGS', 'CALL', 'COMPARE_OP', 'CONTAINS_OP', 'IS_OP')) for op in ops):
+    if not any(op.startswith(('RAISE_VARARGS', 'CALL', 'COMPARE_OP', 'CONTAINS_OP', 'IS_OP')) for op in ops):
         raise AssertionError(f'{contract_id}.{case_id}: check for then.{k} must inspect and assert the expected value')
 
 

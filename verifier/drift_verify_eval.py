@@ -48,6 +48,7 @@ def _collect_contract_events(
             ev_caps = set(ev.get("capabilities") or ())
             if is_03 and (ev.get("schema") != "0.3" or not req_caps.issubset(ev_caps)):
                 handshake_bad = True
+                ignored += 1
                 continue
             curr_matches.append(ev)
         elif allow_exec_reuse and base_dig and digest_matches(ev["digest"], base_dig):
@@ -119,14 +120,15 @@ def _merge_latest_events(
 def _evaluate_case_states(
     contract: dict[str, Any],
     active_events: list[dict[str, Any]],
-) -> tuple[list[dict[str, str]], bool]:
+    require_observations: bool = False,
+) -> tuple[list[dict[str, Any]], bool]:
     has_orphan = any(kc not in contract["cases"] for ev in active_events for kc in ev["cases"])
     by_case: dict[str, list[dict[str, Any]]] = {}
     for ev in active_events:
         for kc in ev["cases"]:
             by_case.setdefault(kc, []).append(ev)
 
-    results: list[dict[str, str]] = []
+    results: list[dict[str, Any]] = []
     for case_id in sorted(contract["cases"]):
         case_meta = contract["cases"][case_id]
         if isinstance(case_meta, dict) and "status" in case_meta:
@@ -134,15 +136,36 @@ def _evaluate_case_states(
         case_events = by_case.get(case_id, ())
         for level in case_meta.get("at") or ["*"]:
             covered = case_events if level == "*" else [ev for ev in case_events if ev["level"] == level]
+            any_obs = any(
+                ev["outcome"] == "passed"
+                and case_id not in ev["red"]
+                and case_id in (ev.get("observations") or {})
+                for ev in covered
+            )
             if not covered:
                 state = "missing"
-            elif any(ev["outcome"] != "passed" or case_id in ev["red"] for ev in covered):
-                state = "red"
-            elif any(case_id in ev["read"] for ev in covered):
-                state = "verified"
             else:
-                state = "bound"
-            results.append({"case": case_id, "level": level, "state": state})
+                worst = 4
+                for ev in covered:
+                    if case_id in ev["red"]:
+                        rank = 0
+                    else:
+                        rank = {"failed": 0, "interrupted": 1, "timeout": 2, "skipped": 3, "disabled": 3}.get(ev["outcome"], 4)
+                    if rank < worst:
+                        worst = rank
+                if worst == 0:
+                    state = "red"
+                elif worst == 1:
+                    state = "interrupted"
+                elif worst == 2:
+                    state = "timeout"
+                elif worst == 3:
+                    state = "skipped"
+                elif any(case_id in ev["read"] for ev in covered) and (not require_observations or any_obs):
+                    state = "verified"
+                else:
+                    state = "bound"
+            results.append({"case": case_id, "level": level, "state": state, "_obs": any_obs})
 
     return results, has_orphan
 
@@ -212,12 +235,14 @@ def _core_gate_reasons(
         )
         or 1
     )
+    req_obs = pol_on and policy.get("require_observations") is True
     allowed_states = ("verified",) if eff_rank >= 2 else ("verified", "bound")
     if (
         has_orphan
         or incomplete_shards > 0
         or not results
         or any(r["state"] not in allowed_states for r in results)
+        or (req_obs and not all(r.get("_obs") for r in results))
         or (eff_rank >= 3 and not mutations_ok)
     ):
         reasons.append("proof.not_green")
@@ -263,7 +288,8 @@ def evaluate_contract_impl(
     latest, superseded = _merge_latest_events(
         contract, curr_m, base_m, allow_exec_reuse, base_contract
     )
-    results, has_orphan = _evaluate_case_states(contract, list(latest.values()))
+    req_obs = bool(pol_on and pol.get("require_observations") is True)
+    results_raw, has_orphan = _evaluate_case_states(contract, list(latest.values()), require_observations=req_obs)
     reasons = _core_gate_reasons(
         contract,
         cfg_state,
@@ -276,8 +302,9 @@ def evaluate_contract_impl(
         hs_bad,
         incomplete_shards,
         has_orphan,
-        results,
+        results_raw,
     )
+    results = [{"case": r["case"], "level": r["level"], "state": r["state"]} for r in results_raw]
 
     exp_sref = (expected_subject or {}).get("artifact_ref", "")
     p_rsn, pend_b, p_sum = evaluate_contract_budgets(

@@ -273,7 +273,7 @@ export async function runCaseMutants(mutCfg, mutOut, ctx, contract, passed, elap
 }
 
 export function buildEnvObj(adapterId, raw, nodeVer, parseJson, envKeys, errFn) {
-  const base = { adapter: adapterId, config: 'default', deps: 'none', drift: '0.8.1', policy: 'core@1', runner: 'node:test', toolchain: `node@${nodeVer}` };
+  const base = { adapter: adapterId, config: 'default', deps: 'none', drift: '0.9.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${nodeVer}` };
   if (raw) {
     const parsed = parseJson(raw);
     if (!isObj(parsed)) errFn('DRIFT_ENV must be a JSON object');

@@ -35,13 +35,15 @@ In Maven builds, `-Ddrift.changed=auto` snapshots the Git tree during `prepare` 
 drift impact .drift --writes items --transitive
 
 # L0–L2 hierarchical domain tree and token-budgeted symbolic recall capsules
+# (add --max-degraded-lenses N to fail closed if over-compressed @ lenses exceed N)
 drift recall query "@tree" .drift
-drift recall query "item lookup #getItem /800t" .drift
+drift recall query "item lookup #getItem /800t" .drift --max-degraded-lenses 0
 
 # Record standing or anchor-triggered negative analysis findings (surfaced as [due] on drift)
 drift recall record item-get --dead-end "Keep lookup stateless" --revisit-if src/items/handler.js#getItem --shared
 
 # Compute conflict-free parallel execution waves, compile-edge stages, and fenced worker packs
+# (pass --pack-base <prior-pack.json> to emit a content-addressed backscatter delta)
 drift plan .drift/contracts --events .drift/events --pack ready --active --compile-edges
 ```
 
@@ -75,6 +77,7 @@ Upgrade `[policy]` in `.drift/config.toml` to `pack = "core@1"` and `proof = "ki
 drift sweep check .drift/contracts --root . --flow --simplify
 
 # Generate contract and incoming-seam mutants prioritized by risk and [policy].priority_weights
+# (add --pairs to append bounded 2nd-order compatible mutant pairs per case)
 drift mutants .drift/contracts --out .drift-work/mutants.json --budget 50 --events .drift/events
 DRIFT_MUTANTS=.drift-work/mutants.json DRIFT_MUTATION_EVENTS=.drift-work/mutation-events node --test
 
@@ -85,6 +88,6 @@ drift gate .drift/contracts --events .drift/events \
   --trust-root .drift/allowed_signers --verify-time 2026-11-10T09:00:00Z \
   --as junit > target/drift/junit.xml
 
-# Rank uncontracted Git churn hotspots and co-change coupled contracts
+# Rank uncontracted Git churn hotspots, co-change coupled contracts, and C/U obligation density (--density --ops)
 drift stats .drift/contracts --root . --churn-list git-log.txt --top 10 --detail summary
 ```

@@ -97,6 +97,7 @@ drift show [<file|dir>...] [--as json|text|md] [--out DIR] [--profiles DIR] [--h
 
 Options:
   --as FORMAT      output: json (default), text or md
+  --detail LEVEL   detail level: full
   --out DIR        write one JSON view per contract into DIR
   --profiles DIR   profile directory (default: nearest .drift/profiles)
   --state-dir DIR  keep area state in DIR outside the repository (shadow mode)
@@ -314,6 +315,7 @@ Options:
   --state-dir DIR  keep area state in DIR outside the repository (shadow mode)
   --unshadow       unregister the shadow area of DIR
   --graduate       promote a shadow area into tracked .drift/
+  --taplo          scaffold .taplo.toml mapping .drift TOML files to 0.3 JSON Schemas
   --grant DIR      initialize the area from an exported grant directory
   --pact FILE      initialize the area from a sealed drift.pact-lock/1 file
 
@@ -404,7 +406,7 @@ Options:
   --config FILE             area config (default: nearest .drift/config.toml)
   --grant-lock FILE         authoritative grant lock file to enforce
   --pact-lock FILE...       authoritative bilateral pact lock file to enforce
-  --as FORMAT               output: summary or json (junit needs Enterprise)
+  --as FORMAT               output: summary, json or md (junit needs Enterprise)
   --json                    print JSON instead of text
   --detail LEVEL            detail level: full, summary or guided
   --previous-guided FILE    earlier guided output to continue (needs --detail guided)
@@ -582,6 +584,7 @@ drift plan [<file|dir>...] [--events FILE|DIR...] [--pack GROUP|ready|all|specul
 Options:
   --events FILE|DIR...                proof events (*.jsonl files or directories) [Pro]
   --pack GROUP|ready|all|speculative  worker pack: a group number, ready, all or speculative [Pro]
+  --pack-base FILE                    prior plan --pack JSON to emit a backscatter delta against (needs --pack) [Pro]
   --overlaps MODE                     overlap representation: compact (default) or pairs [Pro]
   --active                            omit quiet-completed groups, lanes, contracts and inactive overlaps [Pro]
   --compile-edges                     derive stage-ordering edges from existing bind.code source imports [Pro]
@@ -611,18 +614,19 @@ drift recall sync [<file|dir>...] [--root DIR] [--check] [--profiles DIR] [--jso
 drift recall record <id> [--dead-end TEXT [--revisit-if ANCHOR...]] [--retire MATCH] [--shared] [--root DIR] [--profiles DIR] [--json] [--help | -h]
 
 Options:
-  --share                 print the shareable form of the result [Pro]
-  --shard-dir DIR...      shard directory of run-local ring and log files [Pro]
-  --profiles DIR          profile directory (default: nearest .drift/profiles) [Pro]
-  --json                  print JSON instead of text [Pro]
-  --state-dir DIR         keep area state in DIR outside the repository (shadow mode) [Pro]
-  --as FORMAT             output: text or json [Pro]
-  --root DIR              area root holding .drift/recall.jsonl [Pro]
-  --check                 report a stale ring without writing it [Pro]
-  --dead-end TEXT         standing or conditional dead-end finding to record [Pro]
-  --revisit-if ANCHOR...  typed file, #symbol, glob, or resource anchor [Pro]
-  --retire MATCH          retire existing !dead_end entries matching substring [Pro]
-  --shared                record in .drift/recall.jsonl instead of .drift-work/recall.jsonl [Pro]
+  --share                  print the shareable form of the result [Pro]
+  --max-degraded-lenses N  fail closed if degraded @ code lenses exceed N (N >= 0) [Pro]
+  --shard-dir DIR...       shard directory of run-local ring and log files [Pro]
+  --profiles DIR           profile directory (default: nearest .drift/profiles) [Pro]
+  --json                   print JSON instead of text [Pro]
+  --state-dir DIR          keep area state in DIR outside the repository (shadow mode) [Pro]
+  --as FORMAT              output: text or json [Pro]
+  --root DIR               area root holding .drift/recall.jsonl [Pro]
+  --check                  report a stale ring without writing it [Pro]
+  --dead-end TEXT          standing or conditional dead-end finding to record [Pro]
+  --revisit-if ANCHOR...   typed file, #symbol, glob, or resource anchor [Pro]
+  --retire MATCH           retire existing !dead_end entries matching substring [Pro]
+  --shared                 record in .drift/recall.jsonl instead of .drift-work/recall.jsonl [Pro]
 
 Exit status:
   0  success
@@ -700,6 +704,7 @@ Options:
   --changed-list FILE...  file listing changed paths [Enterprise]
   --changed-root DIR      root the --changed-list paths are relative to [Enterprise]
   --when                  mutate the when side of the cases [Enterprise]
+  --pairs                 append bounded 2nd-order compatible mutant pairs per case [Enterprise]
   --budget N              mutant budget; with --events it ranks by priority_weights [Enterprise]
   --detail LEVEL          full or summary (adds operator breakdown) [Enterprise]
   --events FILE|DIR...    proof events (*.jsonl files or directories) [Enterprise]
@@ -726,6 +731,7 @@ Options:
   --events FILE|DIR...      proof events (*.jsonl files or directories) [Enterprise]
   --reports FILE...         earlier stats reports to compare with [Enterprise]
   --ops FILE...             operational logs [Enterprise]
+  --density                 compute per-resource cost-per-verified-obligation (C/U) density (needs --ops) [Enterprise]
   --compare LABEL=FILE...   candidate report to compare [Enterprise]
   --root DIR                area root (with --changed-list or --churn-list) [Enterprise]
   --changed-list FILE       file listing changed paths [Enterprise]
@@ -777,7 +783,7 @@ Options:
   --epoch-manifest FILE               AsyncAPI epoch manifest (needs --asyncapi) [Enterprise]
   --pacts FILE|DIR...                 sealed pact lock/ack manifests for fleet conservation (with --flow) [Enterprise]
   --state-dir DIR                     keep area state in DIR outside the repository (shadow mode) [Pro]
-  --as FORMAT                         output: text or json [Pro]
+  --as FORMAT                         output: text, json or md [Pro]
   --level LEVEL                       all, hygiene or epistemic (default: all) [Enterprise]
 
 Exit status:
