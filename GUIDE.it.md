@@ -220,7 +220,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.9.0</version>
+    <version>0.9.1</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -230,7 +230,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.9.0</version>
+      <version>0.9.1</version>
       <executions>
         <execution>
           <goals>
@@ -257,7 +257,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.9.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.9.1`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift

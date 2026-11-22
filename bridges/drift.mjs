@@ -33,7 +33,7 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- return (envCache = { key, value: buildEnvObj('drift.mjs@0.9.0', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
+ return (envCache = { key, value: buildEnvObj('drift.mjs@0.9.1', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
 }
 function flushInventory(out, inv) {
  inv.scheduled = false;

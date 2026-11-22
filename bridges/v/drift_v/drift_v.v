@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.9.0'
-pub const bridge_version = '0.9.0'
+pub const adapter_id = 'drift_v.v@0.9.1'
+pub const bridge_version = '0.9.1'
 pub const bridge_runtime_baseline = 'v-0.5.2'
 pub const bridge_capabilities_list = ['allowed_keys', 'case_frames', 'counterexample_replay',
 	'forbid_keys', 'inventory_sidecar', 'mutants', 'not_in', 'predicates', 'projections',
@@ -97,7 +97,7 @@ fn resolve_env_map() !map[string]string {
 		'drift':     bridge_version
 		'policy':    'core@1'
 		'runner':    'v-test'
-		'toolchain': 'v@0.9.0'
+		'toolchain': 'v@0.9.1'
 	}
 	if raw != '' {
 		doc := json2.decode[json2.Any](raw) or { return error('DRIFT_ENV must be valid JSON') }

@@ -216,7 +216,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.9.0</version>
+    <version>0.9.1</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -226,7 +226,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.9.0</version>
+      <version>0.9.1</version>
       <executions>
         <execution>
           <goals>
@@ -253,7 +253,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.9.0`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.9.1`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift

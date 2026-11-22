@@ -25,8 +25,8 @@ use std::path::Path;
 use std::process::{self, Command};
 use std::sync::{Mutex, OnceLock};
 
-pub const ADAPTER_ID: &str = "drift_rust@0.9.0";
-pub const BRIDGE_VERSION: &str = "0.9.0";
+pub const ADAPTER_ID: &str = "drift_rust@0.9.1";
+pub const BRIDGE_VERSION: &str = "0.9.1";
 
 const ENV_KEYS: &[&str] = &[
     "adapter",

@@ -2,6 +2,11 @@
 
 User-visible changes and capabilities by release.
 
+## 0.9.1
+
+- Release `0.9.1`.
+- Route `make publish-github` through `rad-ox/drift-src` `v*` tag push when `RELEASE_SIGNERS` is pinned so `release-build.yml` signs OpenSSH/Sigstore/TUF assets.
+
 ## 0.9.0
 
 - Release `0.9.0`.
