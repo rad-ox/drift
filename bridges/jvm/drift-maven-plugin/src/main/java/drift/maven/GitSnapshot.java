@@ -1,18 +1,11 @@
 package drift.maven;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.Files.*;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
+import java.nio.file.*;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -59,15 +52,15 @@ final class GitSnapshot {
         Path realIndex = gitDir.resolve("index");
         Path tempIndex;
         try {
-            tempIndex = Files.createTempFile("drift-git-index-", ".idx");
+            tempIndex = createTempFile("drift-git-index-", ".idx");
         } catch (IOException e) {
             throw new MojoExecutionException("cannot create temporary git index", e);
         }
         try {
-            if (Files.isRegularFile(realIndex)) {
-                Files.copy(realIndex, tempIndex, StandardCopyOption.REPLACE_EXISTING);
+            if (isRegularFile(realIndex)) {
+                copy(realIndex, tempIndex, StandardCopyOption.REPLACE_EXISTING);
             } else {
-                Files.deleteIfExists(tempIndex);
+                deleteIfExists(tempIndex);
             }
             Set<String> excludes = new LinkedHashSet<>();
             for (Path excluded : excludedDirs) {
@@ -77,7 +70,7 @@ final class GitSnapshot {
                 Path normEx = excluded.toAbsolutePath().normalize();
                 if (normEx.startsWith(topLevel) && !normEx.equals(topLevel)) {
                     String rel = topLevel.relativize(normEx).toString().replace('\\', '/');
-                    String probe = Files.isRegularFile(normEx) ? rel : (rel.endsWith("/") ? rel : rel + "/");
+                    String probe = isRegularFile(normEx) ? rel : (rel.endsWith("/") ? rel : rel + "/");
                     if (!rel.isBlank()
                             && git(topLevel, Map.of(), List.of("check-ignore", "-q", "--", probe)).status != 0) {
                         excludes.add(":(exclude)" + rel);
@@ -105,7 +98,7 @@ final class GitSnapshot {
             throw new MojoExecutionException("cannot capture git worktree snapshot", e);
         } finally {
             try {
-                Files.deleteIfExists(tempIndex);
+                deleteIfExists(tempIndex);
             } catch (IOException ignored) {
             }
         }
@@ -162,10 +155,10 @@ final class GitSnapshot {
      * missing sidecars or missing snapshots require full kernel freshness resolution.
      */
     static SnapshotInfo trySingleSnapshot(Path eventsDir) {
-        if (!Files.isDirectory(eventsDir)) {
+        if (!isDirectory(eventsDir)) {
             return null;
         }
-        try (var stream = Files.list(eventsDir)) {
+        try (var stream = list(eventsDir)) {
             List<Path> jsonls = new ArrayList<>();
             List<Path> metas = new ArrayList<>();
             for (Path p : stream.toList()) {
@@ -183,10 +176,10 @@ final class GitSnapshot {
             Path meta = metas.get(0);
             String baseName = jsonl.getFileName().toString();
             String expectedMeta = baseName.substring(0, baseName.length() - ".jsonl".length()) + ".meta.json";
-            if (!meta.getFileName().toString().equals(expectedMeta) || Files.size(jsonl) == 0) {
+            if (!meta.getFileName().toString().equals(expectedMeta) || size(jsonl) == 0) {
                 return null;
             }
-            String metaText = Files.readString(meta, StandardCharsets.UTF_8);
+            String metaText = readString(meta, UTF_8);
             Matcher snapMatcher = Pattern.compile("\"snapshot\"\\s*:\\s*\"([0-9a-f]{40}|[0-9a-f]{64})\"")
                     .matcher(metaText);
             if (!snapMatcher.find()) {
@@ -231,7 +224,7 @@ final class GitSnapshot {
                 p.destroyForcibly();
                 return new RunResult(1, "");
             }
-            return new RunResult(p.exitValue(), stdout.toString(StandardCharsets.UTF_8));
+            return new RunResult(p.exitValue(), stdout.toString(UTF_8));
         } catch (IOException e) {
             return new RunResult(1, "");
         } catch (InterruptedException e) {

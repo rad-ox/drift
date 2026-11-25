@@ -6,10 +6,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { desugar03Rel } from './drift_ui_recovery.mjs';
-import { normalizeBytes } from './drift_cli.mjs';
+import { normalizeBytes, writeSidecar } from './drift_cli.mjs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { applyMutation, attachBridgePlan, bindUiEnvironment, buildWhenEnv, CAPS_03, captureSurfaceView, checkProjectedLeaf, checkRelationalLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, mergePriorInventory, observeUiSequence, parseMutationSegments, readPointer, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, unwrap03Eq, writePointer } from './drift_checks.mjs';
+import { applyMutation, attachBridgePlan, bindUiEnvironment, buildWhenEnv, CAPS_03, captureSurfaceView, checkProjectedLeaf, checkRelationalLeaf, checkViewTable, cloneJson, collectPlaywrightSequence, collectUiSequence, escapePointer, evaluateScenarioMatrix, evaluateTaskRecovery, expandDomain, invokeVerifiedCallback, isAssertErr, isObj, isStr, observeUiSequence, parseMutationSegments, readPointer, resolveSelectedFiles, runDriftCli, sidecarHead, throwAssertionError as aErr, throwError as err, unwrap03Eq, writePointer } from './drift_checks.mjs';
 import { buildEnvObj, discoverEventsDirFrom, loadViewFromEnv, parseMutantsManifest, parseSelectionJson, recordContextInput, recordDiscoveryInto, verifyRecordedInputs } from './drift_probes.mjs';
 import { extractTestOrigin, forbiddenWritesOf, requiredProbesOf, resolveSeamMutatedThen, runAdverseChecks, runIdempotencyProbe, runLogSinkProbe, runProjectionChecks, runRollbackProbe, runSeamBoundsChecks, runSeamProbe, verifyCaseFrame } from './drift_security.mjs';
 import { autoResolveView, clearUpstreamCache, extractProjectionMap, findUpstreamContract, resolveStubCaseId, runCaseMutants, synthesizeViewOutput, synthesizeViewVariants } from './drift_upstream.mjs';
@@ -33,17 +33,17 @@ function resolveEnv() {
  if (!raw && pk !== '1' && pk !== 'true') return null;
  const key = `${pk}\u0000${raw}`;
  if (envCache && envCache.key === key) return envCache.value;
- return (envCache = { key, value: buildEnvObj('drift.mjs@0.10.0', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
+ return (envCache = { key, value: buildEnvObj('drift.mjs@0.11.0', raw, process.versions.node, parseJson, ENV_KEYS, err) }).value;
 }
 function flushInventory(out, inv) {
  inv.scheduled = false;
  if (!inv.dirty) return;
  inv.dirty = false;
- mergePriorInventory(out, inv, out === shardPath, fs, path, process.cwd());
- const head = sidecarHead(process.env, inv.classes, inv.tests), inputs = {};
- for (const tid of [...inv.inputs.keys()].sort()) { const fm = inv.inputs.get(tid); if (fm?.size) inputs[tid] = Object.fromEntries([...fm.keys()].sort().map((fp) => [fp, fm.get(fp)])); }
- const env = resolveEnv(), sidecar = { ...head, ...(Object.keys(inputs).length ? { inputs } : {}), ...(env ? { env } : {}) };
- fs.writeFileSync(out.slice(0, -6) + '.meta.json', JSON.stringify(sidecar) + '\n', 'utf8');
+ writeSidecar(out, inv, out === shardPath, () => {
+  const head = sidecarHead(process.env, inv.classes, inv.tests), inputs = {}, env = resolveEnv();
+  for (const tid of [...inv.inputs.keys()].sort()) { const fm = inv.inputs.get(tid); if (fm?.size) inputs[tid] = Object.fromEntries([...fm.keys()].sort().map((fp) => [fp, fm.get(fp)])); }
+  return { ...head, ...(Object.keys(inputs).length ? { inputs } : {}), ...(env ? { env } : {}) };
+ }, fs, path, process.cwd(), process.env);
 }
 function flushAllInventories() { for (const [out, inv] of INVENTORIES.entries()) flushInventory(out, inv); }
 const AUTO_STATE = { batch: BATCH, tomlDirs: TOML_DIRS, warmed: WARMED, cachedCliKey: '', cachedCliPath: '' };
@@ -110,7 +110,7 @@ function ensureInventory(out) {
 }
 function writeEvent(ev) {
  const out = resolveEventsFile();
- if (out) { ensureInventory(out); recordDiscovery(ev.test, out); fs.appendFileSync(out, JSON.stringify(ev) + '\n', 'utf8'); }
+ if (out) { recordDiscovery(ev.test, out); fs.appendFileSync(out, JSON.stringify(ev) + '\n', 'utf8'); }
 }
 function ensureExitHook() { if (!exitHook) { exitHook = true; process.once('exit', flushAllInventories); } }
 function recordDiscovery(testId, activeOut = '') {
@@ -150,7 +150,7 @@ function activeMutationFor(contractId, cases) {
 export class DriftContext {
  constructor(contractId, testId, cases, level, mutationOverride = null) {
   if (!Array.isArray(cases) || !cases.length) err(`@DriftCase for "${testId}" requires at least one case id`);
-  Object.assign(this, { contractId, testId, cases: [...cases], level: level || 'unit', reads: new Map(), unobservedCases: new Set(), inputFiles: new Map(), obs: {} });
+  Object.assign(this, { contractId, testId, cases: [...cases], level: level || 'unit', reads: new Map(), whenReads: new Map(), unobservedCases: new Set(), inputFiles: new Map(), obs: {} });
   const m = (this.mutationOverride = mutationOverride ?? activeMutationFor(contractId, this.cases));
   this.view = loadView(contractId);
   const isW = Boolean(m && m.contract === contractId && (m.isWhen === true || (isStr(m.path) && m.path.startsWith(`/cases/${escapePointer(m.case)}/when/`))));
@@ -160,6 +160,7 @@ export class DriftContext {
   for (const c of this.cases) {
    if (!this.view.cases || !(c in this.view.cases)) err(`contract "${contractId}" has no case "${c}"`);
    this.reads.set(c, new Set());
+   this.whenReads.set(c, new Set());
   }
  }
  _wt(c) {
@@ -184,17 +185,26 @@ export class DriftContext {
   this._tag(c);
   const w = this._wt(c);
   if (!(k in w)) err(`case "${c}" has no when.${k}`);
+  this.whenReads.get(c).add(k);
   return this._u03(w[k]);
  }
  findWhen(c, k, fb = undefined) {
   this._tag(c);
   const w = this._wt(c);
-  return k in w ? this._u03(w[k]) : fb;
+  if (!(k in w)) return fb;
+  this.whenReads.get(c).add(k);
+  return this._u03(w[k]);
  }
  whenTable(c) {
   this._tag(c);
-  const wt = cloneJson(this._wt(c));
+  const wt = cloneJson(this._wt(c)), wr = this.whenReads.get(c);
+  for (const k of Object.keys(wt)) wr.add(k);
   return this.view.drift === '0.3' ? Object.fromEntries(Object.entries(wt).map(([k, v]) => [k, unwrap03Eq(v)])) : wt;
+ }
+ unreadWhen(c) {
+  this._tag(c);
+  const wr = this.whenReads.get(c);
+  return Object.keys(this._wt(c)).filter((k) => !wr.has(k)).sort();
  }
  async forEachCase(fn) {
   for (const c of this.cases) await fn(c, this.whenTable(c));
@@ -234,6 +244,56 @@ export class DriftContext {
   return encoding ? stripBom(raw.toString(encoding)) : raw;
  }
  bindUiEnvironment(p, o) { return bindUiEnvironment(this, p, o); }
+ _recordObs(caseId, pay) {
+  delete this.obs[caseId];
+  if (this.view.drift !== '0.3' || this.mutationOverride || this.selfStub) return;
+  const enc = (v, d = 0) => {
+   if (d > 6) throw 0;
+   if (v === null || typeof v === 'boolean') return v;
+   if (typeof v === 'string') { if (v.length > 1024 && [...v].length > 1024) throw 0; return v; }
+   if (typeof v === 'number') { if (!Number.isFinite(v) || (Number.isInteger(v) && !Number.isSafeInteger(v))) throw 0; return v; }
+   if (Array.isArray(v)) { if (v.length > 64) throw 0; return v.map((x) => enc(x, d + 1)); }
+   if (isObj(v)) {
+    const ks = Object.keys(v); if (ks.length > 64) throw 0;
+    const o = {};
+    for (const k of ks) { if (d === 0 && (k === '_frame' || k === '_when_env')) continue; o[k[0] === '$' ? '$' + k : k] = enc(v[k], d + 1); }
+    return o;
+   }
+   throw 0;
+  };
+  try {
+   const ep = enc(pay), s = JSON.stringify(ep);
+   if (s && Buffer.byteLength(s, 'utf8') <= 4096) this.obs[caseId] = { schema: 'drift.observation/1', outcome: 'returned', payload: ep };
+  } catch {}
+ }
+ _recordProjectedObs(caseId, payload, checks) {
+  delete this.obs[caseId];
+  const hasCb = isObj(checks) && Object.entries(checks).some(([k, v]) => k !== 'frame' && k !== 'strictFrame' && typeof v === 'function');
+  const isUi = isObj(payload) && (payload.schema === 'drift.ui-observation/1' || isObj(payload.evidence));
+  if (hasCb || isUi || payload == null || this.view.drift !== '0.3' || this.mutationOverride || this.selfStub) return;
+  const tt = this._tt(caseId), proj = this._projMap('then'), inv = isObj(this.view.invariants) ? this.view.invariants : {};
+  const need = new Set(Object.keys(tt));
+  if (!need.size) return;
+  for (const k of Object.keys(inv)) need.add(k);
+  const add = (x) => { if (isStr(x) && !x.startsWith('when.')) need.add(x.startsWith('then.') ? x.slice(5) : x); else if (Array.isArray(x)) x.forEach(add); };
+  for (const c of [...Object.values(tt), ...Object.values(inv)]) {
+   if (!isObj(c)) continue;
+   const p = isObj(c.peer) ? c.peer : null;
+   for (const x of [p?.eq, p?.le, p?.ge, p?.sum, p?.balance?.add, p?.balance?.sub, c.eq_field, c.le_field, c.ge_field, c.sum_fields]) add(x);
+  }
+  let out = {};
+  for (const k of need) {
+   const inTt = k in tt;
+   if (k in proj) {
+    const rd = readPointer(payload, proj[k]);
+    if (rd.found) out = writePointer(out, proj[k], rd.value);
+    else if (inTt && isObj(payload) && k in payload) out = writePointer(out, proj[k], payload[k]);
+    else if (inTt) return;
+   } else if (isObj(payload) && k in payload) out = writePointer(out, `/${escapePointer(k)}`, payload[k]);
+   else if (inTt) return;
+  }
+  this._recordObs(caseId, out);
+ }
  async check(caseId, checks, when = null) {
   this._tag(caseId);
   const seen = this.reads.get(caseId), tt = this._tt(caseId), whenEnv = this._whenEnv(caseId, checks, when);
@@ -247,15 +307,8 @@ export class DriftContext {
    else { checkProjectedLeaf(this.contractId, caseId, k, exp, checks, {}, this.mutationOverride, false, 'no check for', whenEnv); pay[k] = fn; }
    seen.add(k);
   }
-  if (decl && this.view.drift === '0.3' && !this.mutationOverride && !this.inputFiles.has(`.drift/self-stub/${this.contractId}`) && !Object.keys(this._projMap('then')).length && !forbiddenWritesOf(this.view, caseId).length) {
-   let ok = true;
-   const s = JSON.stringify(pay, (_, v) => {
-    if ((typeof v === 'number' && !Number.isFinite(v)) || (typeof v === 'string' && v.length > 1024) || typeof v === 'bigint' || typeof v === 'function' || typeof v === 'symbol' || (Array.isArray(v) && v.length > 64)) ok = false;
-    else if (isObj(v)) { const ks = Object.keys(v); if (ks.length > 64) ok = false; else if (ks.some((x) => x[0] === '$')) return Object.fromEntries(ks.map((x) => [x[0] === '$' ? '$' + x : x, v[x]])); }
-    return v;
-   });
-   if (ok && s && s.length <= 4096) this.obs[caseId] = { schema: 'drift.observation/1', payload: JSON.parse(s) };
-  }
+  if (decl && !Object.keys(this._projMap('then')).length) this._recordObs(caseId, pay);
+  else delete this.obs[caseId];
  }
  async checkBounds(caseId, domain, checks) {
   this._tag(caseId);
@@ -299,9 +352,10 @@ export class DriftContext {
  _projMap(side) { return extractProjectionMap(this.view, side); }
  buildInput(caseId, base = {}) {
   this._tag(caseId);
-  const whenProj = this._projMap('when');
+  const whenProj = this._projMap('when'), wr = this.whenReads.get(caseId);
   let out = cloneJson(isObj(base) ? base : {});
   for (const [k, rawV] of Object.entries(this._wt(caseId))) {
+   wr.add(k);
    const v = unwrap03Eq(rawV);
    if (k in whenProj) out = writePointer(out, whenProj[k], v);
    else if (isObj(out)) out[k] = cloneJson(v);
@@ -314,7 +368,10 @@ export class DriftContext {
   return synthesizeViewOutput(this.view, caseId, base, this._tt(caseId));
  }
  async checkProjection(caseId, payload, checks = {}, when = null) {
-  return runProjectionChecks(this, caseId, payload, checks, when);
+  delete this.obs[caseId];
+  const r = await runProjectionChecks(this, caseId, payload, checks, when);
+  this._recordProjectedObs(caseId, payload, checks);
+  return r;
  }
  async checkAdverse(caseId, harness, checks = {}) { return runAdverseChecks(this, caseId, harness, checks); }
  async checkSeamBounds(caseId, idOrRes, prodCase, checks, base = {}) {
@@ -360,25 +417,40 @@ export function testIdOf(t) {
  if (!file) err('runDriftCase needs t (pass the node:test TestContext: async (t) => runDriftCase({ ..., t }, ...)) or test ("Class#method")');
  const rel = path.relative(process.cwd(), file);
  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) err(`run the tests from the project root or pass test: ${file} is outside ${process.cwd()}`);
- const unsafe = /[\s#[\]]+/gu;
+ const unsafe = /[\s#[\]()]+/gu;
  return `${rel.split(/[\\/]/u).join('.').replace(unsafe, '_')}#${name.split(' > ').join('/').replace(unsafe, '_')}`;
 }
-function derivedTestId(t, contract) {
- const id = testIdOf(t), [file, name] = extractTestOrigin(t), origin = `${file} > ${name}`, key = `${contract}\u0000${id}`, first = DERIVED.get(key);
+function derivedTestId(t, contract, project) {
+ const id = prefixTestId(testIdOf(t), project), [file, name] = extractTestOrigin(t), origin = `${file} > ${name}`, key = `${contract}\u0000${id}`, first = DERIVED.get(key);
  if (first === origin) err(`test "${origin}" runs contract ${contract} twice: call runDriftCase once per contract or pass distinct test ids`);
  if (first !== undefined) err(`"${first}" and "${origin}" both map to test id ${id} for contract ${contract}: rename one test or pass test`);
  DERIVED.set(key, origin);
  return id;
 }
-export async function runDriftCase({ contract, test, t, cases, level = 'unit' } = {}, fn) {
- if (!test) test = derivedTestId(t, contract);
- if (!shouldRun(contract, test, cases)) return 'skipped-by-select';
+function prefixTestId(id, project) {
+ const raw = String(project ?? process.env.DRIFT_TEST_PREFIX ?? '').trim();
+ if (!raw) return id;
+ const p = raw.replace(/[\s#[\]/\\]+/gu, '_');
+ return p && id.includes('#') && !id.startsWith(`${p}.`) ? `${p}.${id}` : id;
+}
+export async function runDriftCase({ contract, test, t, project, strictWhen, cases, level = 'unit' } = {}, fn) {
+ let dk = '';
+ if (!test) { test = derivedTestId(t, contract, project); dk = `${contract}\u0000${test}`; }
+ else test = prefixTestId(test, project);
+ try { if (!shouldRun(contract, test, cases)) return 'skipped-by-select'; } catch (e) { if (dk) DERIVED.delete(dk); throw e; }
  let ctx;
- try { ctx = new DriftContext(contract, test, cases, level); } catch (e) { writeEvent({ test, contract, cases, level, outcome: 'failed', read: [] }); throw e; }
+ try { ctx = new DriftContext(contract, test, cases, level); } catch (e) { if (dk) DERIVED.delete(dk); writeEvent({ test, contract, cases, level, outcome: 'failed', read: [] }); throw e; }
  const version = ctx.view.ref || ctx.view.digest || '', mutCfg = loadMutants(), start = performance.now();
+ const enforceWhen = Boolean(strictWhen || process.env.DRIFT_STRICT_WHEN === '1' || process.env.DRIFT_STRICT_WHEN === 'true');
  let passed = false, controlErr = null;
  try {
   await CTX_ALS.run(ctx, () => fn(ctx));
+  if (enforceWhen) {
+   for (const cid of ctx.cases) {
+    const u = ctx.unreadWhen(cid);
+    if (u.length) aErr(`${contract}.${cid}: unread ${u.map((k) => `when.${k}`).join(', ')}`);
+   }
+  }
   verifyRecordedInputs(contract, test, ctx.inputFiles, DIGESTS, fs, hashBuf, aErr);
   passed = true;
  } catch (e) { controlErr = e; }
@@ -386,10 +458,21 @@ export async function runDriftCase({ contract, test, t, cases, level = 'unit' } 
  if (is03 && Array.isArray(ctx.view.required_capabilities)) {
   for (const rc of ctx.view.required_capabilities) if (!CAPS_03.includes(rc)) err(`bridge.capability_unsupported:${rc}`);
  }
- writeEvent({ test, contract, cases: ctx.cases, level: ctx.level, outcome: passed ? 'passed' : 'failed', read: ctx.fullyReadCases(), ...(version ? { digest: version } : {}), ...(is03 ? { schema: '0.3', capabilities: CAPS_03 } : {}), ...(is03 && passed && Object.keys(ctx.obs).length ? { observations: ctx.obs } : {}) });
+ const readCases = ctx.fullyReadCases();
+ const obsOut = {};
+ if (is03 && passed && !ctx.selfStub) {
+  for (const cid of readCases) {
+   const o = ctx.obs[cid];
+   if (!o) continue;
+   const hasFr = ctx.obsFrames && cid in ctx.obsFrames;
+   if (forbiddenWritesOf(ctx.view, cid).length && !hasFr) continue;
+   obsOut[cid] = hasFr ? { ...o, frame: { writes: ctx.obsFrames[cid] } } : o;
+  }
+ }
+ writeEvent({ test, contract, cases: ctx.cases, level: ctx.level, outcome: passed ? 'passed' : 'failed', read: readCases, ...(version ? { digest: version } : {}), ...(is03 ? { schema: '0.3', capabilities: CAPS_03 } : {}), ...(Object.keys(obsOut).length ? { observations: obsOut } : {}) });
  const elapsed = Math.max(1, performance.now() - start);
  if (mutCfg) await runCaseMutants(mutCfg, resolveMutationFile(mutCfg.outT), ctx, contract, passed, elapsed, performance, isAssertErr, withMutation, (target) => new DriftContext(contract, test, cases, level, target), fn, fs);
- if (!passed) throw controlErr;
+ if (!passed) { if (dk) DERIVED.delete(dk); throw controlErr; }
  return 'passed';
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

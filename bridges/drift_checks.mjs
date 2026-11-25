@@ -52,6 +52,7 @@ export function throwAssertionError(msg) {
   err.code = 'ERR_ASSERTION';
   throw err;
 }
+const fail = throwAssertionError;
 
 export function splitResourcePointer(ptr) {
   if (!isStr(ptr) || !ptr) return ['', ptr];
@@ -101,17 +102,30 @@ export function cloneJson(val) {
 
 export const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-export function valuesEqual(a, b) {
-  if (typeof a === 'number' || typeof b === 'number') return isFinNum(a) && isFinNum(b) && Math.abs(a - b) <= 1e-9;
+function valuesEqualMode(a, b, exact) {
+  if (exact && (typeof a === 'bigint' || typeof b === 'bigint')) {
+    if (typeof a === 'bigint' && typeof b === 'bigint') return a === b;
+    const [bi, n] = typeof a === 'bigint' ? [a, b] : [b, a];
+    return isFinNum(n) && Number.isInteger(n) && Number.isSafeInteger(n) && BigInt(n) === bi;
+  }
+  if (typeof a === 'number' || typeof b === 'number') {
+    if (!isFinNum(a) || !isFinNum(b)) return false;
+    if (!exact) return Math.abs(a - b) <= 1e-9;
+    if (Number.isInteger(a) && Number.isInteger(b) && (Math.abs(a) >= 9007199254740992 || Math.abs(b) >= 9007199254740992)) return false;
+    return a === b;
+  }
   if (a === b) return true;
   if (a == null || b == null) return false;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => valuesEqualMode(v, b[i], exact));
   if (isObj(a) && isObj(b)) {
     const ka = Object.keys(a);
-    return ka.length === Object.keys(b).length && ka.every((k) => k in b && valuesEqual(a[k], b[k]));
+    return ka.length === Object.keys(b).length && ka.every((k) => k in b && valuesEqualMode(a[k], b[k], exact));
   }
   return false;
 }
+
+export function valuesEqual(a, b) { return valuesEqualMode(a, b, false); }
+export function valuesEqualExact(a, b) { return valuesEqualMode(a, b, true); }
 
 export function writePointer(target, rawPtr, value) {
   const [, ptr] = splitResourcePointer(rawPtr);
@@ -170,8 +184,10 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
   const exp = desugar03Rel(rawExp, context?.units ?? {}, context?.schema?.then?.[key]?.unit);
   const pfx = `${contractId}.${caseId}`;
   if ('eq' in exp) {
-    if (!valuesEqual(act, exp.eq)) {
-      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp.eq)}, got ${JSON.stringify(act)}`);
+    const eqFn = ('abs_tol' in exp || 'rel_tol' in exp) ? valuesEqual : valuesEqualExact;
+    if (!eqFn(act, exp.eq)) {
+      const fmtV = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v));
+      fail(`${pfx}: expected then.${key}=${fmtV(exp.eq)}, got ${fmtV(act)}`);
     }
     if (Object.keys(exp).length === 1) return true;
   }
@@ -181,10 +197,10 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
   const tol = ('abs_tol' in exp && isFinNum(Number(exp.abs_tol)) && Number(exp.abs_tol) >= 0) ? Number(exp.abs_tol) : 1e-9;
   if (!isSeqTuning) {
     if ('min' in exp && (!isFinNum(act) || !isFinNum(Number(exp.min)) || act + 1e-9 < Number(exp.min))) {
-      throwAssertionError(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key}>=${exp.min}, got ${JSON.stringify(act)}`);
     }
     if ('max' in exp && (!isFinNum(act) || !isFinNum(Number(exp.max)) || act - 1e-9 > Number(exp.max))) {
-      throwAssertionError(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key}<=${exp.max}, got ${JSON.stringify(act)}`);
     }
   }
   if ('approx' in exp) {
@@ -192,90 +208,90 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
     const at = 'abs_tol' in exp ? Number(exp.abs_tol) : 0;
     const rt = 'rel_tol' in exp ? Number(exp.rel_tol) : 0;
     if (!isFinNum(act) || !isFinNum(ap) || (!('abs_tol' in exp) && !('rel_tol' in exp)) || !isFinNum(at) || at < 0 || !isFinNum(rt) || rt < 0) {
-      throwAssertionError(`${pfx}: invalid approx on then.${key}`);
+      fail(`${pfx}: invalid approx on then.${key}`);
     }
     const rad = at + rt * Math.abs(ap);
     if (!isFinNum(rad) || Math.abs(act - ap) > rad) {
-      throwAssertionError(`${pfx}: expected then.${key} approx ${ap} (+/- ${rad}), got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key} approx ${ap} (+/- ${rad}), got ${JSON.stringify(act)}`);
     }
   }
   if ('balance_fields' in exp) {
-    if (!isObj(exp.balance_fields)) throwAssertionError(`${pfx}: invalid balance_fields on then.${key}`);
+    if (!isObj(exp.balance_fields)) fail(`${pfx}: invalid balance_fields on then.${key}`);
     let bal = 0;
     for (const [sgn, side] of [[1, 'add'], [-1, 'sub']]) {
       for (const ref of (exp.balance_fields[side] || [])) {
         const pr = peerOf(ref);
-        if (!pr.found || !isFinNum(pr.value)) throwAssertionError(`${pfx}: missing numeric peer "${ref}" for then.${key}.balance_fields`);
+        if (!pr.found || !isFinNum(pr.value)) fail(`${pfx}: missing numeric peer "${ref}" for then.${key}.balance_fields`);
         bal += sgn * pr.value;
       }
     }
     if (!isFinNum(act) || !isFinNum(bal) || Math.abs(act - bal) > tol) {
-      throwAssertionError(`${pfx}: expected then.${key} == balance (${bal}), got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key} == balance (${bal}), got ${JSON.stringify(act)}`);
     }
   }
   if ('min_len' in exp && (actLen < 0 || actLen < Number(exp.min_len))) {
-    throwAssertionError(`${pfx}: expected len(then.${key})>=${exp.min_len}, got ${actLen}`);
+    fail(`${pfx}: expected len(then.${key})>=${exp.min_len}, got ${actLen}`);
   }
   if ('max_len' in exp && (actLen < 0 || actLen > Number(exp.max_len))) {
-    throwAssertionError(`${pfx}: expected len(then.${key})<=${exp.max_len}, got ${actLen}`);
+    fail(`${pfx}: expected len(then.${key})<=${exp.max_len}, got ${actLen}`);
   }
   if ('non_empty' in exp && (actLen < 0 || (exp.non_empty ? actLen <= 0 : actLen !== 0))) {
-    throwAssertionError(`${pfx}: expected then.${key}.non_empty=${exp.non_empty}, got len=${actLen}`);
+    fail(`${pfx}: expected then.${key}.non_empty=${exp.non_empty}, got len=${actLen}`);
   }
   for (const [fk, op] of [['le_field', '<='], ['ge_field', '>='], ['eq_field', '==']]) {
     if (!(fk in exp)) continue;
     const pr = peerOf(exp[fk]);
-    if (!pr.found) throwAssertionError(`${pfx}: missing peer "${exp[fk]}" for then.${key}.${fk}`);
+    if (!pr.found) fail(`${pfx}: missing peer "${exp[fk]}" for then.${key}.${fk}`);
     const ok = op === '=='
       ? valuesEqual(act, pr.value)
       : (isFinNum(act) && isFinNum(pr.value) && (op === '<=' ? act - 1e-9 <= pr.value : act + 1e-9 >= pr.value));
     if (!ok) {
-      throwAssertionError(`${pfx}: expected then.${key} ${op} ${exp[fk]} (${JSON.stringify(pr.value)}), got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key} ${op} ${exp[fk]} (${JSON.stringify(pr.value)}), got ${JSON.stringify(act)}`);
     }
   }
   if ('in' in exp && (!Array.isArray(exp.in) || !exp.in.some((x) => valuesEqual(act, x)))) {
-    throwAssertionError(`${pfx}: expected then.${key} in ${JSON.stringify(exp.in)}, got ${JSON.stringify(act)}`);
+    fail(`${pfx}: expected then.${key} in ${JSON.stringify(exp.in)}, got ${JSON.stringify(act)}`);
   }
   if ('not_in' in exp) {
-    if (act === null || act === undefined) throwAssertionError(`${pfx}: expected non-null value for then.${key}.not_in`);
+    if (act === null || act === undefined) fail(`${pfx}: expected non-null value for then.${key}.not_in`);
     if (Array.isArray(exp.not_in) ? exp.not_in.some((x) => valuesEqual(act, x)) : !valuesEqual(act, exp.not_in)) {
-      throwAssertionError(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in`);
+      fail(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in`);
     }
   }
   if ('allowed_keys' in exp) {
-    if (!isObj(act) || !Array.isArray(exp.allowed_keys)) throwAssertionError(`${pfx}: expected object and allowed_keys list for then.${key}`);
+    if (!isObj(act) || !Array.isArray(exp.allowed_keys)) fail(`${pfx}: expected object and allowed_keys list for then.${key}`);
     for (const k of Object.keys(act)) {
       if (act === payload && k === '_frame' && isObj(act[k])) continue;
-      if (!exp.allowed_keys.includes(k)) throwAssertionError(`${pfx}: unexpected key "${k}" on then.${key}`);
+      if (!exp.allowed_keys.includes(k)) fail(`${pfx}: unexpected key "${k}" on then.${key}`);
     }
   }
   if ('forbid_keys' in exp) {
-    if (!isObj(act)) throwAssertionError(`${pfx}: expected object for then.${key}.forbid_keys`);
+    if (!isObj(act)) fail(`${pfx}: expected object for then.${key}.forbid_keys`);
     const hasKeyRec = (v, fk, root = true) => Array.isArray(v)
       ? v.some((x) => hasKeyRec(x, fk, false))
       : (isObj(v) && (Object.hasOwn(v, fk) || Object.entries(v).some(([ck, cv]) => !(root && ck === '_frame' && fk !== '_frame' && isObj(cv)) && hasKeyRec(cv, fk, false))));
     if (Array.isArray(exp.forbid_keys)) {
       for (const fk of exp.forbid_keys.map(String)) {
-        if (hasKeyRec(act, fk, act === payload)) throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
+        if (hasKeyRec(act, fk, act === payload)) fail(`${pfx}: forbidden key "${fk}" present on then.${key}`);
       }
     } else if (!hasKeyRec(act, String(exp.forbid_keys), act === payload)) {
-      throwAssertionError(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
+      fail(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
     }
   }
   if ('sum_fields' in exp) {
     if (!Array.isArray(exp.sum_fields) || exp.sum_fields.length < 2) {
-      throwAssertionError(`${pfx}: invalid sum_fields on then.${key}`);
+      fail(`${pfx}: invalid sum_fields on then.${key}`);
     }
     let sum = 0;
     for (const ref of exp.sum_fields) {
       const pr = peerOf(ref);
       if (!pr.found || !isFinNum(pr.value)) {
-        throwAssertionError(`${pfx}: missing numeric peer "${ref}" for then.${key}.sum_fields`);
+        fail(`${pfx}: missing numeric peer "${ref}" for then.${key}.sum_fields`);
       }
       sum += pr.value;
     }
     if (!isFinNum(act) || !isFinNum(sum) || Math.abs(act - sum) > 1e-9) {
-      throwAssertionError(`${pfx}: expected then.${key} == sum(${exp.sum_fields.join('+')}) (${sum}), got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key} == sum(${exp.sum_fields.join('+')}) (${sum}), got ${JSON.stringify(act)}`);
     }
   }
   if ('contains' in exp) {
@@ -283,50 +299,50 @@ export function checkRelationalLeaf(contractId, caseId, key, rawExp, act, payloa
     const ok = isStr(act) ? reqs.every((req) => isStr(req) && act.includes(req))
       : Array.isArray(act) && reqs.every((req) => act.some((x) => valuesEqual(x, req)));
     if (!ok) {
-      throwAssertionError(`${pfx}: expected then.${key} to contain ${JSON.stringify(exp.contains)}, got ${JSON.stringify(act)}`);
+      fail(`${pfx}: expected then.${key} to contain ${JSON.stringify(exp.contains)}, got ${JSON.stringify(act)}`);
     }
   }
   if ('prefix' in exp && (!isStr(act) || !act.startsWith(String(exp.prefix)))) {
-    throwAssertionError(`${pfx}: expected then.${key} to start with ${JSON.stringify(exp.prefix)}, got ${JSON.stringify(act)}`);
+    fail(`${pfx}: expected then.${key} to start with ${JSON.stringify(exp.prefix)}, got ${JSON.stringify(act)}`);
   }
   if ('suffix' in exp && (!isStr(act) || !act.endsWith(String(exp.suffix)))) {
-    throwAssertionError(`${pfx}: expected then.${key} to end with ${JSON.stringify(exp.suffix)}, got ${JSON.stringify(act)}`);
+    fail(`${pfx}: expected then.${key} to end with ${JSON.stringify(exp.suffix)}, got ${JSON.stringify(act)}`);
   }
   if (isSeqTuning && Array.isArray(act) && ('min' in exp || 'max' in exp)) {
     for (const v of act) {
       if (!isFinNum(v) || ('min' in exp && v + tol < Number(exp.min)) || ('max' in exp && v - tol > Number(exp.max))) {
-        throwAssertionError(`${pfx}: sequence element ${v} outside [min, max] on then.${key}`);
+        fail(`${pfx}: sequence element ${v} outside [min, max] on then.${key}`);
       }
     }
   }
   if ('monotonic' in exp) {
     const mode = String(exp.monotonic);
-    if (!Array.isArray(act) || !act.length || !act.every(isFinNum)) throwAssertionError(`${pfx}: expected non-empty numeric array for then.${key}.monotonic`);
+    if (!Array.isArray(act) || !act.length || !act.every(isFinNum)) fail(`${pfx}: expected non-empty numeric array for then.${key}.monotonic`);
     for (let i = 1; i < act.length; i++) {
       const p = act[i - 1], c = act[i];
       const ok = mode === 'non_decreasing' ? p - tol <= c : mode === 'strictly_increasing' ? p + tol < c : mode === 'non_increasing' ? p + tol >= c : mode === 'strictly_decreasing' ? p - tol > c : false;
-      if (!ok) throwAssertionError(`${pfx}: expected then.${key}.monotonic=${mode}, violated at index ${i} (${p} -> ${c})`);
+      if (!ok) fail(`${pfx}: expected then.${key}.monotonic=${mode}, violated at index ${i} (${p} -> ${c})`);
     }
   }
   if ('step_max_delta' in exp) {
     const d = Number(exp.step_max_delta);
-    if (!isFinNum(d) || d <= 0 || !Array.isArray(act) || !act.length || !act.every(isFinNum)) throwAssertionError(`${pfx}: invalid or non-numeric sequence for then.${key}.step_max_delta=${exp.step_max_delta}`);
+    if (!isFinNum(d) || d <= 0 || !Array.isArray(act) || !act.length || !act.every(isFinNum)) fail(`${pfx}: invalid or non-numeric sequence for then.${key}.step_max_delta=${exp.step_max_delta}`);
     for (let i = 1; i < act.length; i++) {
-      if (Math.abs(act[i] - act[i - 1]) > d + tol) throwAssertionError(`${pfx}: expected then.${key}.step_max_delta<=${d}, observed step ${Math.abs(act[i] - act[i - 1])} at index ${i}`);
+      if (Math.abs(act[i] - act[i - 1]) > d + tol) fail(`${pfx}: expected then.${key}.step_max_delta<=${d}, observed step ${Math.abs(act[i] - act[i - 1])} at index ${i}`);
     }
   }
   if ('sum_total' in exp) {
-    if (isObj(act) && Object.keys(act).length > 0 && Object.keys(act).every((rk) => REL_KEYS.has(rk))) throwAssertionError(`${pfx}: literal relational table cannot satisfy then.${key}.sum_total`);
+    if (isObj(act) && Object.keys(act).length > 0 && Object.keys(act).every((rk) => REL_KEYS.has(rk))) fail(`${pfx}: literal relational table cannot satisfy then.${key}.sum_total`);
     const vals = Array.isArray(act) ? act : (isObj(act) ? Object.values(act) : []);
-    if (!vals.length || !vals.every(isFinNum)) throwAssertionError(`${pfx}: expected non-empty numeric array or map for then.${key}.sum_total`);
+    if (!vals.length || !vals.every(isFinNum)) fail(`${pfx}: expected non-empty numeric array or map for then.${key}.sum_total`);
     const total = vals.reduce((acc, v) => acc + v, 0), st = exp.sum_total;
     if (isFinNum(st)) {
-      if (Math.abs(total - st) > tol) throwAssertionError(`${pfx}: expected then.${key}.sum_total==${st}, got ${total}`);
+      if (Math.abs(total - st) > tol) fail(`${pfx}: expected then.${key}.sum_total==${st}, got ${total}`);
     } else if (isObj(st)) {
       if (('eq' in st && (!isFinNum(st.eq) || Math.abs(total - st.eq) > tol)) || ('min' in st && (!isFinNum(st.min) || total + tol < st.min)) || ('max' in st && (!isFinNum(st.max) || total - tol > st.max))) {
-        throwAssertionError(`${pfx}: sum_total ${total} outside ${JSON.stringify(st)} on then.${key}`);
+        fail(`${pfx}: sum_total ${total} outside ${JSON.stringify(st)} on then.${key}`);
       }
-    } else throwAssertionError(`${pfx}: invalid sum_total on then.${key}`);
+    } else fail(`${pfx}: invalid sum_total on then.${key}`);
   }
   return true;
 }
@@ -353,31 +369,31 @@ export function checkProjectedLeaf(contractId, caseId, key, exp, payload, proj, 
     if (!res.found && tPay !== payload) res = readPointer(payload, ptr);
     if (!res.found) {
       bumpUnverifiable();
-      throwAssertionError(`${pfx}: missing projected path "${ptr}" for then.${key}`);
+      fail(`${pfx}: missing projected path "${ptr}" for then.${key}`);
     }
     if (isUiObs && exp !== null && (res.value === null || res.value === undefined || (res.value === '' && typeof exp === 'string' && exp !== ''))) {
       bumpUnverifiable();
-      throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value at "${ptr}"`);
+      fail(`${pfx}: unverifiable then.${key}: unmeasured value at "${ptr}"`);
     }
     if (checkRelationalLeaf(contractId, caseId, key, exp, res.value, payload, proj, mutationOverride, whenEnv, contract)) return;
     if (!valuesEqual(res.value, exp)) {
-      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}${withAt ? ` at "${ptr}"` : ''}, got ${JSON.stringify(res.value)}`);
+      fail(`${pfx}: expected then.${key}=${JSON.stringify(exp)}${withAt ? ` at "${ptr}"` : ''}, got ${JSON.stringify(res.value)}`);
     }
     return;
   }
   if (isObj(tPay) && key in tPay) {
     if (isUiObs && exp !== null && (tPay[key] === null || tPay[key] === undefined)) {
       bumpUnverifiable();
-      throwAssertionError(`${pfx}: unverifiable then.${key}: unmeasured value`);
+      fail(`${pfx}: unverifiable then.${key}: unmeasured value`);
     }
     if (checkRelationalLeaf(contractId, caseId, key, exp, tPay[key], payload, proj, mutationOverride, whenEnv, contract)) return;
     if (!valuesEqual(tPay[key], exp)) {
-      throwAssertionError(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(tPay[key])}`);
+      fail(`${pfx}: expected then.${key}=${JSON.stringify(exp)}, got ${JSON.stringify(tPay[key])}`);
     }
     return;
   }
   bumpUnverifiable();
-  throwAssertionError(`${pfx}: ${missMsg} then.${key}`);
+  fail(`${pfx}: ${missMsg} then.${key}`);
 }
 
 function computeUnobservedControls(controls, thenTable, proj) {
@@ -399,10 +415,10 @@ function computeUnobservedControls(controls, thenTable, proj) {
 export async function invokeVerifiedCallback(fn, cid, caseId, key, exp, extra) {
   const s = `${fn}`.trim(), b = s.includes('=>') ? s.slice(s.indexOf('=>') + 2).trim() : s;
   const p = `${cid}.${caseId}: check for then.${key}`;
-  if ((!fn.length && !/\barguments\b/u.test(b) && /^(?:async\s+)?(?:\(\s*\)\s*=>|function\b[^(]*\(\s*\))/u.test(s)) || /^\{\s*\}$/u.test(b)) throwAssertionError(`${p} must inspect the expected value`);
+  if ((!fn.length && !/\barguments\b/u.test(b) && /^(?:async\s+)?(?:\(\s*\)\s*=>|function\b[^(]*\(\s*\))/u.test(s)) || /^\{\s*\}$/u.test(b)) fail(`${p} must inspect the expected value`);
   const r = await fn(exp, extra);
-  if (r === false) throwAssertionError(`${p} returned false`);
-  if (!/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(b) && (r !== true || !/\w\s*\(/u.test(b))) throwAssertionError(`${p} must inspect and assert the expected value`);
+  if (r === false) fail(`${p} returned false`);
+  if (!/\b(?:assert|expect|throw|check|reject|fail)\b|[!=]==?|[<>]=?/u.test(b) && (r !== true || !/\w\s*\(/u.test(b))) fail(`${p} must inspect and assert the expected value`);
 }
 
 export async function checkViewTable(contractId, caseId, thenTable, seen, view, checks, mutationOverride, metricsStore, getProj, whenEnv = null) {
@@ -413,10 +429,10 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
     || v.surface_found === false
     || (v.schema === 'drift.ui-observation/1' && v.surface_found !== true && v.surfaceFound !== true)
   ) {
-    throwAssertionError(`${pfx}: surface.missing`);
+    fail(`${pfx}: surface.missing`);
   }
   const isMut = Boolean(mutationOverride);
-  const assertEq = (k, exp, act) => { if (act !== exp) throwAssertionError(`${pfx}: expected ${k}=${exp}, got ${act}`); };
+  const assertEq = (k, exp, act) => { if (act !== exp) fail(`${pfx}: expected ${k}=${exp}, got ${act}`); };
   let proj = null;
   const STATE_FIRST = new Set(['baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence']);
   const UNVERIF_LAST = new Set(['unverifiable_checks', 'unverified_elements']);
@@ -441,10 +457,10 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
       const hasB = Boolean(v.hasBaseline ?? (v.baseline !== undefined && v.baseline !== null));
       const lbl = lowStr(v.baselineLabel ?? v.deltaLabel);
       if (!hasB && /^(?:invariato|unchanged|same|nessuna variazione|[+-]\s*\d)/u.test(lbl)) {
-        throwAssertionError(`${pfx}: comparative baseline label "${lbl}" without baseline`);
+        fail(`${pfx}: comparative baseline label "${lbl}" without baseline`);
       }
       const act = v.baseline_state ?? (hasB ? 'compared' : 'first_observation');
-      if (act !== exp) throwAssertionError(`${pfx}: expected baseline_state=${JSON.stringify(exp)}, got ${JSON.stringify(act)}`);
+      if (act !== exp) fail(`${pfx}: expected baseline_state=${JSON.stringify(exp)}, got ${JSON.stringify(act)}`);
     } else if (k === 'duplicate_figures') {
       const figs = Array.isArray(v.figures)
         ? v.figures.map(String)
@@ -485,7 +501,7 @@ export async function checkViewTable(contractId, caseId, thenTable, seen, view, 
       v.unobservedControls = unobs;
       const act = Array.isArray(exp) ? unobs : unobs.length;
       if (JSON.stringify(act) !== JSON.stringify(exp)) {
-        throwAssertionError(`${pfx}: expected unobserved_controls=${JSON.stringify(exp)}, got ${JSON.stringify(act)} (${JSON.stringify(unobs)})`);
+        fail(`${pfx}: expected unobserved_controls=${JSON.stringify(exp)}, got ${JSON.stringify(act)} (${JSON.stringify(unobs)})`);
       }
     } else {
       if (proj === null) proj = getProj();

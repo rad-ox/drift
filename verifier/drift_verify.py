@@ -114,6 +114,62 @@ SWEEP_SOUNDNESS_WARNING = (
     'drift_verify: warning: policy.sweep = "soundness" is not evaluated by the '
     "offline verifier; run DRIFT Pro for area soundness gating"
 )
+_CORE_POLICY_KEYS = frozenset((
+    "approvers", "proof", "ignore", "uncovered", "sweep", "max_lines", "max_open",
+    "warn_ratio", "performance_reuse", "forbid_imports", "security", "simulation",
+    "priority_weights", "companion_edits", "patch_scope", "require_signed_approval",
+    "require_observations", "block_redundancy_erosion", "grant_lock", "pact_locks",
+    "signatures", "autonomy",
+))
+
+
+def _opaque_core_policy_keys(pol: dict[str, Any]) -> list[str]:
+    if not isinstance(pol, dict) or pol.get("pack") == "core@1":
+        return []
+    return sorted(k for k in pol if k in _CORE_POLICY_KEYS)
+
+
+def compare_gate_parity(cli_doc: dict[str, Any], verdicts: list[dict[str, Any]], py_ok: bool) -> list[str]:
+    mismatches: list[str] = []
+    if not isinstance(cli_doc, dict):
+        return ["cli gate JSON root must be an object"]
+    cli_ok = bool(cli_doc.get("ok"))
+    if cli_ok != py_ok:
+        mismatches.append(f"top-level ok mismatch: cli={cli_ok} py={py_ok}")
+    raw_cli_contracts = cli_doc.get("contracts") if isinstance(cli_doc.get("contracts"), list) else (
+        [cli_doc] if ("contract" in cli_doc or "id" in cli_doc) else []
+    )
+    cli_by_id = {
+        str(c.get("contract") or c.get("id") or ""): c
+        for c in raw_cli_contracts
+        if isinstance(c, dict) and (c.get("contract") or c.get("id"))
+    }
+    py_by_id = {str(v["id"]): v for v in verdicts}
+    if sorted(cli_by_id) != sorted(py_by_id):
+        mismatches.append(f"contract set mismatch: cli={sorted(cli_by_id)} py={sorted(py_by_id)}")
+    for cid in sorted(set(cli_by_id) & set(py_by_id)):
+        cc, pc = cli_by_id[cid], py_by_id[cid]
+        for fld in ("ok", "approval", "superseded", "gone", "ignored"):
+            if fld in cc and cc.get(fld) != pc.get(fld):
+                mismatches.append(f"{cid}.{fld}: cli={cc.get(fld)!r} py={pc.get(fld)!r}")
+        cr = sorted(str(x) for x in (cc.get("reasons") or []))
+        pr = sorted(str(x) for x in (pc.get("reasons") or []))
+        if cr != pr:
+            mismatches.append(f"{cid}.reasons: cli={cr} py={pr}")
+        c_res = {
+            (str(r.get("case", "")), str(r.get("level", ""))): str(r.get("state", ""))
+            for r in (cc.get("results") or [])
+            if isinstance(r, dict)
+        }
+        p_res = {
+            (str(r.get("case", "")), str(r.get("level", ""))): str(r.get("state", ""))
+            for r in (pc.get("results") or [])
+            if isinstance(r, dict)
+        }
+        for key in sorted(set(c_res) | set(p_res)):
+            if c_res.get(key) != p_res.get(key):
+                mismatches.append(f"{cid}#{key[0]}({key[1]}): cli={c_res.get(key)!r} py={p_res.get(key)!r}")
+    return mismatches
 
 
 def run_sec_self_test(ck: dict[str, Any], digest_matches_fn: Any) -> None:
@@ -124,8 +180,7 @@ def run_verifier_self_test() -> int:
     return _run_verifier_self_test(sys.modules[__name__])
 
 
-def validate_event_line(line: str) -> dict[str, Any]:
-    return validate_event_line_impl(line)
+validate_event_line = validate_event_line_impl
 
 
 def validate_inventory_text(text: str) -> dict[str, Any]:
@@ -188,12 +243,7 @@ def verify_contract_toml(path: Path, profiles_dir: Path) -> dict[str, Any]:
     )
 
 
-def load_proof_events(
-    events_paths: list[Path],
-    area_root: Path | None = None,
-    target_run_id: str = "",
-) -> tuple[Any, ...]:
-    return load_proof_events_impl(events_paths, area_root, target_run_id)
+load_proof_events = load_proof_events_impl
 
 
 def validate_mutation_manifest(text: str) -> dict[str, Any]:
@@ -213,62 +263,7 @@ def evaluate_contract_mutations(
     return evaluate_contract_mutations_impl(contract, manifest, latest_mut, mut_errors, digest_matches)
 
 
-def evaluate_contract(
-    contract: dict[str, Any],
-    cfg_state: str,
-    events: list[dict[str, Any]],
-    gone: int,
-    incomplete_shards: int,
-    ev_errors: list[str],
-    policy: dict[str, Any] | None = None,
-    min_proof: str = "verified",
-    phase: str = "",
-    total_open: int | None = None,
-    mutations_ok: bool = False,
-    perf_bundle: Any = None,
-    expected_subject: dict[str, Any] | None = None,
-    sec_receipts: list[dict[str, Any]] | None = None,
-    expected_snapshot: str = "",
-    formal_receipts: list[dict[str, Any]] | None = None,
-    shard_subject_refs: set[str] | None = None,
-    manifest_sources: Any = None,
-    parity_receipts: list[dict[str, Any]] | None = None,
-    mig_receipts: list[dict[str, Any]] | None = None,
-    allow_exec_reuse: bool = False,
-    base_contract: dict[str, Any] | None = None,
-    release_attest: bool = False,
-    sim_receipts: list[dict[str, Any]] | None = None,
-    ra_receipts: Any = None,
-    comp_manifests: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    return evaluate_contract_impl(
-        contract,
-        cfg_state,
-        events,
-        gone,
-        incomplete_shards,
-        ev_errors,
-        policy=policy,
-        min_proof=min_proof,
-        phase=phase,
-        total_open=total_open,
-        mutations_ok=mutations_ok,
-        perf_bundle=perf_bundle,
-        expected_subject=expected_subject,
-        sec_receipts=sec_receipts,
-        expected_snapshot=expected_snapshot,
-        formal_receipts=formal_receipts,
-        shard_subject_refs=shard_subject_refs,
-        manifest_sources=manifest_sources,
-        parity_receipts=parity_receipts,
-        mig_receipts=mig_receipts,
-        allow_exec_reuse=allow_exec_reuse,
-        base_contract=base_contract,
-        release_attest=release_attest,
-        sim_receipts=sim_receipts,
-        ra_receipts=ra_receipts,
-        comp_manifests=comp_manifests,
-    )
+evaluate_contract = evaluate_contract_impl
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -289,6 +284,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--signatures",
         "--signature-policy",
         "--grant-lock",
+        "--compare-gate",
     )
     for flag in path_flags:
         parser.add_argument(flag, type=Path)
@@ -339,16 +335,38 @@ def _has_event_signature_files(events_paths: list[Path]) -> bool:
     return False
 
 
-def _render_verdicts(verdicts: list[dict[str, Any]], ok: bool, pol: dict[str, Any], as_json: bool) -> None:
+def _render_verdicts(
+    verdicts: list[dict[str, Any]],
+    ok: bool,
+    pol: dict[str, Any],
+    as_json: bool,
+    parity_mismatches: list[str] | None = None,
+) -> None:
+    opaque_keys = _opaque_core_policy_keys(pol)
+    if opaque_keys:
+        print(
+            f'drift_verify: warning: [policy] sets core@1 key(s) [{", ".join(opaque_keys)}] '
+            'without pack = "core@1"; area policy is inactive until pack = "core@1" is declared',
+            file=sys.stderr,
+        )
     sweep_pol = pol.get("sweep") if pol.get("pack") == "core@1" else None
     if sweep_pol == "soundness" or (isinstance(sweep_pol, list) and "soundness" in sweep_pol):
         print(SWEEP_SOUNDNESS_WARNING, file=sys.stderr)
     if as_json:
-        print(json.dumps({"ok": ok, "contracts": verdicts}, indent=2, sort_keys=True))
+        out: dict[str, Any] = {"ok": ok, "contracts": verdicts}
+        if parity_mismatches is not None:
+            out["parity"] = {"ok": len(parity_mismatches) == 0, "mismatches": parity_mismatches}
+        print(json.dumps(out, indent=2, sort_keys=True))
         return
     for v in verdicts:
         status = "green" if v["ok"] else f"not green ({', '.join(v['reasons'])})"
         print(f"{v['id']} {v['ref']}: {status}")
+    if parity_mismatches is not None:
+        if parity_mismatches:
+            for mm in parity_mismatches:
+                print(f"drift_verify: parity mismatch: {mm}", file=sys.stderr)
+        else:
+            print("parity: MATCH (cli <-> verifier)")
 
 
 def main(argv: list[str]) -> int:
@@ -544,7 +562,17 @@ def main(argv: list[str]) -> int:
     )
 
     ok = bool(verdicts) and all(v["ok"] for v in verdicts)
-    _render_verdicts(verdicts, ok, policy, args.json)
+    parity_mismatches: list[str] | None = None
+    if args.compare_gate:
+        try:
+            cli_doc = json.loads(args.compare_gate.read_text("utf-8"))
+        except Exception as exc:
+            print(f"drift_verify.py: cannot read --compare-gate {args.compare_gate}: {exc}", file=sys.stderr)
+            return 2
+        parity_mismatches = compare_gate_parity(cli_doc, verdicts, ok)
+    _render_verdicts(verdicts, ok, policy, args.json, parity_mismatches)
+    if parity_mismatches:
+        return 2
     return 0 if ok else 1
 
 

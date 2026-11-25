@@ -10,6 +10,8 @@ const throwError = (message) => {
 
 const isStr = (v) => typeof v === 'string';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const rd = (fs, p) => fs.readFileSync(p, 'utf8');
+const gitOut = (ex, dir, args, env) => ex('git', ['-C', dir, ...args], { ...(env ? { env } : {}), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 
 export function normalizeBytes(buf) {
  let crlf = false;
@@ -61,52 +63,73 @@ export function resolveSelectedFiles(raw, rootDir, fs, path) {
   return [...out].sort();
 }
 
-export function mergePriorInventory(out, inv, isShard, fs, path, rootDir) {
-  if (!inv.mergedClasses) inv.mergedClasses = new Set();
-  if ((isShard && inv.classes.size > 0 && [...inv.classes].every((c) => inv.mergedClasses.has(c))) || (!isShard && inv.mergedSingle)) return;
-  const selfMeta = `${out.slice(0, -6)}.meta.json`, dir = path.dirname(out);
-  const files = isShard ? (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.meta.json')).sort().reverse().map((f) => path.join(dir, f)).filter((p) => p !== selfMeta) : []) : (fs.existsSync(selfMeta) ? [selfMeta] : []);
+export function mergePriorInventory(out, inv, isShard, fs, path, rootDir, env = null) {
+  if (!inv.mc) inv.mc = new Set();
+  if (isShard && inv.classes.size > 0 && [...inv.classes].every((c) => inv.mc.has(c))) return;
+  const self = `${out.slice(0, -6)}.meta.json`, dir = path.dirname(out);
+  const files = isShard ? (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.meta.json')).sort().reverse().map((f) => path.join(dir, f)).filter((p) => p !== self) : []) : (fs.existsSync(self) ? [self] : []);
   if (!files.length) return;
-  const pending = isShard ? new Set([...inv.classes].filter((c) => !inv.mergedClasses.has(c))) : null, clsOk = new Map();
-  const hasCls = (cls) => {
-    if (!clsOk.has(cls)) clsOk.set(cls, resolveSelectedFiles({ all: false, tests: [`${cls}#_`] }, rootDir, fs, path).length > 0);
-    return clsOk.get(cls);
+  const pend = isShard ? new Set([...inv.classes].filter((c) => !inv.mc.has(c))) : null, cm = new Map();
+  const snap = (env?.DRIFT_SNAPSHOT || '').trim(), eref = (env?.DRIFT_EXECUTION_REF || '').trim();
+  const clsMt = (c) => {
+    if (!cm.has(c)) {
+      const f = resolveSelectedFiles({ all: false, tests: [`${c}#_`] }, rootDir, fs, path)[0];
+      cm.set(c, f ? fs.statSync(path.join(rootDir, f), { bigint: true }).mtimeNs : -1n);
+    }
+    return cm.get(c);
   };
   for (const mf of files) {
-    if (pending && !pending.size) break;
+    if (pend && !pend.size) break;
     try {
-      const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
+      const m = JSON.parse(rd(fs, mf));
       if (!isObj(m)) continue;
-      const mClasses = Array.isArray(m.classes) ? m.classes.filter(isStr) : [];
-      if (pending && !mClasses.some((c) => pending.has(c))) continue;
-      const takeCls = new Set();
-      for (const c of mClasses) {
-        if (isShard ? (pending.has(c) && hasCls(c)) : (inv.classes.has(c) || hasCls(c))) { inv.classes.add(c); takeCls.add(c); }
-        if (pending && pending.has(c)) { pending.delete(c); inv.mergedClasses.add(c); }
+      if (!isShard && ((snap && isStr(m.snapshot) && m.snapshot !== snap) || (eref && isStr(m.execution_ref) && m.execution_ref !== eref))) continue;
+      const mc = Array.isArray(m.classes) ? m.classes.filter(isStr) : [];
+      if (pend && !mc.some((c) => pend.has(c))) continue;
+      const mt = fs.statSync(mf, { bigint: true }).mtimeNs, take = new Set();
+      for (const c of mc) {
+        const t = clsMt(c), ok = t >= 0n && t <= mt;
+        if (isShard ? (pend.has(c) && ok) : (ok || (!inv.classes.has(c) && t >= 0n))) { inv.classes.add(c); take.add(c); }
+        if (pend && pend.has(c)) { pend.delete(c); inv.mc.add(c); }
       }
-      for (const tid of Array.isArray(m.tests) ? m.tests : []) {
-        const cls = isStr(tid) ? tid.split('#', 1)[0] : '';
-        if (cls && takeCls.has(cls)) inv.tests.add(tid);
-      }
-      if (isObj(m.inputs)) for (const [tid, fmap] of Object.entries(m.inputs)) {
-        if (!inv.tests.has(tid) || !isObj(fmap)) continue;
-        if (!inv.inputs.has(tid)) inv.inputs.set(tid, new Map());
-        const cur = inv.inputs.get(tid);
-        for (const [fp, dig] of Object.entries(fmap)) if (!cur.has(fp) && isStr(dig)) cur.set(fp, dig);
+      for (const tid of Array.isArray(m.tests) ? m.tests : []) if (isStr(tid) && take.has(tid.split('#', 1)[0])) inv.tests.add(tid);
+      if (isObj(m.inputs)) for (const [tid, fm] of Object.entries(m.inputs)) {
+        if (!inv.tests.has(tid) || !isObj(fm)) continue;
+        const cur = inv.inputs.get(tid) || inv.inputs.set(tid, new Map()).get(tid);
+        for (const [fp, d] of Object.entries(fm)) if (!cur.has(fp) && isStr(d)) cur.set(fp, d);
       }
     } catch {}
   }
-  if (pending) for (const c of pending) inv.mergedClasses.add(c);
-  else inv.mergedSingle = true;
+  if (pend) for (const c of pend) inv.mc.add(c);
+}
+
+export function writeSidecar(out, inv, isShard, buildFn, fs, path, rootDir, env) {
+  const meta = `${out.slice(0, -6)}.meta.json`, lock = `${meta}.lock`;
+  const run = () => {
+    mergePriorInventory(out, inv, isShard, fs, path, rootDir, env);
+    writeAtomicUtf8(fs, meta, JSON.stringify(buildFn()) + '\n', `${process.pid}.${Math.random().toString(36).slice(2, 8)}`);
+  };
+  if (isShard) { run(); return; }
+  const sb = new Int32Array(new SharedArrayBuffer(4));
+  let fd = -1;
+  for (let i = 0; i < 600; i += 1) {
+    try { fd = fs.openSync(lock, 'wx'); break; } catch (e) {
+      if (e?.code !== 'EEXIST') throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 10000) fs.unlinkSync(lock); } catch {}
+      Atomics.wait(sb, 0, 0, 5);
+    }
+  }
+  try { if (fd >= 0) fs.closeSync(fd); run(); } finally { if (fd >= 0) try { fs.unlinkSync(lock); } catch {} }
 }
 
 function captureWorktreeSnapshot(area, execFileSync, fs, path, process) {
   try {
-    if (!execFileSync('git', ['-C', area, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) {
-      const tr = execFileSync('git', ['-C', area, 'rev-parse', '--verify', '--quiet', 'HEAD^{tree}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-      if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(tr)) return tr;
+    const isHex = (s) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(s);
+    if (!gitOut(execFileSync, area, ['status', '--porcelain', '--untracked-files=normal']).trim()) {
+      const tr = gitOut(execFileSync, area, ['rev-parse', '--verify', '--quiet', 'HEAD^{tree}']).trim();
+      if (isHex(tr)) return tr;
     }
-    const rev = execFileSync('git', ['-C', area, 'rev-parse', '--show-toplevel', '--git-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/u);
+    const rev = gitOut(execFileSync, area, ['rev-parse', '--show-toplevel', '--git-dir']).trim().split(/\r?\n/u);
     if (rev.length < 2) return '';
     const top = path.resolve(area, rev[0].trim()), realIdx = path.join(path.resolve(area, rev[1].trim()), 'index'), tmpIdx = path.join(area, '.drift-work', `.git-index-${process.pid}`);
     try {
@@ -116,8 +139,8 @@ function captureWorktreeSnapshot(area, execFileSync, fs, path, process) {
         try { execFileSync('git', ['-C', top, 'check-ignore', '-q', '--', `${d}/`], { stdio: 'ignore' }); return false; } catch { return true; }
       }).map((d) => `:(exclude)${d}`);
       execFileSync('git', ['-C', top, '-c', 'core.safecrlf=false', 'add', '-A', '--', '.', ...ex], { env, stdio: 'ignore' });
-      const tr = execFileSync('git', ['-C', top, 'write-tree'], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-      if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(tr)) return tr;
+      const tr = gitOut(execFileSync, top, ['write-tree'], env).trim();
+      if (isHex(tr)) return tr;
     } finally { fs.rmSync(tmpIdx, { force: true }); }
   } catch {}
   return '';
@@ -155,15 +178,13 @@ export function parseTestCommand(raw) {
   return out;
 }
 
-export function precheckTestLiterals(testFiles, resDir, area, fs, path) {
-  return runPrecheckTestLiterals(testFiles, resDir, area, fs, path);
-}
+export function precheckTestLiterals(f, r, a, fs, p) { return runPrecheckTestLiterals(f, r, a, fs, p); }
 
 export function resolveCliWorkPaths(cwd, env, fs, path) {
   const sd = validateShadowStateDir(cwd, env, fs, path);
   let area = cwd;
   if (sd) {
-    const mf = path.join(sd, 'shadow.toml'), sr = fs.existsSync(mf) ? ((env.DRIFT_SOURCE_ROOT || '').trim() || (fs.readFileSync(mf, 'utf8').match(/^\s*source_root\s*=\s*"([^"]*)"/mu) || [])[1] || '') : '';
+    const mf = path.join(sd, 'shadow.toml'), sr = fs.existsSync(mf) ? ((env.DRIFT_SOURCE_ROOT || '').trim() || (rd(fs, mf).match(/^\s*source_root\s*=\s*"([^"]*)"/mu) || [])[1] || '') : '';
     if (sr) area = fs.realpathSync(path.resolve(sd, sr));
   } else while (!fs.existsSync(path.join(area, '.drift', 'contracts')) && path.dirname(area) !== area) area = path.dirname(area);
   const stateArea = sd || area, workRoot = path.join(stateArea, '.drift-work');
@@ -193,8 +214,8 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   }
   const { area, stateArea, workRoot, runRoot, hasRunScope, isShadow } = resolveCliWorkPaths(process.cwd(), process.env, fs, path);
   const sdArgs = isShadow ? ['--state-dir', stateArea] : [];
-  const cDir = path.join(stateArea, '.drift', 'contracts');
-  if (!fs.existsSync(cDir)) throwError(`no .drift/contracts found from ${process.cwd()}`);
+  const has = (p) => fs.existsSync(p), cDir = path.join(stateArea, '.drift', 'contracts');
+  if (!has(cDir)) throwError(`no .drift/contracts found from ${process.cwd()}`);
   if (!targets.length) for (const fn of fs.readdirSync(cDir).filter((f) => f.endsWith('.toml')).sort()) targets.push(path.basename(fn, '.toml'));
   if (!targets.length) throwError('usage: node drift.mjs [test|prove|gate] [<contract...>] [--base <ref>] [--changed [<file>]] [--prove|--gate] [--json]');
   const home = process.env.HOME || process.env.USERPROFILE || '';
@@ -202,7 +223,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   if (wantChanged && !baseRef) baseRef = 'HEAD';
   if (wantChanged && !changedPaths.length) {
     try {
-      const seen = new Set(), dOut = execFileSync('git', ['-C', area, 'diff', '--name-only', '--relative', baseRef], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }), uOut = execFileSync('git', ['-C', area, 'ls-files', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const seen = new Set(), dOut = gitOut(execFileSync, area, ['diff', '--name-only', '--relative', baseRef]), uOut = gitOut(execFileSync, area, ['ls-files', '--others', '--exclude-standard']);
       for (const ln of `${dOut}\n${uOut}`.split('\n')) { const p = ln.trim(); if (p && !p.startsWith('.drift-work/') && !seen.has(p)) { seen.add(p); changedPaths.push(p); } }
     } catch {}
   }
@@ -213,9 +234,9 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   const addTarget = (id, direct) => { if (!idSet.has(id)) { idSet.add(id); ids.push(id); } if (!tomlSet.has(direct)) { tomlSet.add(direct); tomls.push(direct); } };
   for (const t of targets) {
     const id = path.basename(t).endsWith('.toml') ? path.basename(t, '.toml') : t;
-    const direct = fs.existsSync(path.resolve(area, t)) && t.endsWith('.toml') ? path.resolve(area, t) : path.join(cDir, `${id}.toml`);
-    if (!fs.existsSync(direct)) {
-      const candSrc = fs.existsSync(path.resolve(area, t)) ? path.resolve(area, t) : (fs.existsSync(path.resolve(process.cwd(), t)) ? path.resolve(process.cwd(), t) : '');
+    const direct = has(path.resolve(area, t)) && t.endsWith('.toml') ? path.resolve(area, t) : path.join(cDir, `${id}.toml`);
+    if (!has(direct)) {
+      const candSrc = has(path.resolve(area, t)) ? path.resolve(area, t) : (has(path.resolve(process.cwd(), t)) ? path.resolve(process.cwd(), t) : '');
       if (candSrc && !candSrc.endsWith('.toml')) {
         const relSrc = path.relative(area, candSrc).split(path.sep).join('/');
         if (!changedPaths.includes(relSrc)) changedPaths.push(relSrc);
@@ -231,15 +252,16 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
       const impObj = JSON.parse(execFileSync(cli, ['impact', ...relSrcs.map((x) => x.relSrc), '--json'], { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
       const unm = new Set(Array.isArray(impObj?.unmatched_code) ? impObj.unmatched_code : []), miss = relSrcs.find((x) => unm.has(x.relSrc));
       if (miss) throwError(`contract "${miss.raw}" not found at ${miss.direct}`);
-      for (const mc of impObj?.contracts || []) { const mDirect = path.join(cDir, `${mc.id}.toml`); if (mc.id && fs.existsSync(mDirect)) addTarget(mc.id, mDirect); }
+      for (const mc of impObj?.contracts || []) { const mDirect = path.join(cDir, `${mc.id}.toml`); if (mc.id && has(mDirect)) addTarget(mc.id, mDirect); }
     } catch (e) { if (String(e?.message || '').includes('not found at')) throw e; }
     if (!ids.length) throwError(`contract "${relSrcs[0].raw}" not found at ${relSrcs[0].direct}`);
   }
   const genDir = ensureExportGeneration(stateArea, cli, ids, tomls, resDir, execFileSync, fs, path);
+  const chgArgs = changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []);
   let selFile = '', narrowedFiles = null, selectWidened = false, selectReasons = [];
   if (baseRef) {
-    const baseEvArgs = hasRunScope && fs.existsSync(path.join(workRoot, 'events')) ? ['--events', evDir, '--events', path.join(workRoot, 'events')] : ['--events', evDir];
-    const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, ...sdArgs, '--base', baseRef, ...baseEvArgs, '--files', '--json', ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : []))];
+    const baseEvArgs = hasRunScope && has(path.join(workRoot, 'events')) ? ['--events', evDir, '--events', path.join(workRoot, 'events')] : ['--events', evDir];
+    const selArgs = ['select', tomls.length === 1 ? tomls[0] : cDir, ...sdArgs, '--base', baseRef, ...baseEvArgs, '--files', '--json', ...chgArgs];
     let selOut = '', selStatus = 0, selErr = '';
     try { selOut = execFileSync(cli, selArgs, { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) {
       selStatus = typeof e?.status === 'number' ? e.status : 2;
@@ -266,7 +288,7 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     for (const dir of [evDir, path.join(workRoot, 'events'), path.join(stateArea, '.drift', 'events')]) {
       if (!fs.existsSync(dir)) continue;
       for (const fn of fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')).sort()) {
-        for (const line of fs.readFileSync(path.join(dir, fn), 'utf8').split('\n')) {
+        for (const line of rd(fs, path.join(dir, fn)).split('\n')) {
           if (!line.trim()) continue;
           try {
             const ev = JSON.parse(line);
@@ -283,33 +305,38 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     }
   }
   if (narrowedFiles === null && missingIds.length) {
-    const isTestFile = (p) => /\.(?:test|spec|e2e)\.(?:mjs|js|cjs|ts|tsx|mts|cts)$/u.test(p) || /_test\.(?:mjs|js|cjs|ts|tsx|mts|cts)$/u.test(p);
-    const globParts = [];
+    const isJs = /\.(?:[mc]?[jt]s|tsx)$/u, isTf = (p) => /(?:\.(?:test|spec|e2e)|_test)\.(?:[mc]?[jt]s|tsx)$/u.test(p), isTd = (p) => /(?:^|\/)tests?\//u.test(p) && isJs.test(p), bindRx = /\brunDriftCase\b|drift\.mjs/u, escRx = (s) => s.replace(/[.+^${}()|[\]\\]/gu, '\\$&'), globParts = [];
     for (const id of [...missingIds]) {
       const vf = path.join(resDir, `${id}.json`);
       if (!fs.existsSync(vf)) continue;
-      for (const g of JSON.parse(fs.readFileSync(vf, 'utf8'))?.scope?.code || []) {
+      for (const g of JSON.parse(rd(fs, vf))?.scope?.code || []) {
         const clean = String(g).split('#', 1)[0].replace(/\\/gu, '/').replace(/\/+$/u, '');
         if (!clean) continue;
-        if (!clean.includes('*') && isTestFile(clean) && fs.existsSync(path.join(area, clean))) {
+        const abs = path.join(area, clean);
+        if (!clean.includes('*') && fs.existsSync(abs) && (isTf(clean) || (isTd(clean) && bindRx.test(rd(fs, abs))))) {
           testFiles.add(clean);
           const idx = missingIds.indexOf(id);
           if (idx >= 0) missingIds.splice(idx, 1);
-        } else globParts.push(clean.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replace(/\*\*/gu, '\u0000').replace(/\*/gu, '[^/]*').replace(/\u0000/gu, '.*'));
+        } else globParts.push(escRx(clean).replace(/\*\*/gu, '\u0000').replace(/\*/gu, '[^/]*').replace(/\u0000/gu, '.*'));
       }
     }
     if (missingIds.length) {
       const globRx = globParts.length ? new RegExp(`^(?:${globParts.join('|')})(?:$|/)`, 'u') : null;
-      const idRx = new RegExp(`['"](?:${missingIds.map((id) => id.replace(/[.+^${}()|[\]\\]/gu, '\\$&')).join('|')})['"]`, 'u');
+      const idRx = new RegExp(`['"](?:${missingIds.map(escRx).join('|')})['"]`, 'u');
       const skip = new Set(['.git', '.drift', '.drift-work', 'node_modules', 'target', '.build']);
       const walk = (dir) => {
         for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
           if (skip.has(e.name)) continue;
           const full = path.join(dir, e.name);
           if (e.isDirectory() && !e.isSymbolicLink()) walk(full);
-          else if (e.isFile() && isTestFile(e.name)) {
+          else if (e.isFile()) {
             const rel = path.relative(area, full).split(path.sep).join('/');
-            if ((globRx && globRx.test(rel)) || idRx.test(fs.readFileSync(full, 'utf8'))) testFiles.add(rel);
+            if (isTf(e.name)) {
+              if ((globRx && globRx.test(rel)) || idRx.test(rd(fs, full))) testFiles.add(rel);
+            } else if (isTd(rel)) {
+              const src = rd(fs, full);
+              if (idRx.test(src) && bindRx.test(src)) testFiles.add(rel);
+            }
           }
         }
       };
@@ -321,24 +348,23 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
   let autoTouched = (process.env.DRIFT_TOUCHED || '').trim();
   if (!autoTouched && (process.env.DRIFT_PACK_REF || '').trim() && runFiles.length) {
     try {
-      const diffOut = execFileSync('git', ['-C', area, 'diff', '--name-only', '--relative', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      autoTouched = diffOut.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('.drift/') && !s.startsWith('.drift-work/')).join(',');
+      autoTouched = gitOut(execFileSync, area, ['diff', '--name-only', '--relative', 'HEAD']).split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('.drift/') && !s.startsWith('.drift-work/')).join(',');
     } catch {}
   }
   const cfgPath = path.join(stateArea, '.drift', 'config.toml');
   const needMut = forceMut
-    || (fs.existsSync(cfgPath) && /proof\s*=\s*"killed"/u.test(fs.readFileSync(cfgPath, 'utf8')))
-    || ids.some((id) => { const vf = path.join(resDir, `${id}.json`); return fs.existsSync(vf) && JSON.parse(fs.readFileSync(vf, 'utf8'))?.requires?.proof === 'killed'; });
+    || (fs.existsSync(cfgPath) && /proof\s*=\s*"killed"/u.test(rd(fs, cfgPath)))
+    || ids.some((id) => { const vf = path.join(resDir, `${id}.json`); return fs.existsSync(vf) && JSON.parse(rd(fs, vf))?.requires?.proof === 'killed'; });
   const mutFile = path.join(runRoot, 'mutants.json'), mutEvDir = path.join(runRoot, 'mut-events');
   if (needMut) {
     fs.rmSync(mutEvDir, { recursive: true, force: true });
     fs.mkdirSync(mutEvDir, { recursive: true });
-    const mArgs = ['mutants', ...tomls, ...sdArgs, ...(baseRef ? ['--base', baseRef] : []), ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : (wantChanged ? ['--changed'] : [])), ...(mutWhen ? ['--when'] : []), ...(mutBudget ? ['--budget', mutBudget, '--events', evDir] : []), '--out', mutFile];
+    const mArgs = ['mutants', ...tomls, ...sdArgs, ...(baseRef ? ['--base', baseRef] : []), ...chgArgs, ...(mutWhen ? ['--when'] : []), ...(mutBudget ? ['--budget', mutBudget, '--events', evDir] : []), '--out', mutFile];
     try { execFileSync(cli, mArgs, { cwd: area, stdio: ['ignore', 'pipe', 'pipe'] }); } catch {}
   }
   let testStatus = 0;
   if (runFiles.length) {
-    const pre = precheckTestLiterals(runFiles, genDir, area, fs, path);
+    const pre = runPrecheckTestLiterals(runFiles, genDir, area, fs, path);
     if (!pre.ok) throwError(pre.findings.map((f) => `${f.file}: ${f.code}: ${f.message}`).join('\n'));
     const cmdParts = parseTestCommand(process.env.DRIFT_TEST_CMD || '');
     const runnerBin = cmdParts.length ? cmdParts[0] : process.execPath;
@@ -356,12 +382,14 @@ export function runDriftCli(argv, execFileSync, fs, path, process) {
     } catch (e) { testStatus = typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
   }
   if (mode === 'test') {
-    const act = selectWidened ? 'widened' : (runFiles.length ? 'narrowed' : 'skip');
+    const miss = narrowedFiles === null && !runFiles.length;
+    const act = selectWidened ? 'widened' : (runFiles.length ? 'narrowed' : (miss ? 'none' : 'skip'));
+    if (miss && !testStatus) testStatus = 1;
     if (jsonOut) process.stdout.write(JSON.stringify({ ok: testStatus === 0, action: act, ran: runFiles.length, selected_files: runFiles, ...(baseRef ? { widened: selectWidened, reasons: selectReasons } : {}) }) + '\n');
     else if (!runFiles.length) process.stdout.write('drift test: 0 test file(s) selected\n');
     return testStatus;
   }
   const baseArgs = baseRef ? ['--base', baseRef, ...(changedPaths.length ? changedPaths.flatMap((cp) => ['--changed', cp]) : ['--changed-none'])] : [];
   const gateArgs = [mode, ...(allGate ? [cDir] : tomls), ...sdArgs, '--events', evDir, ...baseArgs, ...(needMut && fs.existsSync(mutFile) ? ['--mutants', mutFile, '--mutation-events', mutEvDir] : []), ...(jsonOut ? ['--json'] : [])];
-  try { execFileSync(cli, gateArgs, { cwd: area, stdio: 'inherit' }); return 0; } catch (e) { return typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
+  try { execFileSync(cli, gateArgs, { cwd: area, stdio: 'inherit' }); return testStatus; } catch (e) { return typeof e?.status === 'number' && e.status !== 0 ? e.status : 1; }
 }

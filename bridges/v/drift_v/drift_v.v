@@ -5,8 +5,8 @@ import crypto.sha256
 import os
 import x.json2
 
-pub const adapter_id = 'drift_v.v@0.10.0'
-pub const bridge_version = '0.10.0'
+pub const adapter_id = 'drift_v.v@0.11.0'
+pub const bridge_version = '0.11.0'
 pub const bridge_runtime_baseline = 'v-0.5.2'
 pub const bridge_capabilities_list = ['allowed_keys', 'case_frames', 'counterexample_replay',
 	'forbid_keys', 'inventory_sidecar', 'mutants', 'not_in', 'predicates', 'projections',
@@ -97,7 +97,7 @@ fn resolve_env_map() !map[string]string {
 		'drift':     bridge_version
 		'policy':    'core@1'
 		'runner':    'v-test'
-		'toolchain': 'v@0.10.0'
+		'toolchain': 'v@0.11.0'
 	}
 	if raw != '' {
 		doc := json2.decode[json2.Any](raw) or { return error('DRIFT_ENV must be valid JSON') }
@@ -515,10 +515,7 @@ fn build_projected_json(view map[string]json2.Any, plan map[string]json2.Any, ca
 	return json2.Any(built).json_str()
 }
 
-pub fn (mut ctx DriftContext) build_output(case_id string) !string {
-	if case_id !in ctx.cases {
-		return error('case "${case_id}" is not tagged on test "${ctx.test_id}"')
-	}
+fn (mut ctx DriftContext) build_self_stub(case_id string) !string {
 	if !ctx.in_mutation {
 		ctx.self_stubbed = true
 		ctx.record_input('.drift/self-stub/${ctx.contract_id}', 'sha256:self-stub')
@@ -526,13 +523,16 @@ pub fn (mut ctx DriftContext) build_output(case_id string) !string {
 	return build_projected_json(ctx.view, ctx.plan, case_id, ctx.in_mutation)
 }
 
+pub fn (mut ctx DriftContext) build_output(case_id string) !string {
+	if case_id !in ctx.cases {
+		return error('case "${case_id}" is not tagged on test "${ctx.test_id}"')
+	}
+	return ctx.build_self_stub(case_id)
+}
+
 pub fn (mut ctx DriftContext) build_stub(target string, case_id string, resolved_dir string) !string {
 	if target == ctx.contract_id {
-		if !ctx.in_mutation {
-			ctx.self_stubbed = true
-			ctx.record_input('.drift/self-stub/${ctx.contract_id}', 'sha256:self-stub')
-		}
-		return build_projected_json(ctx.view, ctx.plan, case_id, ctx.in_mutation)
+		return ctx.build_self_stub(case_id)
 	}
 	up_view := load_contract_view(target, resolved_dir)!
 	up_plan := load_contract_plan(target, resolved_dir, up_view)

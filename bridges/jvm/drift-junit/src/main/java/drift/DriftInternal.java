@@ -1,22 +1,14 @@
 package drift;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.Files.*;
+import static drift.DriftViewChecks.badArg;
+import static drift.DriftViewChecks.badState;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HexFormat;
-import java.util.LinkedHashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.nio.file.*;
+import java.security.*;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
@@ -35,7 +27,7 @@ final class DriftInternal {
 
     static String sessionProperty(String key, boolean requireLiveAuthority) {
         Path sf = Path.of(System.getProperty("drift.session", "target/drift/session.json"));
-        if (!Files.isRegularFile(sf)) return null;
+        if (!isRegularFile(sf)) return null;
         try {
             if (!(Json.read(sf) instanceof Map<?, ?> m) || !"drift.jvm-session/1".equals(m.get("schema"))) return null;
             if (!isLiveSession(m) && requireLiveAuthority) return null;
@@ -62,15 +54,11 @@ final class DriftInternal {
 
     static Map<String, Object> loadPlan(String contract) {
         if (Drift.mutationRun()) return null;
-        String dir = System.getProperty(Drift.RESOLVED, System.getenv().getOrDefault("DRIFT_RESOLVED", ""));
-        if (dir == null || dir.isBlank()) dir = sessionProperty("resolved", true);
-        String key = (dir == null ? "" : dir) + "\u0000" + contract;
-        return PLAN_CACHE.computeIfAbsent(key, ignored -> {
-            String d = System.getProperty(Drift.RESOLVED, System.getenv().getOrDefault("DRIFT_RESOLVED", ""));
-            if (d == null || d.isBlank()) d = sessionProperty("resolved", true);
-            if (d == null || d.isBlank()) return Optional.empty();
-            Path p = Path.of(d, ".plans", contract + ".plan.json");
-            if (Files.isRegularFile(p)) {
+        String dir = Drift.resolvedDir();
+        if (dir == null || dir.isBlank()) return null;
+        return PLAN_CACHE.computeIfAbsent(dir + "\u0000" + contract, ignored -> {
+            Path p = Path.of(dir, ".plans", contract + ".plan.json");
+            if (isRegularFile(p)) {
                 try {
                     if (Json.read(p) instanceof Map<?, ?> m && "drift.bridge-plan/1".equals(m.get("schema"))) {
                         return Optional.of(map(m, p.toString()));
@@ -84,8 +72,8 @@ final class DriftInternal {
 
     static String fileSignature(Path abs) {
         try {
-            long size = Files.size(abs);
-            long mtime = Files.getLastModifiedTime(abs).toMillis();
+            long size = size(abs);
+            long mtime = getLastModifiedTime(abs).toMillis();
             return (size > 65536 ? "L:" : "S:") + mtime + ":" + size;
         } catch (IOException e) {
             throw new UncheckedIOException("cannot stat input file " + abs, e);
@@ -94,14 +82,14 @@ final class DriftInternal {
 
     static String sha256File(Path abs) {
         try {
-            byte[] raw = Files.readAllBytes(abs);
+            byte[] raw = readAllBytes(abs);
             byte[] norm = normalizeBytes(raw);
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             return "sha256:" + HexFormat.of().formatHex(md.digest(norm));
         } catch (IOException e) {
             throw new UncheckedIOException("cannot hash input file " + abs, e);
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
+            throw badState(e);
         }
     }
 
@@ -142,12 +130,12 @@ final class DriftInternal {
             String section = isWhen ? "when" : "then";
             String prefix = isWhen ? whenPrefix : "/cases/" + escaped + "/then/";
             if (!path.startsWith(prefix)) {
-                throw new IllegalArgumentException("mutation path " + path + " is outside "
+                throw badArg("mutation path " + path + " is outside "
                         + contract + "." + caseId + "." + section);
             }
             String[] rawSegments = path.substring(prefix.length()).split("/", -1);
             if (rawSegments.length == 0 || rawSegments[0].isEmpty()) {
-                throw new IllegalArgumentException("mutation path " + path + " has no " + section + " leaf");
+                throw badArg("mutation path " + path + " has no " + section + " leaf");
             }
             String[] unescaped = new String[rawSegments.length];
             for (int i = 0; i < rawSegments.length; i++) {
@@ -167,7 +155,7 @@ final class DriftInternal {
         private Map<String, Object> replace(Map<String, Object> table, String[] segs, int index) {
             String key = segs[index];
             if (!table.containsKey(key)) {
-                throw new IllegalArgumentException("mutation path has no predicate " + key);
+                throw badArg("mutation path has no predicate " + key);
             }
             Map<String, Object> copy = new HashMap<>(table);
             if (index == segs.length - 1) {
@@ -182,12 +170,12 @@ final class DriftInternal {
             }
             Object nested = table.get(key);
             if (!(nested instanceof Map<?, ?> raw)) {
-                throw new IllegalArgumentException("mutation path crosses a non-table value at " + key);
+                throw badArg("mutation path crosses a non-table value at " + key);
             }
             Map<String, Object> child = new HashMap<>();
             for (Map.Entry<?, ?> entry : raw.entrySet()) {
                 if (!(entry.getKey() instanceof String childKey)) {
-                    throw new IllegalArgumentException("mutation path crosses a table with a non-string key");
+                    throw badArg("mutation path crosses a table with a non-string key");
                 }
                 child.put(childKey, entry.getValue());
             }
@@ -217,16 +205,16 @@ final class DriftInternal {
     private static long maxSourceMtime(Path cur, Path tomlFile) {
         long max = 0L;
         try {
-            if (tomlFile != null && Files.isRegularFile(tomlFile)) {
-                max = Files.getLastModifiedTime(tomlFile).toMillis();
+            if (tomlFile != null && isRegularFile(tomlFile)) {
+                max = getLastModifiedTime(tomlFile).toMillis();
             }
             Path pDir = cur.resolve(".drift").resolve("profiles");
             long profMax = PROFILE_MTIME_CACHE.computeIfAbsent(pDir, dir -> {
                 long pmMax = 0L;
-                if (Files.isDirectory(dir)) {
-                    try (Stream<Path> s = Files.list(dir)) {
+                if (isDirectory(dir)) {
+                    try (Stream<Path> s = list(dir)) {
                         for (Path pf : s.filter(p -> p.getFileName().toString().endsWith(".toml")).toList()) {
-                            long pm = Files.getLastModifiedTime(pf).toMillis();
+                            long pm = getLastModifiedTime(pf).toMillis();
                             if (pm > pmMax) {
                                 pmMax = pm;
                             }
@@ -272,7 +260,7 @@ final class DriftInternal {
         while (cur != null) {
             Path resolvedCandidate = null;
             if (targetJson != null) {
-                if (Files.isRegularFile(targetJson)) {
+                if (isRegularFile(targetJson)) {
                     resolvedCandidate = targetJson;
                 }
             } else {
@@ -282,7 +270,7 @@ final class DriftInternal {
                         Path.of(".drift-work", "resolved", contract + ".json"),
                         Path.of("target", "drift", "resolved", contract + ".json"))) {
                     Path candidate = cur.resolve(rel);
-                    if (Files.isRegularFile(candidate)) {
+                    if (isRegularFile(candidate)) {
                         resolvedCandidate = candidate;
                         break;
                     }
@@ -290,14 +278,14 @@ final class DriftInternal {
             }
             Path tomlFile = null;
             Path contractsDir = cur.resolve(".drift").resolve("contracts");
-            if (Files.isDirectory(contractsDir)) {
+            if (isDirectory(contractsDir)) {
                 Path direct = contractsDir.resolve(contract + ".toml");
-                if (Files.isRegularFile(direct)) {
+                if (isRegularFile(direct)) {
                     tomlFile = direct;
                 } else {
                     Map<String, Path> idx = TOML_DIR_CACHE.computeIfAbsent(contractsDir, dir -> {
                         Map<String, Path> map = new HashMap<>();
-                        try (Stream<Path> walk = Files.walk(dir)) {
+                        try (Stream<Path> walk = walk(dir)) {
                             walk.filter(Files::isRegularFile)
                                     .filter(p -> p.getFileName().toString().endsWith(".toml"))
                                     .sorted()
@@ -310,13 +298,13 @@ final class DriftInternal {
                         return Collections.unmodifiableMap(map);
                     });
                     Path match = idx.get(contract);
-                    if (match != null && Files.isRegularFile(match)) {
+                    if (match != null && isRegularFile(match)) {
                         tomlFile = match;
                     }
                 }
             }
             if (targetJson != null && tomlFile == null) {
-                if (Files.exists(cur.resolve(".drift")) || Files.exists(cur.resolve(".git"))) {
+                if (exists(cur.resolve(".drift")) || exists(cur.resolve(".git"))) {
                     return null;
                 }
                 cur = cur.getParent();
@@ -328,7 +316,7 @@ final class DriftInternal {
                     resolvedFresh = true;
                 } else {
                     try {
-                        long rcMtime = Files.getLastModifiedTime(resolvedCandidate).toMillis();
+                        long rcMtime = getLastModifiedTime(resolvedCandidate).toMillis();
                         long srcMtime = maxSourceMtime(cur, tomlFile);
                         resolvedFresh = rcMtime >= srcMtime;
                     } catch (IOException ignored) {
@@ -355,7 +343,7 @@ final class DriftInternal {
                     clis.add(envTrimmed);
                 }
                 Path buildCli = cur.resolve(".build").resolve("drift");
-                if (Files.isRegularFile(buildCli)) {
+                if (isRegularFile(buildCli)) {
                     String s = buildCli.toString();
                     if (!clis.contains(s)) {
                         clis.add(s);
@@ -365,7 +353,7 @@ final class DriftInternal {
                     clis.add("drift");
                 }
                 for (String pathCand : List.of(localBinCli, winBinCli)) {
-                    if (!pathCand.isBlank() && !clis.contains(pathCand) && Files.isRegularFile(Path.of(pathCand))) {
+                    if (!pathCand.isBlank() && !clis.contains(pathCand) && isRegularFile(Path.of(pathCand))) {
                         clis.add(pathCand);
                     }
                 }
@@ -374,14 +362,14 @@ final class DriftInternal {
                     if (batchWarm) {
                         Path tmpOut = null;
                         try {
-                            tmpOut = Files.createTempDirectory("drift-resolved-");
+                            tmpOut = createTempDirectory("drift-resolved-");
                             Process bp = new ProcessBuilder(
                                             cli, "show", contractsDir.toString(), "--out", tmpOut.toString())
                                     .directory(cur.toFile())
                                     .start();
                             bp.getInputStream().readAllBytes();
                             bp.waitFor();
-                            try (Stream<Path> stream = Files.list(tmpOut)) {
+                            try (Stream<Path> stream = list(tmpOut)) {
                                 stream.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(p -> {
                                     String fn = p.getFileName().toString();
                                     String cid = fn.substring(0, fn.length() - 5);
@@ -389,8 +377,8 @@ final class DriftInternal {
                                 });
                             }
                             Path plansDir = tmpOut.resolve(".plans");
-                            if (Files.isDirectory(plansDir)) {
-                                try (Stream<Path> ps = Files.list(plansDir)) {
+                            if (isDirectory(plansDir)) {
+                                try (Stream<Path> ps = list(plansDir)) {
                                     ps.filter(p -> p.getFileName().toString().endsWith(".plan.json")).forEach(p -> {
                                         String fn = p.getFileName().toString();
                                         String cid = fn.substring(0, fn.length() - 10);
@@ -407,8 +395,8 @@ final class DriftInternal {
                         } catch (IOException | InterruptedException ignored) {
                         } finally {
                             if (tmpOut != null) {
-                                try (Stream<Path> s = Files.walk(tmpOut)) {
-                                    s.sorted(java.util.Comparator.reverseOrder()).forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
+                                try (Stream<Path> s = walk(tmpOut)) {
+                                    s.sorted(java.util.Comparator.reverseOrder()).forEach(p -> { try { deleteIfExists(p); } catch (IOException ignored) {} });
                                 } catch (IOException ignored) {}
                             }
                         }
@@ -417,7 +405,7 @@ final class DriftInternal {
                         Process p = new ProcessBuilder(cli, "show", tomlFile.toString(), "--as", "json")
                                 .directory(cur.toFile())
                                 .start();
-                        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                        String out = new String(p.getInputStream().readAllBytes(), UTF_8);
                         if (p.waitFor() == 0 && !out.isBlank()) {
                             cachedCliKey = cliKey;
                             cachedCli = cli;
@@ -428,13 +416,13 @@ final class DriftInternal {
                                     ? targetJson
                                     : (resolvedCandidate != null
                                             ? resolvedCandidate
-                                            : (Files.isDirectory(resolvedDir)
+                                            : (isDirectory(resolvedDir)
                                                     ? resolvedDir.resolve(contract + ".json")
-                                                    : (Files.isDirectory(viewsDir) ? viewsDir.resolve(contract + ".json") : null)));
+                                                    : (isDirectory(viewsDir) ? viewsDir.resolve(contract + ".json") : null)));
                             if (cacheTarget != null) {
                                 try {
-                                    Files.createDirectories(cacheTarget.getParent());
-                                    Files.writeString(cacheTarget, out, StandardCharsets.UTF_8);
+                                    createDirectories(cacheTarget.getParent());
+                                    writeString(cacheTarget, out, UTF_8);
                                 } catch (IOException ignored) {
                                                                     }
                             }
@@ -451,7 +439,7 @@ final class DriftInternal {
                     throw new UncheckedIOException("cannot read the resolved view " + resolvedCandidate, e);
                 }
             }
-            if (targetJson != null && (Files.exists(cur.resolve(".drift")) || Files.exists(cur.resolve(".git")))) {
+            if (targetJson != null && (exists(cur.resolve(".drift")) || exists(cur.resolve(".git")))) {
                 return null;
             }
             cur = cur.getParent();
@@ -463,7 +451,7 @@ final class DriftInternal {
         if (upstream != null) {
             return upstream.view();
         }
-        throw new IllegalStateException("system property " + Drift.RESOLVED + " is not set");
+        throw badState("system property " + Drift.RESOLVED + " is not set");
     }
 
     record UpstreamMatch(Map<String, Object> view, Path file) {}
@@ -473,7 +461,7 @@ final class DriftInternal {
         Path foundDir = null;
         while (cur != null) {
             Path cand = cur.resolve(".drift").resolve("upstream");
-            if (Files.isDirectory(cand)) {
+            if (isDirectory(cand)) {
                 foundDir = cand;
                 break;
             }
@@ -484,7 +472,7 @@ final class DriftInternal {
         }
         Map<String, UpstreamMatch> idx = UPSTREAM_CACHE.computeIfAbsent(foundDir, upDir -> {
             Map<String, UpstreamMatch> map = new HashMap<>();
-            try (Stream<Path> list = Files.list(upDir)) {
+            try (Stream<Path> list = list(upDir)) {
                 for (Path fp : list.filter(p -> p.getFileName().toString().endsWith(".json")).sorted().toList()) {
                     try {
                         Object raw = Json.read(fp);
@@ -551,32 +539,10 @@ final class DriftInternal {
         if (o instanceof Map<?, ?> m) {
             return (Map<String, Object>) m;
         }
-        throw new IllegalStateException(where + " is not a JSON object");
-    }
-
-
-    static List<Long> intDomain(long min, long max) {
-        return DriftSelect.intDomain(min, max);
-    }
-
-    static List<String> enumDomain(String... values) {
-        return DriftSelect.enumDomain(values);
-    }
-
-    static List<Boolean> boolDomain() {
-        return DriftSelect.boolDomain();
+        throw badState(where + " is not a JSON object");
     }
 
     static List<Map<String, Object>> cartesianDomain(Map<String, ? extends List<?>> domains) {
         return DriftSelect.cartesianDomain(domains);
     }
-
-    static List<Object> profileDomain(String contract, String param) {
-        return DriftSelect.profileDomain(contract, param);
-    }
-
-    static List<Map<String, Object>> profileDomain(String contract, java.util.Collection<String> params) {
-        return DriftSelect.profileDomain(contract, params);
-    }
-
 }

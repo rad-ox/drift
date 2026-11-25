@@ -44,7 +44,7 @@ When an agent breaks `GET /items/1` and "fixes" the failing build by weakening o
 
 ## How It Works (One Slice, Four Steps)
 
-Write one compact schema `0.3` contract per slice (CLI release `0.10.0`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
+Write one compact schema `0.3` contract per slice (CLI release `0.11.0`), seal behaviour (`dr2b:`) and assurance (`dr2a:`) separately, bind tests to cases, and run the gate:
 
 ```toml
 drift = "0.3"
@@ -74,7 +74,7 @@ then.name = "lamp"
 drift fmt .drift/contracts/item-get.toml            # 1. Canonical TOML layout
 drift check .drift                                  # 2. Static validation in one pass
 drift approve .drift/contracts/item-get.toml --by alice  # 3. Human owner seal (dr2b / dr2a)
-drift gate .drift/contracts --events target/drift/events.jsonl  # 4. Deterministic release gate
+drift run --gate -- pytest                          # 4. Export views, run tests & gate (or: drift gate .drift/contracts --events target/drift/events.jsonl)
 ```
 
 ---
@@ -169,7 +169,7 @@ test('GET /items/1 returns existing item', async (t) => {
 
 | Edition | Focus | Key Capabilities |
 |---|---|---|
-| **DRIFT Free** (`drift`) | Core SDD loop & local assurance | Contracts (`0.3`), `dr2b`/`dr2a` seals, Shadow Mode, `drift-ask-ui`, `drift hook`, `drift eval`, all 11 bridges, local budget/security/formal/regulated/UI/grant/pact gating, MIT `verifier/drift_verify.py` |
+| **DRIFT Free** (`drift`) | Core SDD loop & local assurance | Contracts (`0.3`), `dr2b`/`dr2a` seals, Shadow Mode, `drift run --gate`, `drift map` & `drift-map-ui`, `drift-ask-ui`, `drift hook`, `drift eval`, all 11 bridges, local budget/security/formal/regulated/UI/grant/pact gating, MIT `verifier/drift_verify.py` |
 | **DRIFT Pro** (`drift-pro`) | Team velocity & multi-agent scale | `select --plan/--cmd/--build-graph`, `gate --base` reuse, `impact`, `recall`, `plan --pack/--active/--compile-edges`, `merge`, `review --base`, OpenAPI/AsyncAPI/WSDL/COBOL scaffolding, `export grant`, `drift pact` |
 | **DRIFT Enterprise** (`drift-enterprise`) | Fleet soundness & cryptographic release | `mutants` (`proof = "killed"`), `sweep --flow --simplify --promote --pacts`, `gate --attest --ssh-sign --trust-root --allow-break-glass`, `gate --as junit`, `stats --churn-list` |
 

@@ -1,9 +1,8 @@
 // Three-stage live UI sequence collector, observed-only capability derivation, and visual overlay focus checks.
 import { isElementHidden, observeUiSequence } from './drift_ui.mjs';
-import { deriveObservedCapabilities, isPointCoveredByVisualOverlays } from './drift_ui_recovery.mjs';
+import { deriveObservedCapabilities, isFinNum, isPointCoveredByVisualOverlays } from './drift_ui_recovery.mjs';
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 export { deriveObservedCapabilities, isPointCoveredByVisualOverlays };
 
@@ -55,13 +54,13 @@ export async function collectPlaywrightSequence(options) {
     return observeUiSequence({ surface_found: false, adapter: { name: opts.adapter?.name ?? 'playwright-collector', capabilities: [] }, evidence: { unverifiable_checks: 1, unverifiable_reasons: ['surface.missing'] } });
   }
   const nowFn = typeof opts.now === 'function' ? opts.now : () => Date.now();
-  const beforeSnap = {
-    input_focus_role: opts.before?.input_focus_role ?? root.input_focus_role ?? root.activeFocusRole ?? '',
-    ...(opts.before?.selected_entity_id !== undefined || root.selected_entity_id !== undefined ? { selected_entity_id: opts.before?.selected_entity_id ?? root.selected_entity_id } : {}),
-    ...(opts.before?.scroll_anchor_id !== undefined || root.scroll_anchor_id !== undefined ? { scroll_anchor_id: opts.before?.scroll_anchor_id ?? root.scroll_anchor_id } : {}),
-    ...(isObj(opts.before?.dirty_inputs ?? root.dirty_inputs) ? { dirty_inputs: JSON.parse(JSON.stringify(opts.before?.dirty_inputs ?? root.dirty_inputs)) } : {}),
-    ...(isObj(opts.before?.step_data ?? root.step_data) ? { step_data: JSON.parse(JSON.stringify(opts.before?.step_data ?? root.step_data)) } : {}),
+  const snap = (base, a, b, focus) => {
+    const out = { ...base, input_focus_role: focus };
+    for (const k of ['selected_entity_id', 'scroll_anchor_id']) { const v = a?.[k] ?? b?.[k]; if (v !== undefined) out[k] = v; }
+    for (const k of ['dirty_inputs', 'step_data']) { const v = a?.[k] ?? b?.[k]; if (isObj(v)) out[k] = JSON.parse(JSON.stringify(v)); }
+    return out;
   };
+  const beforeSnap = snap({}, opts.before, root, opts.before?.input_focus_role ?? root.input_focus_role ?? root.activeFocusRole ?? '');
   const focusTrace = [], asyncRequests = [], optimisticOps = [];
   let listenersAttached = false, listenersDetached = false, settleTimedOut = false;
   const onFocusIn = (evOrRole) => {
@@ -101,14 +100,7 @@ export async function collectPlaywrightSequence(options) {
   }
   const observedDurationMs = isFinNum(opts.observedDurationMs) ? Number(opts.observedDurationMs) : Math.max(0, Math.round(Number(nowFn()) - t0));
   const rolesAfter = extractSurfaceRoleState(root, opts.roleSelectors);
-  const afterSnap = {
-    ...(isObj(opts.after) ? opts.after : {}), ...(isObj(root.after) ? root.after : {}),
-    input_focus_role: root.input_focus_role ?? root.activeFocusRole ?? opts.after?.input_focus_role ?? beforeSnap.input_focus_role,
-    ...(root.selected_entity_id !== undefined ? { selected_entity_id: root.selected_entity_id } : {}),
-    ...(root.scroll_anchor_id !== undefined ? { scroll_anchor_id: root.scroll_anchor_id } : {}),
-    ...(isObj(root.dirty_inputs) ? { dirty_inputs: JSON.parse(JSON.stringify(root.dirty_inputs)) } : {}),
-    ...(isObj(root.step_data) ? { step_data: JSON.parse(JSON.stringify(root.step_data)) } : {}),
-  };
+  const afterSnap = snap({ ...(isObj(opts.after) ? opts.after : {}), ...(isObj(root.after) ? root.after : {}) }, root, null, root.input_focus_role ?? root.activeFocusRole ?? opts.after?.input_focus_role ?? beforeSnap.input_focus_role);
   const unverifiableReasons = [...(Array.isArray(opts.evidence?.unverifiable_reasons) ? opts.evidence.unverifiable_reasons : [])];
   let unverifiableChecks = Number(opts.evidence?.unverifiable_checks ?? 0);
   if (settleTimedOut) { unverifiableChecks += 1; unverifiableReasons.push('ui.settle_timeout'); }
@@ -370,14 +362,15 @@ export function ensureExportGeneration(area, cli, ids, tomls, resDir, execFileSy
   const genRoot = path.join(area, '.drift-work', 'resolved-gen');
   const genDir = path.join(genRoot, genId);
   const manPath = path.join(genDir, 'manifest.json');
+  const hf = (p) => fnv1aHex(fs.readFileSync(p, 'utf8'));
   let warmOk = false;
   if (fs.existsSync(manPath)) {
     try {
       const man = JSON.parse(fs.readFileSync(manPath, 'utf8'));
-      if (man?.generation === genId && isObj(man.files)) {
+      if (man?.generation === genId && isObj(man.files) && isObj(man.plans)) {
         warmOk = ids.every((id) => {
-          const gf = path.join(genDir, `${id}.json`);
-          return fs.existsSync(gf) && fnv1aHex(fs.readFileSync(gf, 'utf8')) === man.files[id];
+          const gf = path.join(genDir, `${id}.json`), pf = path.join(genDir, '.plans', `${id}.plan.json`);
+          return fs.existsSync(gf) && hf(gf) === man.files[id] && (!(id in man.plans) || (fs.existsSync(pf) && hf(pf) === man.plans[id]));
         });
       }
     } catch { warmOk = false; }
@@ -389,21 +382,24 @@ export function ensureExportGeneration(area, cli, ids, tomls, resDir, execFileSy
     fs.mkdirSync(srcDir, { recursive: true });
     try {
       execFileSync(cli, ['show', ...tomls, '--out', srcDir], { cwd: area, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      const files = {};
+      const files = {}, plans = {};
       for (const id of ids) {
-        const tf = path.join(srcDir, `${id}.json`);
-        if (fs.existsSync(tf)) files[id] = fnv1aHex(fs.readFileSync(tf, 'utf8'));
+        const tf = path.join(srcDir, `${id}.json`), pf = path.join(srcDir, '.plans', `${id}.plan.json`);
+        if (fs.existsSync(tf)) files[id] = hf(tf);
+        if (fs.existsSync(pf)) plans[id] = hf(pf);
       }
-      fs.writeFileSync(path.join(srcDir, 'manifest.json'), JSON.stringify({ schema: 'drift.export-generation/1', generation: genId, files }) + '\n', 'utf8');
+      fs.writeFileSync(path.join(srcDir, 'manifest.json'), JSON.stringify({ schema: 'drift.export-generation/1', generation: genId, files, plans }) + '\n', 'utf8');
     } catch (e) {
       fs.rmSync(srcDir, { recursive: true, force: true });
-      const errMsg = String(e?.stderr || e?.stdout || e?.message || '').trim();
-      throwError(errMsg || 'drift show failed');
+      throwError(String(e?.stderr || e?.stdout || e?.message || '').trim() || 'drift show failed');
     }
   }
+  const resPlans = path.join(resDir, '.plans');
   for (const id of ids) {
-    const gf = path.join(srcDir, `${id}.json`), rf = path.join(resDir, `${id}.json`);
-    if (fs.existsSync(gf)) fs.copyFileSync(gf, rf);
+    const gf = path.join(srcDir, `${id}.json`), pf = path.join(srcDir, '.plans', `${id}.plan.json`), rp = path.join(resPlans, `${id}.plan.json`);
+    if (fs.existsSync(gf)) fs.copyFileSync(gf, path.join(resDir, `${id}.json`));
+    if (fs.existsSync(pf)) { fs.mkdirSync(resPlans, { recursive: true }); fs.copyFileSync(pf, rp); }
+    else if (fs.existsSync(rp)) fs.rmSync(rp, { force: true });
   }
   if (srcDir !== genDir) {
     try { fs.renameSync(srcDir, genDir); } catch { fs.rmSync(srcDir, { recursive: true, force: true }); }

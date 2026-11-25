@@ -11,7 +11,7 @@ use RuntimeException;
  */
 final class Drift
 {
-    public const VERSION = 'drift.php@0.10.0';
+    public const VERSION = 'drift.php@0.11.0';
     public const BRIDGE_RUNTIME_BASELINE = 'php-8.2-cli';
     public const CAPABILITIES = ['predicates', 'projections', 'forbid_keys', 'not_in', 'case_frames', 'counterexample_replay', 'in_process_mutants'];
     public const SUPPORTED_REL_KEYS = ['eq', 'in', 'not_in', 'min', 'max', 'len', 'min_len', 'max_len', 'non_empty', 'prefix', 'suffix', 'contains', 'forbid_keys', 'allowed_keys', 'le_field', 'ge_field', 'eq_field', 'sum_fields', 'monotonic', 'step_max_delta', 'sum_total', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion'];
@@ -77,61 +77,66 @@ final class Drift
         return false;
     }
 
+    private static function rejectValue(string $key, string $detail): never
+    {
+        throw new RuntimeException("then.{$key}: {$detail}");
+    }
+
     public static function checkValue(string $key, mixed $actual, mixed $expected, bool $actualPresent = true, array $observed = [], array $projThen = [], array $whenEnv = []): void
     {
-        if (is_float($actual) && (is_nan($actual) || is_infinite($actual))) throw new RuntimeException("then.{$key}: non-finite float");
+        if (is_float($actual) && (is_nan($actual) || is_infinite($actual))) self::rejectValue($key, 'non-finite float');
         if (!is_array($expected) || array_is_list($expected)) {
-            if (!$actualPresent || !self::valuesEqual($actual, $expected)) throw new RuntimeException("then.{$key}: mismatch");
+            if (!$actualPresent || !self::valuesEqual($actual, $expected)) self::rejectValue($key, 'mismatch');
             return;
         }
-        if (!$expected) throw new RuntimeException("then.{$key}: empty predicate");
-        foreach (array_keys($expected) as $op) if (!in_array((string)$op, self::SUPPORTED_REL_KEYS, true)) throw new RuntimeException("then.{$key}: unsupported operator {$op}");
+        if (!$expected) self::rejectValue($key, 'empty predicate');
+        foreach (array_keys($expected) as $op) if (!in_array((string)$op, self::SUPPORTED_REL_KEYS, true)) self::rejectValue($key, "unsupported operator {$op}");
         $len = is_string($actual) ? (function_exists('mb_strlen') ? mb_strlen($actual, 'UTF-8') : preg_match_all('/./us', $actual)) : (is_array($actual) ? count($actual) : -1);
-        if (array_key_exists('eq', $expected) && (!$actualPresent || !self::valuesEqual($actual, $expected['eq']))) throw new RuntimeException("then.{$key}: eq violation");
+        if (array_key_exists('eq', $expected) && (!$actualPresent || !self::valuesEqual($actual, $expected['eq']))) self::rejectValue($key, 'eq violation');
         $series = array_key_exists('monotonic', $expected) || array_key_exists('sum_total', $expected) || array_key_exists('step_max_delta', $expected);
         if (array_key_exists('in', $expected)) {
             $okIn = is_array($expected['in']) && $actualPresent && array_reduce($expected['in'], fn($acc, $c) => $acc || self::valuesEqual($actual, $c), false);
-            if (!$okIn) throw new RuntimeException("then.{$key}: not in allowed set");
+            if (!$okIn) self::rejectValue($key, 'not in allowed set');
         }
         if (array_key_exists('not_in', $expected)) {
-            if (!$actualPresent || $actual === null) throw new RuntimeException("then.{$key}: null in not_in");
+            if (!$actualPresent || $actual === null) self::rejectValue($key, 'null in not_in');
             if (is_array($expected['not_in'])) {
-                foreach ($expected['not_in'] as $forb) if (self::valuesEqual($actual, $forb)) throw new RuntimeException("then.{$key}: forbidden by not_in");
-            } elseif (!self::valuesEqual($actual, $expected['not_in'])) throw new RuntimeException("then.{$key}: mutant killed");
+                foreach ($expected['not_in'] as $forb) if (self::valuesEqual($actual, $forb)) self::rejectValue($key, 'forbidden by not_in');
+            } elseif (!self::valuesEqual($actual, $expected['not_in'])) self::rejectValue($key, 'mutant killed');
         }
         if (array_key_exists('approx', $expected)) {
             $at = array_key_exists('abs_tol', $expected) && self::isFiniteNum($expected['abs_tol']) ? (float)$expected['abs_tol'] : 0.0;
             $rt = array_key_exists('rel_tol', $expected) && self::isFiniteNum($expected['rel_tol']) ? (float)$expected['rel_tol'] : 0.0;
-            if (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['approx']) || (!array_key_exists('abs_tol', $expected) && !array_key_exists('rel_tol', $expected)) || $at < 0.0 || $rt < 0.0) throw new RuntimeException("then.{$key}: invalid approx");
+            if (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['approx']) || (!array_key_exists('abs_tol', $expected) && !array_key_exists('rel_tol', $expected)) || $at < 0.0 || $rt < 0.0) self::rejectValue($key, 'invalid approx');
             $ap = (float)$expected['approx'];
-            if (abs((float)$actual - $ap) > $at + $rt * abs($ap)) throw new RuntimeException("then.{$key}: outside approx");
+            if (abs((float)$actual - $ap) > $at + $rt * abs($ap)) self::rejectValue($key, 'outside approx');
         }
-        if (!$series && array_key_exists('min', $expected) && (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['min']) || (float)$actual + 1e-9 < (float)$expected['min'])) throw new RuntimeException("then.{$key}: < min");
-        if (!$series && array_key_exists('max', $expected) && (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['max']) || (float)$actual - 1e-9 > (float)$expected['max'])) throw new RuntimeException("then.{$key}: > max");
-        if (array_key_exists('len', $expected) && (!is_int($expected['len']) || $expected['len'] < 0 || $len !== $expected['len'])) throw new RuntimeException("then.{$key}: len mismatch");
-        if (array_key_exists('min_len', $expected) && (!is_int($expected['min_len']) || $expected['min_len'] < 0 || $len < 0 || $len < $expected['min_len'])) throw new RuntimeException("then.{$key}: < min_len");
-        if (array_key_exists('max_len', $expected) && (!is_int($expected['max_len']) || $expected['max_len'] < 0 || $len < 0 || $len > $expected['max_len'])) throw new RuntimeException("then.{$key}: > max_len");
-        if (array_key_exists('non_empty', $expected) && (!is_bool($expected['non_empty']) || $len < 0 || ($expected['non_empty'] ? $len <= 0 : $len !== 0))) throw new RuntimeException("then.{$key}: non_empty violation");
-        if (array_key_exists('prefix', $expected) && (!is_string($expected['prefix']) || !is_string($actual) || !str_starts_with($actual, $expected['prefix']))) throw new RuntimeException("then.{$key}: prefix violation");
-        if (array_key_exists('suffix', $expected) && (!is_string($expected['suffix']) || !is_string($actual) || !str_ends_with($actual, $expected['suffix']))) throw new RuntimeException("then.{$key}: suffix violation");
+        if (!$series && array_key_exists('min', $expected) && (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['min']) || (float)$actual + 1e-9 < (float)$expected['min'])) self::rejectValue($key, '< min');
+        if (!$series && array_key_exists('max', $expected) && (!self::isFiniteNum($actual) || !self::isFiniteNum($expected['max']) || (float)$actual - 1e-9 > (float)$expected['max'])) self::rejectValue($key, '> max');
+        if (array_key_exists('len', $expected) && (!is_int($expected['len']) || $expected['len'] < 0 || $len !== $expected['len'])) self::rejectValue($key, 'len mismatch');
+        if (array_key_exists('min_len', $expected) && (!is_int($expected['min_len']) || $expected['min_len'] < 0 || $len < 0 || $len < $expected['min_len'])) self::rejectValue($key, '< min_len');
+        if (array_key_exists('max_len', $expected) && (!is_int($expected['max_len']) || $expected['max_len'] < 0 || $len < 0 || $len > $expected['max_len'])) self::rejectValue($key, '> max_len');
+        if (array_key_exists('non_empty', $expected) && (!is_bool($expected['non_empty']) || $len < 0 || ($expected['non_empty'] ? $len <= 0 : $len !== 0))) self::rejectValue($key, 'non_empty violation');
+        if (array_key_exists('prefix', $expected) && (!is_string($expected['prefix']) || !is_string($actual) || !str_starts_with($actual, $expected['prefix']))) self::rejectValue($key, 'prefix violation');
+        if (array_key_exists('suffix', $expected) && (!is_string($expected['suffix']) || !is_string($actual) || !str_ends_with($actual, $expected['suffix']))) self::rejectValue($key, 'suffix violation');
         if (array_key_exists('contains', $expected)) {
             $ce = $expected['contains'];
             $reqs = is_array($ce) && array_is_list($ce) ? $ce : [$ce];
             $ok = is_string($actual) ? (is_string($ce) ? str_contains($actual, $ce) : (is_array($ce) && array_is_list($ce) && array_reduce($ce, fn($a, $s) => $a && is_string($s) && str_contains($actual, $s), true)))
                 : (is_array($actual) && array_is_list($actual) && array_reduce($reqs, fn($a, $r) => $a && array_reduce($actual, fn($f, $it) => $f || self::valuesEqual($it, $r), false), true));
-            if (!$ok) throw new RuntimeException("then.{$key}: contains violation");
+            if (!$ok) self::rejectValue($key, 'contains violation');
         }
         if (array_key_exists('forbid_keys', $expected)) {
-            if (!is_array($actual) || (array_is_list($actual) && !empty($actual))) throw new RuntimeException("then.{$key}: expected object");
+            if (!is_array($actual) || (array_is_list($actual) && !empty($actual))) self::rejectValue($key, 'expected object');
             $isRoot = ($actual === $observed);
             if (is_array($expected['forbid_keys'])) {
-                foreach ($expected['forbid_keys'] as $fk) if (self::hasKeyRecursive($actual, (string)$fk, $isRoot)) throw new RuntimeException("then.{$key}: forbidden key {$fk}");
-            } elseif (!is_string($expected['forbid_keys']) || !self::hasKeyRecursive($actual, $expected['forbid_keys'], $isRoot)) throw new RuntimeException("then.{$key}: forbid_keys violation");
+                foreach ($expected['forbid_keys'] as $fk) if (self::hasKeyRecursive($actual, (string)$fk, $isRoot)) self::rejectValue($key, "forbidden key {$fk}");
+            } elseif (!is_string($expected['forbid_keys']) || !self::hasKeyRecursive($actual, $expected['forbid_keys'], $isRoot)) self::rejectValue($key, 'forbid_keys violation');
         }
         if (array_key_exists('allowed_keys', $expected)) {
-            if (!is_array($actual) || !is_array($expected['allowed_keys'])) throw new RuntimeException("then.{$key}: expected object");
+            if (!is_array($actual) || !is_array($expected['allowed_keys'])) self::rejectValue($key, 'expected object');
             foreach (array_keys($actual) as $ak) {
-                if (!((string)$ak === '_frame' && is_array($actual[$ak])) && !in_array((string)$ak, $expected['allowed_keys'], true)) throw new RuntimeException("then.{$key}: key {$ak} not allowed");
+                if (!((string)$ak === '_frame' && is_array($actual[$ak])) && !in_array((string)$ak, $expected['allowed_keys'], true)) self::rejectValue($key, "key {$ak} not allowed");
             }
         }
         $tol = $expected['abs_tol'] ?? 1e-9;
@@ -139,38 +144,38 @@ final class Drift
             if (!array_key_exists($op, $expected)) continue;
             [$found, $peer] = self::resolvePeer($observed, $projThen, $expected[$op], $whenEnv);
             $ok = $found && ($op === 'eq_field' ? self::valuesEqual($actual, $peer) : (self::isFiniteNum($actual) && self::isFiniteNum($peer) && ($op === 'le_field' ? $actual - $tol <= $peer : $actual + $tol >= $peer)));
-            if (!$ok) throw new RuntimeException("then.{$key}: {$op} violation");
+            if (!$ok) self::rejectValue($key, "{$op} violation");
         }
         foreach (['sum_fields', 'balance_fields'] as $op) {
             if (!array_key_exists($op, $expected)) continue;
             $expr = $expected[$op];
-            if (!is_array($expr) || !self::isFiniteNum($actual) || ($op === 'sum_fields' && count($expr) < 2)) throw new RuntimeException("then.{$key}: invalid {$op}");
+            if (!is_array($expr) || !self::isFiniteNum($actual) || ($op === 'sum_fields' && count($expr) < 2)) self::rejectValue($key, "invalid {$op}");
             $sides = $op === 'sum_fields' ? ['add' => $expr] : $expr;
             $total = 0.0;
             foreach (['add' => 1, 'sub' => -1] as $side => $sign) {
                 foreach (($sides[$side] ?? []) as $ref) {
                     [$found, $peer] = self::resolvePeer($observed, $projThen, $ref, $whenEnv);
-                    if (!$found || !self::isFiniteNum($peer)) throw new RuntimeException("then.{$key}: missing peer {$ref}");
+                    if (!$found || !self::isFiniteNum($peer)) self::rejectValue($key, "missing peer {$ref}");
                     $total += $sign * $peer;
                 }
             }
-            if (!is_finite($total) || abs($actual - $total) > $tol) throw new RuntimeException("then.{$key}: {$op} violation");
+            if (!is_finite($total) || abs($actual - $total) > $tol) self::rejectValue($key, "{$op} violation");
         }
         if ($series) {
-            if (!is_array($actual) || !$actual || ((array_key_exists('monotonic', $expected) || array_key_exists('step_max_delta', $expected)) && !array_is_list($actual))) throw new RuntimeException("then.{$key}: bad sequence");
+            if (!is_array($actual) || !$actual || ((array_key_exists('monotonic', $expected) || array_key_exists('step_max_delta', $expected)) && !array_is_list($actual))) self::rejectValue($key, 'bad sequence');
             $vals = array_values($actual);
             foreach ($vals as $i => $v) {
-                if (!self::isFiniteNum($v) || (array_key_exists('min', $expected) && $v + $tol < $expected['min']) || (array_key_exists('max', $expected) && $v - $tol > $expected['max'])) throw new RuntimeException("then.{$key}: sequence bounds");
+                if (!self::isFiniteNum($v) || (array_key_exists('min', $expected) && $v + $tol < $expected['min']) || (array_key_exists('max', $expected) && $v - $tol > $expected['max'])) self::rejectValue($key, 'sequence bounds');
                 if ($i === 0) continue;
                 $prev = $vals[$i - 1];
-                if (array_key_exists('monotonic', $expected) && !match ($expected['monotonic']) { 'non_decreasing' => $prev - $tol <= $v, 'non_increasing' => $prev + $tol >= $v, 'strictly_increasing' => $prev + $tol < $v, 'strictly_decreasing' => $prev - $tol > $v, default => false }) throw new RuntimeException("then.{$key}: monotonic violation");
-                if (array_key_exists('step_max_delta', $expected) && (!self::isFiniteNum($expected['step_max_delta']) || $expected['step_max_delta'] <= 0 || abs($v - $prev) > $expected['step_max_delta'] + $tol)) throw new RuntimeException("then.{$key}: step_max_delta violation");
+                if (array_key_exists('monotonic', $expected) && !match ($expected['monotonic']) { 'non_decreasing' => $prev - $tol <= $v, 'non_increasing' => $prev + $tol >= $v, 'strictly_increasing' => $prev + $tol < $v, 'strictly_decreasing' => $prev - $tol > $v, default => false }) self::rejectValue($key, 'monotonic violation');
+                if (array_key_exists('step_max_delta', $expected) && (!self::isFiniteNum($expected['step_max_delta']) || $expected['step_max_delta'] <= 0 || abs($v - $prev) > $expected['step_max_delta'] + $tol)) self::rejectValue($key, 'step_max_delta violation');
             }
             if (array_key_exists('sum_total', $expected)) {
                 $tot = array_sum($vals);
                 $b = is_array($expected['sum_total']) ? $expected['sum_total'] : ['eq' => $expected['sum_total']];
-                if (!is_finite((float)$tot) || !$b) throw new RuntimeException("then.{$key}: invalid sum_total");
-                foreach ($b as $op => $bnd) if (!self::isFiniteNum($bnd) || !match ($op) { 'eq' => abs($tot - $bnd) <= $tol, 'min' => $tot + $tol >= $bnd, 'max' => $tot - $tol <= $bnd, default => false }) throw new RuntimeException("then.{$key}: sum_total violation");
+                if (!is_finite((float)$tot) || !$b) self::rejectValue($key, 'invalid sum_total');
+                foreach ($b as $op => $bnd) if (!self::isFiniteNum($bnd) || !match ($op) { 'eq' => abs($tot - $bnd) <= $tol, 'min' => $tot + $tol >= $bnd, 'max' => $tot - $tol <= $bnd, default => false }) self::rejectValue($key, 'sum_total violation');
             }
         }
     }
@@ -257,13 +262,16 @@ final class Drift
         if (!is_array($raw) || array_is_list($raw)) return $preConv !== null && self::isFiniteNum($raw) ? $raw * $preConv : $raw;
         if (count($raw) === 1 && array_key_exists('eq', $raw) && !is_array($raw['eq'])) return $preConv !== null && self::isFiniteNum($raw['eq']) ? $raw['eq'] * $preConv : $raw['eq'];
         $out = [];
+        $aliases = [
+            'len' => ['min' => 'min_len', 'max' => 'max_len'],
+            'keys' => ['allow' => 'allowed_keys', 'forbid' => 'forbid_keys'],
+            'tol' => ['abs' => 'abs_tol', 'rel' => 'rel_tol'],
+            'peer' => ['eq' => 'eq_field', 'le' => 'le_field', 'ge' => 'ge_field', 'sum' => 'sum_fields', 'balance' => 'balance_fields'],
+        ];
         foreach ($raw as $k => $v) {
             if ($k === 'eq') $out[array_key_exists('tol', $raw) ? 'approx' : 'eq'] = $v;
-            elseif ($k === 'len' && is_array($v)) { if (isset($v['min'])) $out['min_len'] = $v['min']; if (isset($v['max'])) $out['max_len'] = $v['max']; }
-            elseif ($k === 'keys' && is_array($v)) { if (isset($v['allow'])) $out['allowed_keys'] = $v['allow']; if (isset($v['forbid'])) $out['forbid_keys'] = $v['forbid']; }
-            elseif ($k === 'tol' && is_array($v)) { if (isset($v['abs'])) $out['abs_tol'] = $v['abs']; if (isset($v['rel'])) $out['rel_tol'] = $v['rel']; }
-            elseif ($k === 'peer' && is_array($v)) {
-                foreach (['eq' => 'eq_field', 'le' => 'le_field', 'ge' => 'ge_field', 'sum' => 'sum_fields', 'balance' => 'balance_fields'] as $pk => $rk) if (isset($v[$pk])) $out[$rk] = $v[$pk];
+            elseif (isset($aliases[$k]) && is_array($v)) {
+                foreach ($aliases[$k] as $sk => $rk) if (isset($v[$sk])) $out[$rk] = $v[$sk];
             } elseif ($k === 'series' && is_array($v)) {
                 foreach ($v as $sk => $sv) $out[$sk] = $sk === 'monotonic' && in_array($sv, ['increasing', 'decreasing'], true) ? "strictly_{$sv}" : $sv;
             } elseif ($k !== 'convert_from') $out[$k] = $v;
@@ -364,7 +372,7 @@ final class Drift
             $lines[] = json_encode($ev, JSON_UNESCAPED_SLASHES);
         }
         file_put_contents($eventsPath, implode("\n", $lines) . "\n");
-        $meta = ['version' => 1, 'classes' => $classes, 'tests' => $tests, 'inputs' => $inputsMap, 'env' => array_merge(['toolchain' => self::BRIDGE_RUNTIME_BASELINE, 'deps' => 'composer-lock-0', 'config' => 'phpunit-1', 'runner' => 'phpunit', 'drift' => '0.10.0', 'adapter' => self::VERSION, 'policy' => 'core@1'], $envMeta)];
+        $meta = ['version' => 1, 'classes' => $classes, 'tests' => $tests, 'inputs' => $inputsMap, 'env' => array_merge(['toolchain' => self::BRIDGE_RUNTIME_BASELINE, 'deps' => 'composer-lock-0', 'config' => 'phpunit-1', 'runner' => 'phpunit', 'drift' => '0.11.0', 'adapter' => self::VERSION, 'policy' => 'core@1'], $envMeta)];
         file_put_contents((string)preg_replace('/\.jsonl$/', '.meta.json', $eventsPath), json_encode($meta, JSON_UNESCAPED_SLASHES) . "\n");
     }
 }

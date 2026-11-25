@@ -196,7 +196,7 @@ def _core_gate_reasons(
 
     approval_state = contract["approval"]
     if approval_state != "current":
-        if approval_state == "stale":
+        if approval_state == "stale" or contract.get("profile_missing"):
             reasons.append("contract.findings")
         reasons.append(f"contract.approval.{approval_state}")
     elif pol_on and contract.get("approver", "").startswith("agent:"):
@@ -395,9 +395,16 @@ def evaluate_contract_impl(
         "results": results,
         **ra_extra,
     }
+    pm = contract.get("profile_missing")
+    findings_out = (
+        [{"code": "DR-E401", "path": "use.profile", "source": "contract", "message": f"profile {pm} not found"}]
+        if pm
+        else None
+    )
     optional_fields = (
         ("assurance_digest", contract.get("assurance_digest")),
         ("assurance_ref", contract.get("assurance_ref")),
+        ("findings", findings_out),
         ("performance", p_sum),
         ("pending_budgets", pend_b),
         ("pending_formal", pend_f),

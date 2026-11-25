@@ -1,12 +1,11 @@
 package drift.maven;
 
+import static java.nio.file.Files.*;
+import static drift.maven.Cli.execErr;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Stream;
 import org.apache.maven.model.Plugin;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -46,7 +45,7 @@ public final class PrepareMojo extends DriftMojo {
         }
         requireArea();
         if (fresh && (set(changed) || set(base) || set(select))) {
-            throw new MojoExecutionException("drift.fresh cannot be combined with drift.changed, drift.base,"
+            throw execErr("drift.fresh cannot be combined with drift.changed, drift.base,"
                     + " or an explicit drift.select");
         }
         project.getProperties().setProperty("drift.feedback", "false");
@@ -54,9 +53,11 @@ public final class PrepareMojo extends DriftMojo {
         project.getProperties().remove("drift.auto.list");
         Cli c = cli();
         Path contracts = contracts();
-        if (Files.isDirectory(contracts)) {
-            Cli.Result r = c.run(List.of("show", contracts.toString(), "--as", "json", "--out",
+        if (isDirectory(contracts)) {
+            List<String> showArgs = new ArrayList<>(List.of("show", contracts.toString(), "--as", "json", "--out",
                     resolved().toString()));
+            appendStateDir(showArgs);
+            Cli.Result r = c.run(showArgs);
             log(r);
             if (r.status() != 0) {
                 throw new MojoFailureException("drift: a contract has findings and cannot be exported; see above");
@@ -79,13 +80,15 @@ public final class PrepareMojo extends DriftMojo {
         if (snapshot != null) {
             line += " -Ddrift.snapshot=" + snapshot.treeOid();
         }
-        if (changed != null && !changed.isBlank() && hasEvents() && Files.isDirectory(contracts)) {
+        if (changed != null && !changed.isBlank() && hasEvents() && isDirectory(contracts)) {
             String trimmedChanged = changed.trim();
             if ("auto".equals(trimmedChanged)) {
                 GitSnapshot.SnapshotInfo info = GitSnapshot.trySingleSnapshot(events());
                 if (info == null) {
-                    Cli.Result pr = c.run(List.of("prove", contracts.toString(), "--events",
+                    List<String> proveArgs = new ArrayList<>(List.of("prove", contracts.toString(), "--events",
                             events().toString(), "--json"));
+                    appendStateDir(proveArgs);
+                    Cli.Result pr = c.run(proveArgs);
                     info = GitSnapshot.parseProveSnapshots(pr.lines());
                 }
                 List<String> delta = (snapshot != null && info.complete())
@@ -98,11 +101,11 @@ public final class PrepareMojo extends DriftMojo {
                 } else {
                     Path changedList = output.toPath().resolve("changed.list");
                     try {
-                        Files.createDirectories(changedList.getParent());
-                        Files.writeString(changedList,
+                        createDirectories(changedList.getParent());
+                        writeString(changedList,
                                 delta.isEmpty() ? "" : String.join(System.lineSeparator(), delta) + System.lineSeparator());
                     } catch (IOException e) {
-                        throw new MojoExecutionException("cannot write " + changedList, e);
+                        throw execErr("cannot write " + changedList, e);
                     }
                     project.getProperties().setProperty("drift.auto.state", delta.isEmpty() ? "none" : "list");
                     project.getProperties().setProperty("drift.auto.list",
@@ -119,8 +122,9 @@ public final class PrepareMojo extends DriftMojo {
                         args.add(contracts.toString());
                     }
                     args.addAll(List.of("--events", events().toString(), "--area",
-                            area.toPath().toAbsolutePath().normalize().getParent().toString(),
+                            effectiveArea().toAbsolutePath().normalize().getParent().toString(),
                             "--changed-root", snapshot.topLevel().toString()));
+                    appendStateDir(args);
                     if (!delta.isEmpty()) {
                         args.add("--changed-list");
                         args.add(changedList.toAbsolutePath().normalize().toString());
@@ -129,13 +133,13 @@ public final class PrepareMojo extends DriftMojo {
                     Cli.Result sr = c.run(args);
                     if (sr.status() != 0 && sr.status() != 1) {
                         log(sr);
-                        throw new MojoExecutionException("drift select failed with status " + sr.status());
+                        throw execErr("drift select failed with status " + sr.status());
                     }
                     Path sel = output.toPath().resolve("select.json");
                     try {
-                        Files.writeString(sel, String.join(System.lineSeparator(), sr.lines()) + System.lineSeparator());
+                        writeString(sel, String.join(System.lineSeparator(), sr.lines()) + System.lineSeparator());
                     } catch (IOException e) {
-                        throw new MojoExecutionException("cannot write " + sel, e);
+                        throw execErr("cannot write " + sel, e);
                     }
                     selectFile = sel;
                     line += " -Ddrift.select=" + quoted(sel);
@@ -143,9 +147,10 @@ public final class PrepareMojo extends DriftMojo {
             } else {
                 List<String> args = new ArrayList<>(List.of("select", contracts.toString(),
                         "--events", events().toString(), "--area",
-                        area.toPath().toAbsolutePath().normalize().getParent().toString(),
+                        effectiveArea().toAbsolutePath().normalize().getParent().toString(),
                         "--changed-root", basedir.toString(),
                         "--json"));
+                appendStateDir(args);
                 for (String p : changed.split(",")) {
                     if (!p.isBlank()) {
                         args.add("--changed");
@@ -155,14 +160,14 @@ public final class PrepareMojo extends DriftMojo {
                 Cli.Result sr = c.run(args);
                 if (sr.status() != 0 && sr.status() != 1) {
                     log(sr);
-                    throw new MojoExecutionException("drift select failed with status " + sr.status());
+                    throw execErr("drift select failed with status " + sr.status());
                 }
                 project.getProperties().setProperty("drift.feedback", Boolean.toString(sr.status() == 0));
                 Path sel = output.toPath().resolve("select.json");
                 try {
-                    Files.writeString(sel, String.join(System.lineSeparator(), sr.lines()) + System.lineSeparator());
+                    writeString(sel, String.join(System.lineSeparator(), sr.lines()) + System.lineSeparator());
                 } catch (IOException e) {
-                    throw new MojoExecutionException("cannot write " + sel, e);
+                    throw execErr("cannot write " + sel, e);
                 }
                 selectFile = sel;
                 line += " -Ddrift.select=" + quoted(sel);
@@ -182,18 +187,18 @@ public final class PrepareMojo extends DriftMojo {
     }
 
     private void removeProofOutput(Path directory) throws MojoExecutionException {
-        if (!Files.isDirectory(directory)) {
+        if (!isDirectory(directory)) {
             return;
         }
-        try (Stream<Path> files = Files.list(directory)) {
+        try (Stream<Path> files = list(directory)) {
             for (Path file : files.toList()) {
                 String name = file.getFileName().toString();
-                if (Files.isRegularFile(file) && (name.endsWith(".jsonl") || name.endsWith(".meta.json"))) {
-                    Files.deleteIfExists(file);
+                if (isRegularFile(file) && (name.endsWith(".jsonl") || name.endsWith(".meta.json"))) {
+                    deleteIfExists(file);
                 }
             }
         } catch (IOException e) {
-            throw new MojoExecutionException("cannot remove prior proof events from " + directory, e);
+            throw execErr("cannot remove prior proof events from " + directory, e);
         }
         getLog().info("drift: cleared prior event shards and inventories for a fresh full run");
     }
@@ -217,8 +222,8 @@ public final class PrepareMojo extends DriftMojo {
         }
         sb.append("}\n");
         try {
-            Files.createDirectories(output.toPath());
-            Files.writeString(output.toPath().resolve("session.json"), sb.toString());
+            createDirectories(output.toPath());
+            writeString(output.toPath().resolve("session.json"), sb.toString());
             List<String> shadowed = new ArrayList<>();
             if (project.getBuildPlugins() != null) {
                 for (Plugin pl : project.getBuildPlugins()) {
@@ -240,17 +245,17 @@ public final class PrepareMojo extends DriftMojo {
             }
             Path diag = output.toPath().resolve("diagnostics.json");
             if (shadowed.isEmpty()) {
-                Files.deleteIfExists(diag);
+                deleteIfExists(diag);
             } else {
                 StringBuilder dj = new StringBuilder("{\"schema\":\"drift.bridge-diagnostics/1\",\"issues\":[");
                 for (int i = 0; i < shadowed.size(); i++) {
                     if (i > 0) dj.append(',');
                     dj.append("{\"kind\":\"bridge.argline_shadowed\",\"plugin\":\"").append(escJson(shadowed.get(i))).append("\"}");
                 }
-                Files.writeString(diag, dj.append("]}\n").toString());
+                writeString(diag, dj.append("]}\n").toString());
             }
         } catch (IOException e) {
-            throw new MojoExecutionException("cannot write session metadata in " + output, e);
+            throw execErr("cannot write session metadata in " + output, e);
         }
     }
 

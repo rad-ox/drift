@@ -1,43 +1,25 @@
 """Upstream boundary bundle discovery and stub synthesis for DRIFT Python."""
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-try:
-    from . import drift_cli as _cli
-except ImportError:
-    try:
-        import drift_cli as _cli  # type: ignore[no-redef]
-    except ImportError:
-        _s = importlib.util.spec_from_file_location('drift_cli', Path(__file__).with_name('drift_cli.py'))
-        assert _s is not None and _s.loader is not None
-        _cli = importlib.util.module_from_spec(_s)
-        _s.loader.exec_module(_cli)
-
-from drift_security import (
-    _canon_stub_ref,
-    _is_num,
-    _is_relational_map,
-    _peer_order_relation,
-    _round_num,
-    clone_json,
-    split_resource_pointer,
-    tighten_then_by_sum_residuals as _tighten_then_by_sum_residuals,
-)
+try: from . import drift_probes as _pm
+except ImportError: import drift_probes as _pm  # type: ignore[no-redef]
+_cli, _sec, _ce = _pm.sib(__package__, __file__, 'drift_cli', 'drift_security', 'drift_ui_recovery')
+_canon_stub_ref, _is_num, _is_relational_map, _peer_order_relation, _round_num, clone_json, split_resource_pointer, _tighten_then_by_sum_residuals, desugar_03_rel = _sec._canon_stub_ref, _sec._is_num, _sec._is_relational_map, _sec._peer_order_relation, _sec._round_num, _sec.clone_json, _sec.split_resource_pointer, _sec.tighten_then_by_sum_residuals, _ce.desugar_03_rel
 
 
-def write_pointer(target: Any, raw_ptr: str, value: Any) -> Any:
+def write_pointer(target, raw_ptr, value):
     _, ptr = split_resource_pointer(raw_ptr)
     if ptr == '': return clone_json(value)
     if not isinstance(ptr, str) or not ptr.startswith('/'): raise ValueError(f'invalid RFC 6901 JSON Pointer "{raw_ptr}"')
     segs = [s.replace('~1', '/').replace('~0', '~') for s in ptr[1:].split('/')]
 
-    def put_at(cur: Any, idx: int) -> Any:
+    def put_at(cur, idx):
         seg, last = segs[idx], idx == len(segs) - 1
         n_idx = not last and (segs[idx + 1] == '0' or (segs[idx + 1].isdigit() and not segs[idx + 1].startswith('0')))
         if (seg == '0' or (seg.isdigit() and not seg.startswith('0'))) and isinstance(cur, list):
@@ -52,13 +34,13 @@ def write_pointer(target: Any, raw_ptr: str, value: Any) -> Any:
     return put_at(target, 0)
 
 
-def _rel_peer_rank(val: Any, rk: frozenset[str]) -> int:
+def _rel_peer_rank(val, rk):
     if not _is_relational_map(val, rk): return 0
     if isinstance(val.get('sum_fields'), (list, tuple)): return 2 + len(val['sum_fields'])
     return 1 if any(k in val for k in ('eq_field', 'ge_field', 'le_field')) else 0
 
 
-def read_pointer(target: Any, raw_ptr: str) -> tuple[bool, Any]:
+def read_pointer(target, raw_ptr):
     if not isinstance(raw_ptr, str): return (False, None)
     res, ptr = split_resource_pointer(raw_ptr)
     cur = target[res] if res and isinstance(target, Mapping) and res in target else target
@@ -87,16 +69,16 @@ def read_pointer(target: Any, raw_ptr: str) -> tuple[bool, Any]:
     return (True, cur)
 
 
-def _build_peer_index(raw_when_map: Mapping[str, Any], raw_then_map: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> dict[str, Any]:
+def _build_peer_index(raw_when_map, raw_then_map, wp, tp, rk):
     when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in raw_when_map.items()}
     then_map = _tighten_then_by_sum_residuals(when_map, {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in raw_then_map.items()}, wp, tp, rk)
-    idx: dict[str, Any] = {}
+    idx = {}
     for wk, wv in when_map.items():
         if not _is_relational_map(wv, rk):
             idx[wk] = idx[f'when.{wk}'] = wv
             p = split_resource_pointer(wp.get(wk, ''))[1]
             if p.startswith('/'): idx[p] = wv
-    rel_entries: list[tuple[str, Mapping[str, Any]]] = []
+    rel_entries = []
     for tk, tv in then_map.items():
         if _is_relational_map(tv, rk):
             rel_entries.append((tk, tv))
@@ -120,7 +102,7 @@ def _build_peer_index(raw_when_map: Mapping[str, Any], raw_then_map: Mapping[str
     return idx
 
 
-def _resolve_stub_peer(ref: Any, base: Any, peer_idx: Mapping[str, Any], wp: Mapping[str, str], tp: Mapping[str, str], rk: frozenset[str]) -> tuple[bool, Any]:
+def _resolve_stub_peer(ref, base, peer_idx, wp, tp, rk):
     if not isinstance(ref, str) or not ref.strip(): return (False, None)
     s = ref.strip()
     qn = s[5:] if s.startswith(('then.', 'when.')) else s
@@ -143,14 +125,14 @@ def _resolve_stub_peer(ref: Any, base: Any, peer_idx: Mapping[str, Any], wp: Map
     return (False, None)
 
 
-def _resolve_rel_bounds(val: Mapping[str, Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None) -> tuple[bool, Any, int | float | None, int | float | None]:
+def _resolve_rel_bounds(val, peer_fn):
     if 'eq' in val and 'balance_fields' not in val and 'sum_fields' not in val and 'peer' not in val:
         return (True, val['eq'], None, None)
     if peer_fn is not None and 'eq_field' in val:
         ok, eq_v = peer_fn(val['eq_field'])
         if ok: return (True, eq_v, None, None)
-    lo: int | float | None = val['min'] if _is_num(val.get('min')) else None
-    hi: int | float | None = val['max'] if _is_num(val.get('max')) else None
+    lo = val['min'] if _is_num(val.get('min')) else None
+    hi = val['max'] if _is_num(val.get('max')) else None
     if _is_num(val.get('approx')):
         ap_v = float(val['approx'])
         lo = ap_v if lo is None or ap_v > lo else lo
@@ -176,19 +158,16 @@ def _resolve_rel_bounds(val: Mapping[str, Any], peer_fn: Callable[[Any], tuple[b
     return (False, None, lo, hi)
 
 
-def _build_affix_str(val: Mapping[str, Any], length: int) -> str:
+def _build_affix_str(val, length):
     pfx, sfx = (val['prefix'] if isinstance(val.get('prefix'), str) else ''), (val['suffix'] if isinstance(val.get('suffix'), str) else '')
     return f"{pfx}{'x' * max(0, length - len(pfx) - len(sfx))}{sfx}"
 
 
-def witness_value(val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None = None) -> Any:
+def witness_value(val, rk, clone_fn, peer_fn=None):
     return witness_variants(val, rk, clone_fn, peer_fn)[0]
 
 
-from drift_ui_recovery import desugar_03_rel
-
-
-def witness_variants(raw_val: Any, rk: frozenset[str], clone_fn: Callable[[Any], Any], peer_fn: Callable[[Any], tuple[bool, Any]] | None = None) -> list[Any]:
+def witness_variants(raw_val, rk, clone_fn, peer_fn=None):
     val = desugar_03_rel(raw_val) if isinstance(raw_val, Mapping) else raw_val
     if _is_relational_map(val, rk):
         eq_ok, eq_v, lo, hi = _resolve_rel_bounds(val, peer_fn)
@@ -241,7 +220,7 @@ def _is_homologous_key(a: str, b: str) -> bool:
     return len(la) == len(lb) and len(la) >= 2 and la[:-1] == lb[:-1] and la[-1] in '12abxy' and lb[-1] in '12abxy'
 
 
-def synthesize_view_output(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None, then_map: Mapping[str, Any] | None, extract_proj_fn: Callable[[Mapping[str, Any], str], dict[str, str]], write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any], rk: frozenset[str]) -> Any:
+def synthesize_view_output(view, case_id, base, then_map, extract_proj_fn, write_ptr_fn, clone_fn, rk):
     wp, tp = extract_proj_fn(view, 'when'), extract_proj_fn(view, 'then')
     case_m = (view.get('cases') or {}).get(case_id) or {}
     when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in (case_m.get('when') or {}).items()}
@@ -250,7 +229,7 @@ def synthesize_view_output(view: Mapping[str, Any], case_id: str, base: Mapping[
     out = clone_fn(base if isinstance(base, Mapping) else {})
     peer_idx = _build_peer_index(when_map, tbl, wp, tp, rk)
     peer_fn = lambda ref: _resolve_stub_peer(ref, out, peer_idx, wp, tp, rk)
-    resolved: dict[str, Any] = {}
+    resolved = {}
     for k, v in sorted(tbl.items(), key=lambda e: (_rel_peer_rank(e[1], rk), e[0])):
         vars_v = witness_variants(v, rk, clone_fn, peer_fn)
         w = vars_v[0]
@@ -268,7 +247,7 @@ def synthesize_view_output(view: Mapping[str, Any], case_id: str, base: Mapping[
     return out
 
 
-def _lookup_when_input(when_input: Mapping[str, Any], wk: str, wp: Mapping[str, str]) -> tuple[bool, Any]:
+def _lookup_when_input(when_input, wk, wp):
     if wk in when_input: return (True, when_input[wk])
     raw_p = wp.get(wk, '')
     for p in (raw_p, split_resource_pointer(raw_p)[1], '/' + wk):
@@ -320,7 +299,7 @@ def resolve_stub_case_id(view: Mapping[str, Any], id_or_res: str, case_or_when: 
     return best_cases[0]
 
 
-def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mapping[str, Any] | None, extract_proj_fn: Callable[[Mapping[str, Any], str], dict[str, str]], write_ptr_fn: Callable[[Any, str, Any], Any], clone_fn: Callable[[Any], Any], rk: frozenset[str]) -> list[Any]:
+def synthesize_view_variants(view, case_id, base, extract_proj_fn, write_ptr_fn, clone_fn, rk):
     wp, tp = extract_proj_fn(view, 'when'), extract_proj_fn(view, 'then')
     case_m = (view.get('cases') or {}).get(case_id) or {}
     when_map = {k: (desugar_03_rel(v) if isinstance(v, Mapping) else v) for k, v in (case_m.get('when') or {}).items()}
@@ -349,8 +328,7 @@ def synthesize_view_variants(view: Mapping[str, Any], case_id: str, base: Mappin
 
 
 def discover_events_dir(cwd: Path, environ: Mapping[str, str]) -> str:
-    from drift_probes import validate_shadow_state_dir
-    sd = validate_shadow_state_dir(cwd, environ)
+    sd = _pm.validate_shadow_state_dir(cwd, environ)
     if sd:
         sd_p = Path(sd)
         for sub in ('.drift', '.drift-work'):
@@ -376,7 +354,7 @@ def discover_events_dir(cwd: Path, environ: Mapping[str, str]) -> str:
 
 
 
-def resolve_seam_mutated_then(cur_ctx: Any, prod_view: Mapping[str, Any], id_or_res: str, resolved_case_id: str, escape_ptr_fn: Callable[[str], str], apply_mut_fn: Callable[..., dict[str, Any]]) -> dict[str, Any] | None:
+def resolve_seam_mutated_then(cur_ctx, prod_view, id_or_res, resolved_case_id, escape_ptr_fn, apply_mut_fn):
     m = getattr(cur_ctx, 'mutation_override', None) if cur_ctx is not None else None
     if not isinstance(m, Mapping) or not isinstance(m.get('path'), str):
         return None
@@ -386,10 +364,11 @@ def resolve_seam_mutated_then(cur_ctx: Any, prod_view: Mapping[str, Any], id_or_
         return None
     sub_path = f"/cases/{escape_ptr_fn(resolved_case_id)}/then/{m['path'][len(pfx):]}"
     raw_then = dict(((prod_view.get('cases') or {}).get(resolved_case_id) or {}).get('then') or {})
+    cur_ctx._mut_hit = True
     return apply_mut_fn(raw_then, prod_id, resolved_case_id, sub_path, m.get('after'), 'then', None)
 
 
-def run_seam_bounds_checks(ctx: Any, case_id: str, id_or_res: str, prod_case_or_when: Any, checks: Any, base: Mapping[str, Any] | None, resolve_stub_fn: Callable[..., tuple[dict[str, Any], str]], build_variants_fn: Callable[..., list[Any]]) -> None:
+def run_seam_bounds_checks(ctx, case_id, id_or_res, prod_case_or_when, checks, base, resolve_stub_fn, build_variants_fn):
     ctx._require_tagged(case_id)
     prod_view, prod_case_id = resolve_stub_fn(id_or_res, prod_case_or_when, base)
     prod_id = str(prod_view.get('id') or id_or_res)
@@ -408,7 +387,7 @@ def run_seam_bounds_checks(ctx: Any, case_id: str, id_or_res: str, prod_case_or_
             raise
 
 
-def run_case_mutants(mut_cfg: Mapping[str, Any], mut_out: Any, ctx: Any, contract: str, passed: bool, elapsed: float, time_mod: Any, with_mut_fn: Callable[..., Any], make_ctx_fn: Callable[[Any], Any], fn: Callable[[Any], Any], dump_json_fn: Callable[[Any], str]) -> None:
+def run_case_mutants(mut_cfg, mut_out, ctx, contract, passed, elapsed, time_mod, with_mut_fn, make_ctx_fn, fn, dump_json_fn):
     targets = [m for cid in ctx.cases for m in mut_cfg['by_case'].get(f'{contract}\x00{cid}', ())]
     if not targets:
         return
@@ -418,17 +397,16 @@ def run_case_mutants(mut_cfg: Mapping[str, Any], mut_out: Any, ctx: Any, contrac
         if not passed or over or time_mod.perf_counter() - mut_start > budget_s:
             over = over or passed
         else:
-            thrown: BaseException | None = None
-            failed = False
+            thrown, failed, m_ctx = None, False, make_ctx_fn(target)
             try:
-                with_mut_fn(target, lambda t=target: fn(make_ctx_fn(t)))
+                with_mut_fn(target, lambda c=m_ctx: fn(c))
             except BaseException as m_err:
                 failed, thrown = True, m_err
             if time_mod.perf_counter() - mut_start > budget_s:
                 over = True
             elif not failed:
                 outcome = 'survived'
-            elif isinstance(thrown, AssertionError):
+            elif isinstance(thrown, AssertionError) and getattr(m_ctx, '_mut_hit', False) and (getattr(m_ctx, '_then_hit', False) or bool(m_ctx.reads.get(target['case']))):
                 outcome = 'killed'
         lines.append(dump_json_fn({'manifest': mut_cfg['manifest_id'], 'contract': target['contract'], 'digest': target['digest'], 'mutant': target['id'], 'case': target['case'], 'outcome': outcome, 'control': 'passed' if passed else 'failed'}))
     with mut_out.open('a', encoding='utf-8') as fh:

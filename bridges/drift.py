@@ -4,7 +4,7 @@ from __future__ import annotations
 import atexit
 import contextvars
 import hashlib
-import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -15,15 +15,16 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import drift_checks as _checks
+    from . import drift_probes as _pm
 except ImportError:
     try:
-        import drift_checks as _checks  # type: ignore[no-redef]
+        import drift_probes as _pm  # type: ignore[no-redef]
     except ImportError:
-        _spec = importlib.util.spec_from_file_location('drift_checks', Path(__file__).with_name('drift_checks.py'))
-        assert _spec is not None and _spec.loader is not None
-        _checks = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_checks)
+        import importlib.util as _iu
+        _s = _iu.spec_from_file_location('drift_probes', Path(__file__).with_name('drift_probes.py'))
+        assert _s and _s.loader
+        _pm = _iu.module_from_spec(_s); sys.modules['drift_probes'] = _pm; _s.loader.exec_module(_pm)
+_checks = _pm.sib(__package__, __file__, 'drift_checks')
 _probes = _checks._uic
 
 ThenView = _checks.ThenView
@@ -34,7 +35,7 @@ _apply_mutation = _checks.apply_mutation
 _VIEWS, _TOML_DIRS, _WARMED, _BATCH = {}, {}, set(), {}
 _cli_key = _cli_bin = ''
 _METRICS, _DIGESTS, _INVS = {}, {}, {}
-_env_cache = _sel_cache = _fc_cache = _mut_cache = _ev_dir_cache = _shard_path = _mut_shard_path = None
+_env_cache = _sel_cache = _fc_cache = _mut_cache = _ev_dir_cache = _shard_path = _shard_key = _mut_shard_path = _mut_shard_key = None
 _shard_seq = 0
 _DISC_CLASSES, _DISC_TESTS = set(), set()
 _CTX_VAR = contextvars.ContextVar('drift_ctx', default=None)
@@ -67,21 +68,23 @@ def _resolve_env():
     if not raw and pk not in ('1', 'true'): return None
     cache_key = f'{pk}\x00{raw}'
     if _env_cache is not None and _env_cache[0] == cache_key: return _env_cache[1]
-    base = _probes.build_env_dict('drift.py@0.10.0', raw, _strip_bom, _ENV_KEYS)
+    base = _probes.build_env_dict('drift.py@0.11.0', raw, _strip_bom, _ENV_KEYS)
     _env_cache = (cache_key, base)
     return base
 
 
 def _flush_inventory(out, inv):
-    if not inv.get('dirty'): return
-    inv['dirty'], inv['flushed'] = False, True
-    _checks.merge_prior_inventory(out, inv, _shard_path is not None and out == str(_shard_path), Path.cwd())
-    sidecar = _checks.sidecar_head(os.environ, inv['classes'], inv['tests'])
-    raw_in = inv.get('inputs') or {}
-    if raw_in: sidecar['inputs'] = {t: {fp: raw_in[t][fp] for fp in sorted(raw_in[t])} for t in sorted(raw_in) if raw_in[t]}
-    env_obj = _resolve_env()
-    if env_obj is not None: sidecar['env'] = env_obj
-    Path(out[:-6] + '.meta.json').write_text(_dump_json(sidecar) + '\n', encoding='utf-8')
+    with _IO_LOCK:
+        if not inv.get('dirty'): return
+        def _build():
+            sc = _checks.sidecar_head(os.environ, inv['classes'], inv['tests'])
+            ri = inv.get('inputs') or {}
+            if ri: sc['inputs'] = {t: {fp: ri[t][fp] for fp in sorted(ri[t])} for t in sorted(ri) if ri[t]}
+            ev = _resolve_env()
+            if ev is not None: sc['env'] = ev
+            return sc
+        _checks._sec._pm.write_sidecar(out, inv, _shard_path is not None and out == str(_shard_path), Path.cwd(), _checks.resolve_selected_files, _build, _dump_json, os.environ)
+        inv['dirty'], inv['flushed'] = False, True
 
 
 def flush_all_inventories() -> None:
@@ -165,14 +168,24 @@ def _discover_events_dir():
     return _ev_dir_cache
 
 
+def _reset_fork():
+    global _shard_path, _shard_key, _mut_shard_path, _mut_shard_key
+    pid = os.getpid()
+    if (_shard_key is not None and _shard_key[0] != pid) or (_mut_shard_key is not None and _mut_shard_key[0] != pid):
+        _INVS.clear(); _DISC_CLASSES.clear(); _DISC_TESTS.clear()
+        _shard_path = _shard_key = _mut_shard_path = _mut_shard_key = None
+
+
 def _resolve_events_file():
-    global _shard_path, _shard_seq
+    global _shard_path, _shard_key, _shard_seq
+    _reset_fork()
     tgt = os.environ.get('DRIFT_EVENTS', '').strip() or _discover_events_dir()
     if not tgt: return ''
     if tgt.endswith('.jsonl'): Path(tgt).parent.mkdir(parents=True, exist_ok=True); return tgt
-    if _shard_path is None:
+    key = (os.getpid(), str(Path(tgt).resolve()))
+    if _shard_path is None or _shard_key != key:
         Path(tgt).mkdir(parents=True, exist_ok=True); _shard_seq += 1
-        _shard_path = Path(tgt) / f'{int(time.time() * 1000):013d}-{os.getpid()}-{_shard_seq}.jsonl'
+        _shard_key, _shard_path = key, Path(tgt) / f'{int(time.time() * 1000):013d}-{key[0]}-{_shard_seq}.jsonl'
     return str(_shard_path)
 
 
@@ -188,7 +201,10 @@ def _ensure_exit_hook():
 
 
 def _record_discovery(test_id, active_out=''):
-    _probes.record_discovery_into(test_id, active_out, os.environ, _discover_events_dir, _shard_path, _BAD_CLS, _BAD_MTH, _DISC_CLASSES, _DISC_TESTS, _ensure_inventory, _flush_inventory, _ensure_exit_hook)
+    _reset_fork()
+    tgt = active_out or os.environ.get('DRIFT_EVENTS', '').strip() or _discover_events_dir()
+    sp = _shard_path if (_shard_path is not None and tgt and not tgt.endswith('.jsonl') and _shard_key == (os.getpid(), str(Path(tgt).resolve()))) else None
+    _probes.record_discovery_into(test_id, active_out, os.environ, _discover_events_dir, sp, _BAD_CLS, _BAD_MTH, _DISC_CLASSES, _DISC_TESTS, _ensure_inventory, _flush_inventory, _ensure_exit_hook)
 
 
 def _write_event(ev):
@@ -219,15 +235,17 @@ def _load_mutants():
 
 
 def _resolve_mutation_file(output_target):
-    global _mut_shard_path
+    global _mut_shard_path, _mut_shard_key
+    _reset_fork()
     if output_target.endswith('.jsonl'):
         p = Path(output_target)
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
     td = Path(output_target)
-    if _mut_shard_path is None or _mut_shard_path.parent != td:
+    key = (os.getpid(), str(td.resolve()))
+    if _mut_shard_path is None or _mut_shard_key != key:
         td.mkdir(parents=True, exist_ok=True)
-        _mut_shard_path = td / 'results.jsonl'
+        _mut_shard_key, _mut_shard_path = key, td / f'results-{key[0]}.jsonl'
     return _mut_shard_path
 
 
@@ -272,12 +290,12 @@ class DriftContext:
         self.contract_id, self.test_id, self.cases, self.level = contract_id, test_id, list(cases), level or 'unit'
         eff_mut = mutation_override if mutation_override is not None else _active_mutation_for(contract_id, self.cases)
         self.view, self.mutation_override = _load_view(contract_id), eff_mut
-        self.reads, self.unobserved_cases, self._input_files, self._obs = {}, set(), {}, {}
+        self.reads, self._when_reads, self.unobserved_cases, self._input_files, self._obs, self._self_stub, self._mut_hit, self._then_hit = {}, {}, set(), {}, {}, False, False, False
         vc = self.view.get('cases') or {}
         for c in self.cases:
             if c not in vc:
                 raise ValueError(f'contract "{contract_id}" has no case "{c}"')
-            self.reads[c] = set()
+            self.reads[c], self._when_reads[c] = set(), set()
         m = eff_mut
         mp = m.get('path') if isinstance(m, Mapping) and isinstance(m.get('path'), str) else ''
         mc = _escape_ptr(str(m.get('case', ''))) if isinstance(m, Mapping) else ''
@@ -292,12 +310,16 @@ class DriftContext:
 
     def _when_table(self, c):
         if self._mutated_when is not None and self.mutation_override is not None and self.mutation_override['case'] == c:
+            self._mut_hit = True
             return self._converted_table('when', self._mutated_when)
         return self._converted_table('when', self.view['cases'][c].get('when') or {})
 
     def _then_table(self, c):
-        if self._mutated_then is not None and self.mutation_override is not None and self.mutation_override['case'] == c:
-            return self._converted_table('then', self._mutated_then)
+        if self.mutation_override is not None and self.mutation_override.get('case') == c:
+            self._then_hit = True
+            if self._mutated_then is not None:
+                self._mut_hit = True
+                return self._converted_table('then', self._mutated_then)
         return self._converted_table('then', self.view['cases'][c].get('then') or {})
 
     def _converted_table(self, side, table):
@@ -313,16 +335,26 @@ class DriftContext:
         self._require_tagged(c)
         w = self._when_table(c)
         if k not in w: raise KeyError(f'case "{c}" has no when.{k}')
+        self._when_reads[c].add(k)
         return self._u03(w[k])
 
     def find_when(self, c, k, fb=None):
         self._require_tagged(c)
         w = self._when_table(c)
-        return self._u03(w[k]) if k in w else fb
+        if k not in w: return fb
+        self._when_reads[c].add(k)
+        return self._u03(w[k])
 
     def when_table(self, c):
         self._require_tagged(c)
-        return {k: self._u03(v) for k, v in _checks.clone_json(self._when_table(c)).items()}
+        wt = _checks.clone_json(self._when_table(c))
+        self._when_reads[c].update(wt.keys())
+        return {k: self._u03(v) for k, v in wt.items()}
+
+    def unread_when(self, c: str) -> list[str]:
+        self._require_tagged(c)
+        wr = self._when_reads[c]
+        return sorted(k for k in self._when_table(c) if k not in wr)
 
     def for_each_case(self, fn):
         for c in self.cases: fn(c, self.when_table(c))
@@ -356,25 +388,63 @@ class DriftContext:
     def bind_ui_environment(self, p: str | Path, o: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return _checks._ui.bind_ui_environment(self, p, o)
 
+    def _record_obs(self, case_id, pay):
+        self._obs.pop(case_id, None)
+        if self.view.get('drift') != '0.3' or self.mutation_override is not None or self._self_stub: return
+        def _e(v, d=0):
+            if d > 6 or (isinstance(v, str) and len(v) > 1024) or (isinstance(v, (list, tuple, Mapping)) and len(v) > 64): raise ValueError
+            if v is None or isinstance(v, (bool, str)): return v
+            if isinstance(v, int) and -(1 << 53) < v < (1 << 53): return v
+            if isinstance(v, float) and _checks.is_finite_num(v): return v
+            if isinstance(v, (list, tuple)): return [_e(x, d + 1) for x in v]
+            if isinstance(v, Mapping): return {('$' + k if k.startswith('$') else k): _e(val, d + 1) for k, val in v.items() if isinstance(k, str) and not (d == 0 and k in ('_frame', '_when_env'))}
+            raise ValueError
+        try:
+            ep = _e(pay)
+            if len(_dump_json(ep).encode('utf-8')) <= 4096: self._obs[case_id] = {'schema': 'drift.observation/1', 'outcome': 'returned', 'payload': ep}
+        except ValueError: pass
+
+    def _record_projected_obs(self, case_id, payload, checks):
+        self._obs.pop(case_id, None)
+        has_cb = isinstance(checks, Mapping) and any(k not in ('frame', 'strictFrame') and callable(v) for k, v in checks.items())
+        is_ui = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
+        if has_cb or is_ui or payload is None or self.view.get('drift') != '0.3' or self.mutation_override is not None or self._self_stub: return
+        tt, proj, inv = self._then_table(case_id), self._proj_map('then'), self.view.get('invariants')
+        if not tt: return
+        inv = inv if isinstance(inv, Mapping) else {}
+        need = list(dict.fromkeys([*tt, *inv]))
+        def _add(x):
+            if isinstance(x, str) and not x.startswith('when.'):
+                k = x[5:] if x.startswith('then.') else x
+                if k not in need: need.append(k)
+            elif isinstance(x, (list, tuple)):
+                for i in x: _add(i)
+        for c in (*tt.values(), *inv.values()):
+            if isinstance(c, Mapping):
+                p = _checks._ce._map(c, 'peer')
+                b = _checks._ce._map(p, 'balance')
+                for x in (p.get('eq'), p.get('le'), p.get('ge'), p.get('sum'), b.get('add'), b.get('sub'), c.get('eq_field'), c.get('le_field'), c.get('ge_field'), c.get('sum_fields')): _add(x)
+        out: Any = {}
+        for k in need:
+            in_tt = k in tt
+            if k in proj:
+                ok, val = _checks.read_pointer(payload, proj[k])
+                if ok: out = _checks.write_pointer(out, proj[k], val)
+                elif in_tt and isinstance(payload, Mapping) and k in payload: out = _checks.write_pointer(out, proj[k], payload[k])
+                elif in_tt: return
+            elif isinstance(payload, Mapping) and k in payload: out = _checks.write_pointer(out, f'/{_escape_ptr(k)}', payload[k])
+            elif in_tt: return
+        self._record_obs(case_id, out)
+
     def check(self, case_id, checks, when=None):
         self._require_tagged(case_id)
         tt = self._then_table(case_id)
         _checks.run_simple_checks(self.contract_id, case_id, tt, self.reads[case_id], checks, self._when_env(case_id, checks, when))
-        if self.view.get('drift') == '0.3' and self.mutation_override is None and not self._proj_map('then') and not _checks._sec.forbidden_writes_of(self.view, case_id) and not any(k[0] == f'.drift/self-stub/{self.contract_id}' for k in self._input_files.values()):
+        self._obs.pop(case_id, None)
+        if not self._proj_map('then'):
             src = checks.get('then') if isinstance(checks, Mapping) and isinstance(checks.get('then'), Mapping) and not any(k in checks for k in tt) else checks
             if isinstance(src, Mapping) and not any(callable(src.get(k)) for k in tt):
-                def _e(v, d=0):
-                    if d > 6 or (isinstance(v, str) and len(v) > 1024) or (isinstance(v, (list, tuple, Mapping)) and len(v) > 64): raise ValueError
-                    if v is None or isinstance(v, (bool, str)): return v
-                    if isinstance(v, int) and -(1 << 53) < v < (1 << 53): return v
-                    if isinstance(v, float) and _checks.is_finite_num(v): return v
-                    if isinstance(v, (list, tuple)): return [_e(x, d + 1) for x in v]
-                    if isinstance(v, Mapping): return {('$' + k if k.startswith('$') else k): _e(val, d + 1) for k, val in v.items() if isinstance(k, str)}
-                    raise ValueError
-                try:
-                    ep = _e({k: src[k] for k in tt})
-                    if len(_dump_json(ep)) <= 4096: self._obs[case_id] = {'schema': 'drift.observation/1', 'payload': ep}
-                except ValueError: pass
+                self._record_obs(case_id, {k: src[k] for k in tt})
 
     def check_bounds(self, case_id, domain, checks):
         self._require_tagged(case_id)
@@ -387,14 +457,19 @@ class DriftContext:
 
     def build_input(self, case_id, base=None):
         self._require_tagged(case_id)
-        return _checks.build_projected_input(self.view, self._when_table(case_id), base)
+        wt = self._when_table(case_id)
+        self._when_reads[case_id].update(wt.keys())
+        return _checks.build_projected_input(self.view, wt, base)
 
     def build_output(self, case_id, base=None):
         self._require_tagged(case_id)
         self.record_input(f'.drift/self-stub/{self.contract_id}', 'sha256:self-stub')
         return _checks.build_projected_output(self.view, case_id, base, self._then_table(case_id))
 
-    def check_projection(self, case_id, payload, checks=None, when=None): _checks.run_projection_checks(self, case_id, payload, checks, when)
+    def check_projection(self, case_id, payload, checks=None, when=None):
+        self._obs.pop(case_id, None)
+        _checks.run_projection_checks(self, case_id, payload, checks, when)
+        self._record_projected_obs(case_id, payload, checks)
     def check_adverse(self, case_id, harness, checks=None): _checks.run_adverse_checks(self, case_id, harness, checks)
     def check_seam_bounds(self, case_id, id_or_res, prod_case, checks, base=None): _checks._up.run_seam_bounds_checks(self, case_id, id_or_res, prod_case, checks, base, _resolve_stub_contract, _checks.build_projected_variants)
     def check_frame(self, case_id, frame_obs): _checks._sec.verify_case_frame(self, case_id, frame_obs, _checks.values_mismatch, True)
@@ -425,15 +500,15 @@ def select_files(sel: Any = None, root_dir: str | Path | None = None) -> list[st
 
 
 def reset_drift_cache() -> None:
-    global _env_cache, _sel_cache, _fc_cache, _mut_cache, _ev_dir_cache, _shard_path, _mut_shard_path
+    global _env_cache, _sel_cache, _fc_cache, _mut_cache, _ev_dir_cache, _shard_path, _shard_key, _mut_shard_path, _mut_shard_key
     flush_all_inventories()
     _checks.clear_upstream_cache()
-    for cache_coll in (_VIEWS, _TOML_DIRS, _WARMED, _BATCH, _METRICS, _DIGESTS, _DISC_CLASSES, _DISC_TESTS): cache_coll.clear()
+    for cache_coll in (_VIEWS, _TOML_DIRS, _WARMED, _BATCH, _METRICS, _DIGESTS, _INVS, _DISC_CLASSES, _DISC_TESTS): cache_coll.clear()
     _MUT_VAR.set(())
-    _env_cache = _sel_cache = _fc_cache = _mut_cache = _ev_dir_cache = _shard_path = _mut_shard_path = None
+    _env_cache = _sel_cache = _fc_cache = _mut_cache = _ev_dir_cache = _shard_path = _shard_key = _mut_shard_path = _mut_shard_key = None
 
 
-def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...], fn: Callable[[DriftContext], Any], level: str = 'unit') -> str:
+def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...], fn: Callable[[DriftContext], Any], level: str = 'unit', *, strict_when: bool = False) -> str:
     if not should_run(contract, test, cases): return 'skipped-by-select'
     if sys.flags.optimize > 0:
         _write_event({'test': test, 'contract': contract, 'cases': list(cases), 'level': level, 'outcome': 'failed', 'read': []})
@@ -443,9 +518,17 @@ def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...],
         _write_event({'test': test, 'contract': contract, 'cases': list(cases), 'level': level, 'outcome': 'failed', 'read': []})
         raise
     version, mut_cfg, start, passed, control_err = (ctx.view.get('ref') or ctx.view.get('digest') or ''), _load_mutants(), time.perf_counter(), False, None
+    enforce_when = bool(strict_when or os.environ.get('DRIFT_STRICT_WHEN') in ('1', 'true'))
     tok = _CTX_VAR.set(ctx)
     try:
-        fn(ctx)
+        res = fn(ctx)
+        if inspect.isawaitable(res) or inspect.isgenerator(res):
+            if hasattr(res, 'close'): res.close()
+            raise TypeError(f"run_drift_case callback must be synchronous (got {'generator' if inspect.isgenerator(res) else 'awaitable'})")
+        if enforce_when:
+            for cid in ctx.cases:
+                u = ctx.unread_when(cid)
+                if u: raise AssertionError(f'{contract}.{cid}: unread ' + ', '.join(f'when.{k}' for k in u))
         _probes.verify_recorded_inputs(contract, test, ctx._input_files, _DIGESTS, _hash_bytes)
         passed = True
     except BaseException as err: control_err = err
@@ -456,11 +539,24 @@ def run_drift_case(contract: str, test: str, cases: list[str] | tuple[str, ...],
         for rc in (ctx.view.get('required_capabilities') or ()):
             if rc not in _checks.CAPS_03: raise AssertionError(f'bridge.capability_unsupported:{rc}')
         ev['schema'], ev['capabilities'] = '0.3', list(_checks.CAPS_03)
-        if passed and ctx._obs: ev['observations'] = ctx._obs
+        if passed and not ctx._self_stub:
+            obs_frames = getattr(ctx, '_obs_frames', {})
+            obs_out = {}
+            for cid in ev['read']:
+                o = ctx._obs.get(cid)
+                if not o: continue
+                has_fr = cid in obs_frames
+                if _checks._sec.forbidden_writes_of(ctx.view, cid) and not has_fr: continue
+                obs_out[cid] = {**o, 'frame': {'writes': obs_frames[cid]}} if has_fr else o
+            if obs_out: ev['observations'] = obs_out
     _write_event(ev)
     elapsed = max(0.001, time.perf_counter() - start)
     if mut_cfg is not None:
-        _checks._up.run_case_mutants(mut_cfg, _resolve_mutation_file(mut_cfg['out_t']), ctx, contract, passed, elapsed, time, with_mutation, lambda t: DriftContext(contract, test, cases, level, t), fn, _dump_json)
+        def _run_m(mc):
+            mt = _CTX_VAR.set(mc)
+            try: return fn(mc)
+            finally: _CTX_VAR.reset(mt)
+        _checks._up.run_case_mutants(mut_cfg, _resolve_mutation_file(mut_cfg['out_t']), ctx, contract, passed, elapsed, time, with_mutation, lambda t: DriftContext(contract, test, cases, level, t), _run_m, _dump_json)
     if not passed and control_err is not None: raise control_err
     return 'passed'
 

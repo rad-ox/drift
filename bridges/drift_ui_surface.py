@@ -5,14 +5,13 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-try:
-    from . import drift_ui as _ui
-except ImportError:
-    import drift_ui as _ui  # type: ignore[no-redef]
+try: from . import drift_probes as _pm
+except ImportError: import drift_probes as _pm  # type: ignore[no-redef]
+_ui = _pm.sib(__package__, __file__, 'drift_ui')
+_map = _ui._map
 
 
-def _is_fin(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+_is_fin = _ui._is_fin_num
 
 
 def unwrap_03_eq(v: Any) -> Any:
@@ -146,10 +145,10 @@ def check_surface_key(
     if isinstance(v.get('adapter'), Mapping) and isinstance(v['adapter'].get('capabilities'), list):
         _ui.check_required_adapter_capability(contract_id, case_id, key, v, proj)
     els = list(v.get('elements') or ())
-    pres_obj = v.get('presentation') if isinstance(v.get('presentation'), Mapping) else {}
+    pres_obj = _map(v, 'presentation')
 
     if key in ('clipped_elements', 'unintentional_clipped_count'):
-        clip_sub = pres_obj.get('clipping') if isinstance(pres_obj.get('clipping'), Mapping) else {}
+        clip_sub = _map(pres_obj, 'clipping')
         exp_clip = v.get(key, clip_sub.get('unintentional_clipped_count'))
         if not els and not _is_fin(exp_clip):
             fail_unverifiable(f'{pfx}: unverifiable then.{key}: empty surface view')
@@ -165,69 +164,38 @@ def check_surface_key(
         assert_bound(key, '<=', exp, act_ov)
         return True
     if key in ('min_contrast_ratio', 'min_contrast_wcag22', 'min_contrast_text_normal', 'min_contrast_text_large', 'min_contrast_ui_component'):
-        c_sum = _ui.evaluate_wcag22_contrast(els)
+        c_sum, cw = _ui.evaluate_wcag22_contrast(els), _map(pres_obj, 'contrast_wcag22')
         if c_sum['unverifiableCount'] > 0 and 'contrast_unverifiable_count' not in then_table and 'unverifiable_checks' not in then_table:
             fail_unverifiable(f"{pfx}: unverifiable then.{key}: {c_sum['unverifiableCount']} element(s) have indeterminate background")
-        cw = pres_obj.get('contrast_wcag22') if isinstance(pres_obj.get('contrast_wcag22'), Mapping) else {}
-        if key == 'min_contrast_text_normal':
-            act_c = c_sum['textNormalMin'] if c_sum['textNormalMin'] is not None else cw.get('text_normal_min', v.get(key))
-        elif key == 'min_contrast_text_large':
-            act_c = c_sum['textLargeMin'] if c_sum['textLargeMin'] is not None else cw.get('text_large_min', v.get(key))
-        elif key == 'min_contrast_ui_component':
-            act_c = c_sum['uiComponentMin'] if c_sum['uiComponentMin'] is not None else cw.get('ui_component_min', v.get(key))
-        else:
-            act_c = c_sum['overallMin'] if c_sum['overallMin'] is not None else v.get(key, v.get('min_contrast_ratio'))
-        if not _is_fin(act_c):
-            fail_unverifiable(f'{pfx}: unverifiable then.{key}: no measured elements')
-        if isinstance(exp, Mapping) and ('min' in exp or 'max' in exp):
-            check_rel_fn(contract_id, case_id, key, exp, float(act_c), v, proj or {}, mutation_override)
-        else:
-            assert_bound(key, '>=', exp, float(act_c))
+        cm = {'min_contrast_text_normal': ('textNormalMin', 'text_normal_min'), 'min_contrast_text_large': ('textLargeMin', 'text_large_min'), 'min_contrast_ui_component': ('uiComponentMin', 'ui_component_min')}.get(key)
+        act_c = (c_sum[cm[0]] if c_sum[cm[0]] is not None else cw.get(cm[1], v.get(key))) if cm else (c_sum['overallMin'] if c_sum['overallMin'] is not None else v.get(key, v.get('min_contrast_ratio')))
+        if not _is_fin(act_c): fail_unverifiable(f'{pfx}: unverifiable then.{key}: no measured elements')
+        if isinstance(exp, Mapping) and ('min' in exp or 'max' in exp): check_rel_fn(contract_id, case_id, key, exp, float(act_c), v, proj or {}, mutation_override)
+        else: assert_bound(key, '>=', exp, float(act_c))
         return True
     if key in ('contrast_violations_count', 'contrast_unverifiable_count'):
-        c_sum = _ui.evaluate_wcag22_contrast(els)
-        cw = pres_obj.get('contrast_wcag22') if isinstance(pres_obj.get('contrast_wcag22'), Mapping) else {}
-        has_exp = _is_fin(v.get(key)) or (_is_fin(cw.get('violations_count')) if key == 'contrast_violations_count' else _is_fin(cw.get('unverifiable_count')))
-        if c_sum['measuredCount'] == 0 and c_sum['unverifiableCount'] == 0 and not has_exp:
+        c_sum, cw = _ui.evaluate_wcag22_contrast(els), _map(pres_obj, 'contrast_wcag22')
+        ck, sk = ('violations_count', 'violationsCount') if key == 'contrast_violations_count' else ('unverifiable_count', 'unverifiableCount')
+        if c_sum['measuredCount'] == 0 and c_sum['unverifiableCount'] == 0 and not (_is_fin(v.get(key)) or _is_fin(cw.get(ck))):
             fail_unverifiable(f'{pfx}: unverifiable then.{key}: no measured elements')
-        act_cnt = int(v.get(key, cw.get('violations_count', c_sum['violationsCount']))) if key == 'contrast_violations_count' else int(v.get(key, cw.get('unverifiable_count', c_sum['unverifiableCount'])))
-        assert_eq(key, exp, act_cnt)
+        assert_eq(key, exp, int(v.get(key, cw.get(ck, c_sum[sk]))))
         return True
     if key == 'min_target_px':
-        measured_targets = [
-            min(float(el['width']), float(el['height']))
-            for el in els
-            if isinstance(el, Mapping)
-            and not _ui.is_element_hidden(el)
-            and el.get('spacingException') is not True
-            and _is_fin(el.get('width'))
-            and _is_fin(el.get('height'))
-            and float(el['width']) > 0
-            and float(el['height']) > 0
-        ]
-        ts_sub = pres_obj.get('target_size') if isinstance(pres_obj.get('target_size'), Mapping) else {}
-        exp_t = v.get('min_target_px', ts_sub.get('min_target_size'))
-        if not measured_targets and not _is_fin(exp_t):
-            fail_unverifiable(f'{pfx}: unverifiable then.min_target_px: no measured elements')
-        target_px = min(measured_targets) if measured_targets else float(exp_t)
-        assert_bound(key, '>=', exp, target_px)
+        mt = [min(float(el['width']), float(el['height'])) for el in els if isinstance(el, Mapping) and not _ui.is_element_hidden(el) and el.get('spacingException') is not True and _is_fin(el.get('width')) and _is_fin(el.get('height')) and float(el['width']) > 0 and float(el['height']) > 0]
+        exp_t = v.get('min_target_px', _map(pres_obj, 'target_size').get('min_target_size'))
+        if not mt and not _is_fin(exp_t): fail_unverifiable(f'{pfx}: unverifiable then.min_target_px: no measured elements')
+        assert_bound(key, '>=', exp, min(mt) if mt else float(exp_t))
         return True
     if key in ('obscured_focus_elements', 'fully_obscured_focus_count', 'partially_obscured_focus_count'):
-        applicable = [el for el in els if isinstance(el, Mapping) and not _ui.is_element_hidden(el) and bool(el.get('focusable', True))]
-        evaluated = [_ui.evaluate_focus_obscuration(el) for el in applicable]
-        measured_evals = [r for r in evaluated if r['status'] == 'measured']
-        fv_sub = pres_obj.get('focus_visibility') if isinstance(pres_obj.get('focus_visibility'), Mapping) else {}
-        exp_f = v.get(key, fv_sub.get('partially_obscured_count' if key == 'partially_obscured_focus_count' else 'fully_obscured_count'))
-        if not measured_evals and not _is_fin(exp_f):
-            fail_unverifiable(f'{pfx}: unverifiable then.{key}: no measured elements')
-        obscured = sum(1 for r in measured_evals if (r['partiallyObscured'] if key == 'partially_obscured_focus_count' else r['fullyObscured'])) if measured_evals else int(exp_f)
-        assert_eq(key, exp, obscured)
+        me = [r for el in els if isinstance(el, Mapping) and not _ui.is_element_hidden(el) and bool(el.get('focusable', True)) for r in (_ui.evaluate_focus_obscuration(el),) if r['status'] == 'measured']
+        part = key == 'partially_obscured_focus_count'
+        exp_f = v.get(key, _map(pres_obj, 'focus_visibility').get('partially_obscured_count' if part else 'fully_obscured_count'))
+        if not me and not _is_fin(exp_f): fail_unverifiable(f'{pfx}: unverifiable then.{key}: no measured elements')
+        assert_eq(key, exp, sum(1 for r in me if r['partiallyObscured' if part else 'fullyObscured']) if me else int(exp_f))
         return True
     if key in ('unverified_elements', 'unverifiable_checks'):
-        ev_sub = v.get('evidence') if isinstance(v.get('evidence'), Mapping) else {}
-        raw_u = v.get('unverified_elements', v.get('unverifiable_checks', ev_sub.get('unverifiable_checks')))
-        if not _is_fin(raw_u) and not els:
-            fail_unverifiable(f'{pfx}: unverifiable then.{key}: empty surface view')
+        raw_u = v.get('unverified_elements', v.get('unverifiable_checks', _map(v, 'evidence').get('unverifiable_checks')))
+        if not _is_fin(raw_u) and not els: fail_unverifiable(f'{pfx}: unverifiable then.{key}: empty surface view')
         assert_eq(key, exp, int(raw_u or 0))
         return True
     return False
@@ -290,44 +258,26 @@ def check_tuning_and_numeric_rel(pfx: str, key: str, exp: Mapping[str, Any], act
 
 
 def _collect_case_key_policy(then_tbl: Mapping[str, Any], proj_tbl: Mapping[str, Any]) -> tuple[bool, set[str], set[str], set[str]]:
-    allowed: set[str] = set()
-    forbidden: set[str] = set()
-    peers: set[str] = set()
-    has_closed = False
+    allowed, forbidden, peers, has_closed = set(), set(), set(), False
     for exp in then_tbl.values():
-        if not isinstance(exp, Mapping):
-            continue
+        if not isinstance(exp, Mapping): continue
         if isinstance(exp.get('allowed_keys'), (list, tuple)):
-            has_closed = True
-            allowed.update(str(x) for x in exp['allowed_keys'])
-        if isinstance(exp.get('forbid_keys'), (list, tuple)):
-            forbidden.update(str(x) for x in exp['forbid_keys'])
-        elif isinstance(exp.get('forbid_keys'), str):
-            forbidden.add(exp['forbid_keys'])
+            has_closed = True; allowed.update(str(x) for x in exp['allowed_keys'])
+        fk = exp.get('forbid_keys')
+        if isinstance(fk, (list, tuple)): forbidden.update(str(x) for x in fk)
+        elif isinstance(fk, str): forbidden.add(fk)
         for pk in ('le_field', 'ge_field', 'eq_field'):
-            if isinstance(exp.get(pk), str):
-                peers.add(exp[pk].lstrip('/'))
-        if isinstance(exp.get('sum_fields'), (list, tuple)):
-            for sf in exp['sum_fields']:
-                if isinstance(sf, str):
-                    peers.add(sf.lstrip('/'))
-        bf = exp.get('balance_fields')
-        if isinstance(bf, Mapping):
-            for side in ('add', 'sub'):
-                if isinstance(bf.get(side), (list, tuple)):
-                    for item in bf[side]:
-                        if isinstance(item, str):
-                            peers.add(item.lstrip('/'))
-    if has_closed:
-        allowed.update(str(k) for k in then_tbl.keys())
-        allowed.update(str(k) for k in proj_tbl.keys())
-        allowed.update(peers)
+            if isinstance(exp.get(pk), str): peers.add(exp[pk].lstrip('/'))
+        if isinstance(exp.get('sum_fields'), (list, tuple)): peers.update(sf.lstrip('/') for sf in exp['sum_fields'] if isinstance(sf, str))
+        bf = _map(exp, 'balance_fields')
+        for side in ('add', 'sub'):
+            if isinstance(bf.get(side), (list, tuple)): peers.update(x.lstrip('/') for x in bf[side] if isinstance(x, str))
+    if has_closed: allowed.update(map(str, then_tbl), map(str, proj_tbl), peers)
     return has_closed, allowed, forbidden, peers
 
 
 def run_precheck_test_literals(test_files: list[str], res_dir: Any, area: Any) -> dict[str, Any]:
-    import ast
-    import json
+    import ast, json
     from pathlib import Path
     res_dir, area = Path(res_dir), Path(area)
     views: dict[str, Mapping[str, Any]] = {}
@@ -337,106 +287,109 @@ def run_precheck_test_literals(test_files: list[str], res_dir: Any, area: Any) -
             for jf in d.glob('*.json'):
                 try:
                     v = json.loads(jf.read_text(encoding='utf-8'))
-                    cid = str(v.get('id') or jf.stem)
-                    views.setdefault(cid, v)
-                    known.add(cid)
-                except Exception:
-                    pass
-    c_dir = area / '.drift' / 'contracts'
-    if c_dir.is_dir():
-        for tf in c_dir.glob('*.toml'):
-            known.add(tf.stem)
-    findings: list[dict[str, str]] = []
-    advisory: list[dict[str, str]] = []
-    unverified = 0
+                    cid = str(v.get('id') or jf.stem); views.setdefault(cid, v); known.add(cid)
+                except Exception: pass
+    if (area / '.drift' / 'contracts').is_dir():
+        known.update(tf.stem for tf in (area / '.drift' / 'contracts').glob('*.toml'))
+    findings, advisory, unverified = [], [], 0
     other_methods = {'expect', 'then', 'find_then', 'check_projection', 'check_view', 'check_bounds', 'check_profile_bounds', 'check_adverse', 'check_seam_bounds'}
+    _AMBIG = object()
+    _an = lambda a: {x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs)} | ({a.vararg.arg} if a.vararg else set()) | ({a.kwarg.arg} if a.kwarg else set())
+    def _sb(stmts, init=frozenset()):
+        sc = {n: _AMBIG for n in init}
+        def _s(n):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)): sc[n.name] = _AMBIG if n.name in sc else n; return
+            if isinstance(n, ast.ClassDef): sc[n.name] = _AMBIG; return
+            if isinstance(n, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)): return
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)): sc[n.id] = _AMBIG
+            elif isinstance(n, ast.ExceptHandler) and n.name: sc[n.name] = _AMBIG
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for al in n.names: sc[al.asname or al.name.split('.')[0]] = _AMBIG
+            for ch in ast.iter_child_nodes(n): _s(ch)
+        for st in stmts: _s(st)
+        return sc
+    def _wctx(root, cp):
+        def _r(n, top=False):
+            if not top:
+                if isinstance(n, ast.Lambda) and cp in _an(n.args): return
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and (cp in _an(n.args) or cp in _sb(n.body)): return
+                if isinstance(n, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)) and any(isinstance(x, ast.Name) and x.id == cp for g in n.generators for x in ast.walk(g.target)): return
+            if isinstance(n, ast.Call): yield n
+            for ch in ast.iter_child_nodes(n): yield from _r(ch)
+        yield from _r(root, True)
+    _str_dict = lambda d: isinstance(d, ast.Dict) and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in d.keys)
     for rel in test_files:
         fp = Path(rel) if Path(rel).is_absolute() else (area / rel)
-        if not fp.is_file():
-            continue
-        try:
-            tree = ast.parse(fp.read_text(encoding='utf-8'))
-        except Exception:
-            continue
-        fn_defs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        if not fp.is_file(): continue
+        try: tree = ast.parse(fp.read_text(encoding='utf-8'))
+        except Exception: continue
+        calls = []
+        def _col(n, scs):
+            if isinstance(n, ast.Call): calls.append((n, [s for s, _ in scs]))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                ns = [(s, c) for s, c in scs if not c] + [(_sb(n.body, _an(n.args)), False)]
+                for d in n.decorator_list: _col(d, scs)
+                for ch in n.body: _col(ch, ns)
+                return
+            if isinstance(n, ast.ClassDef):
+                for x in (*n.decorator_list, *n.bases, *(kw.value for kw in n.keywords)): _col(x, scs)
+                for ch in n.body: _col(ch, scs + [(_sb(n.body), True)])
+                return
+            for ch in ast.iter_child_nodes(n): _col(ch, scs)
+        _col(tree, [(_sb(tree.body), False)])
+        for node, call_scopes in calls:
             fn_name = node.func.id if isinstance(node.func, ast.Name) else (node.func.attr if isinstance(node.func, ast.Attribute) else '')
-            if fn_name != 'run_drift_case':
-                continue
+            if fn_name != 'run_drift_case': continue
             kw_map = {kw.arg: kw.value for kw in node.keywords if kw.arg}
             c_node = node.args[0] if len(node.args) >= 1 else kw_map.get('contract')
-            if not (isinstance(c_node, ast.Constant) and isinstance(c_node.value, str)):
-                unverified += 1
-                continue
+            if not (isinstance(c_node, ast.Constant) and isinstance(c_node.value, str)): unverified += 1; continue
             cid = c_node.value
             if cid not in known:
-                findings.append({'code': 'test.unknown_contract', 'file': rel, 'contract': cid, 'message': f'unknown contract "{cid}"'})
-                continue
+                findings.append({'code': 'test.unknown_contract', 'file': rel, 'contract': cid, 'message': f'unknown contract "{cid}"'}); continue
             view = views.get(cid)
             cases_tbl = view.get('cases') if isinstance(view, Mapping) else None
-            if not isinstance(cases_tbl, Mapping):
-                unverified += 1
-                continue
+            if not isinstance(cases_tbl, Mapping): unverified += 1; continue
             cs_node = node.args[2] if len(node.args) >= 3 else kw_map.get('cases')
             if isinstance(cs_node, (ast.List, ast.Tuple)):
                 for elt in cs_node.elts:
                     if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                        if elt.value not in cases_tbl:
-                            findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': elt.value, 'message': f'contract "{cid}" has no case "{elt.value}"'})
-                    else:
-                        unverified += 1
-            elif cs_node is not None:
-                unverified += 1
+                        if elt.value not in cases_tbl: findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': elt.value, 'message': f'contract "{cid}" has no case "{elt.value}"'})
+                    else: unverified += 1
+            elif cs_node is not None: unverified += 1
             cb_node = node.args[3] if len(node.args) >= 4 else kw_map.get('fn')
-            target_ast = fn_defs.get(cb_node.id) if isinstance(cb_node, ast.Name) else cb_node
-            if target_ast is None:
-                continue
-            ctx_param = ''
-            if isinstance(target_ast, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)) and target_ast.args.args:
-                ctx_param = target_ast.args.args[0].arg
-            if not ctx_param:
-                unverified += 1
-                continue
-            has_other = False
-            checked_by_case: dict[str, set[str]] = {}
-            dyn_cases: set[str] = set()
-            for sub in ast.walk(target_ast):
-                if not isinstance(sub, ast.Call) or not isinstance(sub.func, ast.Attribute):
-                    continue
-                if not (isinstance(sub.func.value, ast.Name) and sub.func.value.id == ctx_param):
-                    continue
+            target_ast: Any = cb_node
+            if isinstance(cb_node, ast.Name):
+                target_ast = next((sc[cb_node.id] for sc in reversed(call_scopes) if cb_node.id in sc), None)
+                if target_ast is _AMBIG: unverified += 1; continue
+            if target_ast is None: continue
+            pos_a = (*target_ast.args.posonlyargs, *target_ast.args.args) if isinstance(target_ast, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)) else ()
+            ctx_param = pos_a[0].arg if pos_a else ''
+            if not ctx_param: unverified += 1; continue
+            has_other, checked_by_case, dyn_cases = False, {}, set()
+            for sub in _wctx(target_ast, ctx_param):
+                if not (isinstance(sub.func, ast.Attribute) and isinstance(sub.func.value, ast.Name) and sub.func.value.id == ctx_param): continue
                 m_name = sub.func.attr
-                if m_name in other_methods:
-                    has_other = True
-                    continue
-                if m_name != 'check':
-                    continue
-                if len(sub.args) < 2 or sub.keywords:
-                    unverified += 1
-                    continue
+                if m_name in other_methods: has_other = True; continue
+                if m_name != 'check': continue
+                if len(sub.args) < 2 or sub.keywords: unverified += 1; continue
                 ca_node, map_node = sub.args[0], sub.args[1]
-                if not (isinstance(ca_node, ast.Constant) and isinstance(ca_node.value, str)):
-                    unverified += 1
-                    continue
+                if not (isinstance(ca_node, ast.Constant) and isinstance(ca_node.value, str)): unverified += 1; continue
                 case_id = ca_node.value
                 if case_id not in cases_tbl:
-                    findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': case_id, 'message': f'contract "{cid}" has no case "{case_id}"'})
-                    continue
-                if not isinstance(map_node, ast.Dict) or any(k is None or not (isinstance(k, ast.Constant) and isinstance(k.value, str)) for k in map_node.keys) or len(sub.args) > 2:
-                    unverified += 1
-                    dyn_cases.add(case_id)
-                    continue
+                    findings.append({'code': 'test.unknown_case', 'file': rel, 'contract': cid, 'case': case_id, 'message': f'contract "{cid}" has no case "{case_id}"'}); continue
+                if not _str_dict(map_node) or len(sub.args) > 2: unverified += 1; dyn_cases.add(case_id); continue
                 then_tbl = (cases_tbl.get(case_id) or {}).get('then') or {}
-                proj_tbl = ((view.get('projections') or {}).get('then') or {}) if isinstance(view.get('projections'), Mapping) else {}
+                top_keys = [k.value for k in map_node.keys]
+                if 'then' in top_keys and not any(k in then_tbl for k in top_keys):
+                    then_v = [v for k, v in zip(top_keys, map_node.values) if k == 'then'][-1]
+                    if not _str_dict(then_v): unverified += 1; dyn_cases.add(case_id); continue
+                    map_node = then_v
+                proj_tbl = _map(_map(view, 'projections'), 'then')
                 has_closed, allowed_k, forbid_k, peer_k = _collect_case_key_policy(then_tbl, proj_tbl)
                 seen_k = checked_by_case.setdefault(case_id, set())
                 for k_node in map_node.keys:
-                    assert isinstance(k_node, ast.Constant) and isinstance(k_node.value, str)
                     k_str = k_node.value
-                    if k_str == '_frame':
-                        continue
+                    if k_str == '_frame': continue
                     seen_k.add(k_str)
                     if k_str not in then_tbl and k_str not in proj_tbl and k_str not in peer_k:
                         if k_str in forbid_k or (has_closed and k_str not in allowed_k):
@@ -445,10 +398,8 @@ def run_precheck_test_literals(test_files: list[str], res_dir: Any, area: Any) -
                             advisory.append({'code': 'test.extra_check_key', 'file': rel, 'contract': cid, 'case': case_id, 'key': k_str, 'message': f'{cid}.{case_id}: extra key "{k_str}" in check literal'})
             if not has_other:
                 for case_id, seen_k in checked_by_case.items():
-                    if case_id in dyn_cases:
-                        continue
-                    then_tbl = (cases_tbl.get(case_id) or {}).get('then') or {}
-                    for req_k in then_tbl:
+                    if case_id in dyn_cases: continue
+                    for req_k in ((cases_tbl.get(case_id) or {}).get('then') or {}):
                         if req_k not in seen_k:
                             findings.append({'code': 'test.then_key_mismatch', 'file': rel, 'contract': cid, 'case': case_id, 'key': req_k, 'message': f'{cid}.{case_id}: missing required then.{req_k}'})
     return {'ok': len(findings) == 0, 'findings': findings, 'advisory_findings': advisory, 'unverified_static': unverified}

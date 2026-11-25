@@ -28,8 +28,8 @@ SHADOW_RUN_SCHEMA = "drift.shadow-run/1"
 SHADOW_RUN_KEYS = frozenset(("schema", "run_id", "source_snapshot", "bindings_ref", "shadow_snapshot", "selected_tests", "shadow_inputs", "sequence", "supersedes"))
 _META_KEYS = {"version", "classes", "tests", "snapshot", "pack_ref", "touched", "containment", "self_stubbed", "inputs", "env", "execution_ref", "subject_ref", "shadow_run"}
 _PREF_RE = re.compile(r"^dr(?:1|2b):[0-9a-f]{12}$")
-_CLS_RE = re.compile(r"^[^# \t\r\n/\\\[\]]+$")
-_MTH_RE = re.compile(r"^[^# \t\r\n\[\]]+$")
+_CLS_RE = re.compile(r"^[^# \t\r\n/\\\[\]\(\)]+$")
+_MTH_RE = re.compile(r"^[^# \t\r\n\[\]\(\)]+$")
 _SREG: dict[Any, Any] = {}
 _SROOT: dict[Any, Any] = {}
 
@@ -199,7 +199,10 @@ def validate_inventory_text_impl(text: str, decode_fn: Callable[[str], Any]) -> 
         cm = doc["containment"]
         if not isinstance(cm, list) or any(not isinstance(x, str) or x not in ("no_network", "readonly_workspace") for x in cm) or cm != sorted(set(cm)):
             raise ValueError("containment")
-    return {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": ex_ref, "subject_ref": s_ref, "touched": set(doc.get("touched", [])), "containment": set(doc.get("containment", [])), "shadow_run": doc.get("shadow_run")}
+    inv = {"classes": c_set, "tests": t_set, "snapshot": snap, "pack_ref": pref, "version": doc["version"], "execution_ref": ex_ref, "subject_ref": s_ref, "containment": set(doc.get("containment", [])), "shadow_run": doc.get("shadow_run")}
+    if "touched" in doc:
+        inv["touched"] = set(doc["touched"])
+    return inv
 
 
 def lookup_registered_shadow_py(probe_path: Path) -> str:

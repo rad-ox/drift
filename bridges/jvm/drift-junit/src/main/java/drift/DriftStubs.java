@@ -1,46 +1,21 @@
 package drift;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.util.*;
+import static drift.DriftInternal.map;
+import static drift.ExecutionContext.*;
+import static drift.Json.*;
 
 final class DriftStubs {
     private DriftStubs() {}
 
-    static boolean isRelationalMap(Object val) {
-        return Json.isRelationalMap(val);
-    }
-
-    static Map<String, Object> tightenThenMapBySumResiduals(Map<String, Object> whenMap, Map<String, Object> rawThen, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        return ExecutionContext.tightenThenMapBySumResiduals(whenMap, rawThen, whenProjections, thenProjections);
-    }
-
-    static Map<String, Object> buildPeerIndex(Map<String, Object> whenMap, Map<String, Object> rawThenMap, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        return ExecutionContext.buildPeerIndex(whenMap, rawThenMap, whenProjections, thenProjections);
-    }
-
-    static int relPeerRank(Object val) {
-        return ExecutionContext.relPeerRank(val);
-    }
-
-    static Json.PointerLookup resolveStubPeer(Object rawRef, Object base, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        return ExecutionContext.resolveStubPeer(rawRef, base, peerIdx, whenProjections, thenProjections);
-    }
-
-    static Number maxNum(Number a, Number b) { return ExecutionContext.maxNum(a, b); }
-    static Number minNum(Number a, Number b) { return ExecutionContext.minNum(a, b); }
-
-    static Object witnessValue(Object val, Object base, Map<String, Object> whenMap, Map<String, Object> thenMap, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        return witnessVariants(val, base, buildPeerIndex(whenMap, thenMap, whenProjections, thenProjections), whenProjections, thenProjections).get(0);
-    }
-
     static List<Object> witnessVariants(Object val, Object base, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections) {
+        if (val instanceof Map<?, ?> eqm && eqm.size() == 1 && eqm.containsKey("eq")) {
+            return List.of(cloneJsonValue(eqm.get("eq")));
+        }
         if (isRelationalMap(val) && val instanceof Map<?, ?> m) {
             if (m.containsKey("eq_field")) {
                 Json.PointerLookup pr = resolveStubPeer(m.get("eq_field"), base, peerIdx, whenProjections, thenProjections);
-                if (pr.found()) return List.of(Json.cloneJsonValue(pr.value()));
+                if (pr.found()) return List.of(cloneJsonValue(pr.value()));
             }
             Number lo = m.get("min") instanceof Number minN ? minN : null;
             Number hi = m.get("max") instanceof Number maxN ? maxN : null;
@@ -82,11 +57,11 @@ final class DriftStubs {
                 for (Object x : inList) {
                     if ((lo == null || (x instanceof Number nx && nx.doubleValue() >= lo.doubleValue()))
                             && (hi == null || (x instanceof Number nx2 && nx2.doubleValue() <= hi.doubleValue()))) {
-                        out.add(Json.cloneJsonValue(x));
+                        out.add(cloneJsonValue(x));
                     }
                 }
                 if (!out.isEmpty()) return out;
-                for (Object x : inList) out.add(Json.cloneJsonValue(x));
+                for (Object x : inList) out.add(cloneJsonValue(x));
                 return out;
             }
             if (m.get("approx") instanceof Number apN) {
@@ -94,16 +69,16 @@ final class DriftStubs {
                 hi = minNum(hi, apN);
             }
             if (lo != null && hi != null) {
-                return Json.valuesEqual(lo, hi) ? List.of(lo) : List.of(lo, hi);
+                return valuesEqual(lo, hi) ? List.of(lo) : List.of(lo, hi);
             }
             if (lo != null) return List.of(lo);
             if (hi != null) return List.of(hi);
             if (m.get("contains") instanceof List<?> contList && !contList.isEmpty()) {
                 List<Object> out = new ArrayList<>(contList.size());
-                for (Object item : contList) out.add(Json.cloneJsonValue(item));
+                for (Object item : contList) out.add(cloneJsonValue(item));
                 int minL = Math.max(Boolean.TRUE.equals(m.get("non_empty")) ? 1 : 0,
                         m.get("min_len") instanceof Number mn ? mn.intValue() : 0);
-                while (out.size() < minL) out.add(Json.cloneJsonValue(contList.get(0)));
+                while (out.size() < minL) out.add(cloneJsonValue(contList.get(0)));
                 return List.of(out);
             }
             if (m.get("prefix") instanceof String || m.get("suffix") instanceof String
@@ -139,12 +114,12 @@ final class DriftStubs {
             }
             return List.of("");
         }
-        return List.of(Json.cloneJsonValue(val));
+        return List.of(cloneJsonValue(val));
     }
 
     static Map<String, Object> resolveStubView(String contractOrResource, boolean inTest) {
         DriftInternal.UpstreamMatch up = DriftInternal.findUpstreamContract(contractOrResource);
-        DriftCase tag = inTest ? Drift.tag() : null;
+        DriftCase tag = Drift.tag();
         if (up != null) {
             if (inTest && !Drift.mutationRun() && up.file() != null && (tag == null || !tag.contract().equals(contractOrResource))) {
                 Drift.recordInput(up.file());
@@ -202,7 +177,7 @@ final class DriftStubs {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> synthesizeMap(Map<String, Object> thenMap, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections, Map<String, Object> base, boolean useWitness) {
-        Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
+        Object out = cloneJsonValue(base == null ? Map.of() : base);
         List<Map.Entry<String, Object>> entries = new ArrayList<>(thenMap.entrySet());
         if (useWitness && entries.size() > 1) {
             entries.sort((a, b) -> relPeerRank(a.getValue()) != relPeerRank(b.getValue()) ? Integer.compare(relPeerRank(a.getValue()), relPeerRank(b.getValue())) : a.getKey().compareTo(b.getKey()));
@@ -213,9 +188,9 @@ final class DriftStubs {
             Object w = vars.get(0);
             if (useWitness && vars.size() > 1 && !(e.getValue() instanceof Map<?, ?> rm && rm.containsKey("eq_field"))) {
                 for (Map.Entry<String, Object> prev : resolved.entrySet()) {
-                    if (isHomologousKey(prev.getKey(), e.getKey()) && Json.valuesEqual(prev.getValue(), w)) {
+                    if (isHomologousKey(prev.getKey(), e.getKey()) && valuesEqual(prev.getValue(), w)) {
                         for (int vi = 1; vi < vars.size(); vi++) {
-                            if (!Json.valuesEqual(prev.getValue(), vars.get(vi))) {
+                            if (!valuesEqual(prev.getValue(), vars.get(vi))) {
                                 w = vars.get(vi);
                                 break;
                             }
@@ -227,10 +202,10 @@ final class DriftStubs {
             resolved.put(e.getKey(), w);
             if (useWitness && peerIdx != null) {
                 peerIdx.put(e.getKey(), w);
-                String tp = thenProjections == null ? "" : Json.splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
+                String tp = thenProjections == null ? "" : splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
                 if (tp.startsWith("/")) peerIdx.put(tp, w);
             }
-            if (thenProjections.containsKey(e.getKey())) out = Json.writeJsonPointer(out, thenProjections.get(e.getKey()), w);
+            if (thenProjections.containsKey(e.getKey())) out = writeJsonPointer(out, thenProjections.get(e.getKey()), w);
             else if (out instanceof Map<?, ?> m) ((Map<String, Object>) m).put(e.getKey(), w);
         }
         for (String k : thenMap.keySet()) {
@@ -243,32 +218,32 @@ final class DriftStubs {
         if (whenInput == null) return new Json.PointerLookup(false, null);
         if (whenInput.containsKey(wk)) return new Json.PointerLookup(true, whenInput.get(wk));
         String rawP = whenProjections == null ? "" : whenProjections.getOrDefault(wk, "");
-        String bareP = Json.splitResourcePointer(rawP)[1];
+        String bareP = splitResourcePointer(rawP)[1];
         for (String p : List.of(rawP, bareP, "/" + wk)) {
             if (p == null || p.isEmpty()) continue;
             if (whenInput.containsKey(p)) return new Json.PointerLookup(true, whenInput.get(p));
-            Json.PointerLookup r = Json.readJsonPointer(whenInput, p);
+            Json.PointerLookup r = readJsonPointer(whenInput, p);
             if (r.found()) return r;
         }
         return new Json.PointerLookup(false, null);
     }
 
     static String resolveStubCaseByWhen(Map<String, Object> v, String contractOrResource, Map<String, Object> whenInput, Map<String, Object> base) {
-        Map<String, Object> cases = DriftInternal.map(v.get("cases"), contractOrResource + ".cases");
+        Map<String, Object> cases = map(v.get("cases"), contractOrResource + ".cases");
         Map<String, String> whenProjections = extractProjectionMap(v, "when");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");
         int bestScore = 0;
         List<String> bestCases = new ArrayList<>();
         for (String cId : new TreeMap<>(cases).keySet()) {
-            Map<String, Object> cm = DriftInternal.map(cases.get(cId), contractOrResource + ".cases." + cId);
+            Map<String, Object> cm = map(cases.get(cId), contractOrResource + ".cases." + cId);
             if (cm.containsKey("status")) continue;
-            Map<String, Object> whenMap = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
+            Map<String, Object> whenMap = map(cm.getOrDefault("when", Map.of()), "when");
             int matched = 0;
             boolean compat = true;
             for (Map.Entry<String, Object> e : whenMap.entrySet()) {
                 Json.PointerLookup hit = lookupWhenInput(whenInput, e.getKey(), whenProjections);
                 if (!hit.found()) continue;
-                if (!Json.valuesEqual(hit.value(), e.getValue())) {
+                if (!valuesEqual(hit.value(), e.getValue())) {
                     compat = false;
                     break;
                 }
@@ -289,13 +264,13 @@ final class DriftStubs {
         if (bestCases.size() >= 2) {
             List<Map<String, List<Object>>> varsByCase = new ArrayList<>(bestCases.size());
             for (String c : bestCases) {
-                Map<String, Object> cm = DriftInternal.map(cases.get(c), contractOrResource + ".cases." + c);
-                Map<String, Object> wTbl = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
-                Map<String, Object> tTbl = DriftInternal.map(cm.getOrDefault("then", Map.of()), "then");
+                Map<String, Object> cm = map(cases.get(c), contractOrResource + ".cases." + c);
+                Map<String, Object> wTbl = map(cm.getOrDefault("when", Map.of()), "when");
+                Map<String, Object> tTbl = map(cm.getOrDefault("then", Map.of()), "then");
                 Map<String, Object> pIdx = buildPeerIndex(wTbl, tTbl, whenProjections, thenProjections);
                 Map<String, List<Object>> m = new LinkedHashMap<>();
                 for (String tk : new TreeMap<>(tTbl).keySet()) {
-                    String ptr = Json.splitResourcePointer(thenProjections.getOrDefault(tk, ""))[1];
+                    String ptr = splitResourcePointer(thenProjections.getOrDefault(tk, ""))[1];
                     if (ptr.isEmpty()) ptr = tk;
                     m.putIfAbsent(ptr, witnessVariants(tTbl.get(tk), base, pIdx, whenProjections, thenProjections));
                 }
@@ -305,7 +280,7 @@ final class DriftStubs {
                 for (int j = i + 1; j < bestCases.size(); j++) {
                     for (Map.Entry<String, List<Object>> e : varsByCase.get(i).entrySet()) {
                         String ptr = e.getKey();
-                        if (varsByCase.get(j).containsKey(ptr) && !Json.valuesEqual(e.getValue(), varsByCase.get(j).get(ptr))) {
+                        if (varsByCase.get(j).containsKey(ptr) && !valuesEqual(e.getValue(), varsByCase.get(j).get(ptr))) {
                             throw new IllegalStateException("DRIFT: ambiguous boundary projection on \"" + contractOrResource + "\" (" + ptr + ") across " + bestCases.get(i) + ", " + bestCases.get(j));
                         }
                     }
@@ -333,8 +308,8 @@ final class DriftStubs {
     }
 
     static Map<String, Object> requireActiveCase(Map<String, Object> v, String contractOrResource, String caseId) {
-        Map<String, Object> cases = DriftInternal.map(v.get("cases"), contractOrResource + ".cases");
-        Map<String, Object> cm = DriftInternal.map(cases.get(caseId), contractOrResource + ".cases." + caseId);
+        Map<String, Object> cases = map(v.get("cases"), contractOrResource + ".cases");
+        Map<String, Object> cm = map(cases.get(caseId), contractOrResource + ".cases." + caseId);
         if (cm.containsKey("status")) {
             throw new IllegalStateException("DRIFT: case \"" + caseId + "\" of contract \"" + contractOrResource + "\" is " + cm.get("status") + " and cannot be stubbed");
         }
@@ -357,10 +332,10 @@ final class DriftStubs {
         @SuppressWarnings("unchecked")
         Map<String, Object> out = base == null || base.isEmpty()
                 ? new LinkedHashMap<>()
-                : (Map<String, Object>) Json.cloneJsonValue(base);
+                : (Map<String, Object>) cloneJsonValue(base);
         if (precomputed instanceof Map<?, ?> pm) {
             for (Map.Entry<?, ?> e : pm.entrySet()) {
-                out.put(String.valueOf(e.getKey()), Json.cloneJsonValue(e.getValue()));
+                out.put(String.valueOf(e.getKey()), cloneJsonValue(e.getValue()));
             }
         }
         return out;
@@ -370,7 +345,7 @@ final class DriftStubs {
         String cid = v.get("id") instanceof String s ? s : contractOrResource;
         Map<String, Object> plan = DriftInternal.loadPlan(cid);
         return plan != null && plan.get("cases") instanceof Map<?, ?> cs && cs.get(caseId) instanceof Map<?, ?> cm
-                ? DriftInternal.map(cm, cid + ".plan.cases." + caseId)
+                ? map(cm, cid + ".plan.cases." + caseId)
                 : null;
     }
 
@@ -383,8 +358,8 @@ final class DriftStubs {
             return mergeOntoBase(base, pcm.get("stub_output"));
         }
         Map<String, String> wp = extractProjectionMap(v, "when"), tp = extractProjectionMap(v, "then");
-        Map<String, Object> wm = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
-        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
+        Map<String, Object> wm = map(cm.getOrDefault("when", Map.of()), "when");
+        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
         return synthesizeMap(tm, buildPeerIndex(wm, tm, wp, tp), wp, tp, base, true);
     }
 
@@ -399,8 +374,8 @@ final class DriftStubs {
             return res;
         }
         Map<String, String> wp = extractProjectionMap(v, "when"), tp = extractProjectionMap(v, "then");
-        Map<String, Object> wm = DriftInternal.map(cm.getOrDefault("when", Map.of()), "when");
-        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, DriftInternal.map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
+        Map<String, Object> wm = map(cm.getOrDefault("when", Map.of()), "when");
+        Map<String, Object> tm = tightenThenMapBySumResiduals(wm, map(cm.getOrDefault("then", Map.of()), "then"), wp, tp);
         Map<String, Object> peerIdx = buildPeerIndex(wm, tm, wp, tp);
         List<String> keys = new ArrayList<>(new TreeMap<>(tm).keySet());
         List<List<Object>> varsByKey = new ArrayList<>(keys.size());
@@ -420,7 +395,7 @@ final class DriftStubs {
             Map<String, Object> eff = new LinkedHashMap<>(cur);
             for (int i = 0; i < keys.size(); i++) {
                 String k = keys.get(i);
-                if (relPeerRank(specTbl.get(k)) > 0 && Json.valuesEqual(eff.get(k), varsByKey.get(i).get(0))) eff.put(k, specTbl.get(k));
+                if (relPeerRank(specTbl.get(k)) > 0 && valuesEqual(eff.get(k), varsByKey.get(i).get(0))) eff.put(k, specTbl.get(k));
             }
             outList.add(synthesizeMap(eff, buildPeerIndex(whenMap, eff, whenProj, thenProj), whenProj, thenProj, base, true));
             return;
@@ -437,9 +412,9 @@ final class DriftStubs {
 
     static boolean verifyStub(String contractOrResource, String caseId, Object payload, boolean inTest) {
         Map<String, Object> v = resolveStubView(contractOrResource, inTest);
-        Map<String, Object> cases = DriftInternal.map(v.get("cases"), contractOrResource + ".cases");
-        Map<String, Object> cm = DriftInternal.map(cases.get(caseId), contractOrResource + ".cases." + caseId);
-        Map<String, Object> thenMap = DriftInternal.map(cm.getOrDefault("then", Map.of()), "then");
+        Map<String, Object> cases = map(v.get("cases"), contractOrResource + ".cases");
+        Map<String, Object> cm = map(cases.get(caseId), contractOrResource + ".cases." + caseId);
+        Map<String, Object> thenMap = map(cm.getOrDefault("then", Map.of()), "then");
         Map<String, String> thenProjections = extractProjectionMap(v, "then");
         String cid = v.get("id") instanceof String s ? s : contractOrResource;
         Drift.Case stubCase = new Drift.Case(cid, caseId, Map.of(), thenMap);

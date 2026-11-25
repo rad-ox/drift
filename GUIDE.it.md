@@ -57,10 +57,10 @@ rilascio.
 
 ### 1. Inizializza un'Area
 
-Crea una nuova area `.drift` nella radice del progetto:
+Crea una nuova area `.drift` nella radice del progetto (aggiungi `--observed` per partire subito con `proof = "verified"` e `require_observations = true`):
 
 ```bash
-drift init alice .
+drift init alice .                # oppure: drift init alice . --observed
 drift approve .drift/config.toml --by alice
 ```
 
@@ -220,7 +220,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.10.0</version>
+    <version>0.11.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -230,7 +230,7 @@ Aggiungi la dipendenza di test e il plugin al `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.10.0</version>
+      <version>0.11.0</version>
       <executions>
         <execution>
           <goals>
@@ -257,7 +257,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.10.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (ad esempio **MUnit** `FunSuite`), risolvi `drift-junit` (`0.11.0`) dal repository Maven locale e chiama `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift
@@ -291,8 +291,8 @@ test('returns existing item', async (t) => {
 ```
 
 ```bash
-node --test
-drift gate .drift/contracts --events .drift/events
+drift run --gate -- node --test
+# Oppure manualmente: node --test && drift gate .drift/contracts --events .drift/events
 ```
 
 ### Opzione C: Python 3 (`bridges/drift.py`)
@@ -315,8 +315,8 @@ def test_found():
 ```
 
 ```bash
-pytest
-drift gate .drift/contracts --events .drift/events
+DRIFT_STRICT_WHEN=1 drift run --gate -- pytest
+# Oppure manualmente: pytest && drift gate .drift/contracts --events .drift/events
 ```
 
 ### Altri Runtime (Rust, V, C++20, C#, Godot GDScript, PHP, JUnit 4, COBOL)

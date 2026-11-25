@@ -1,8 +1,8 @@
 [package]
 name = "drift_rust"
-version = "0.10.0"
-edition = "2024"
-rust-version = "1.85"
+version = "0.11.0"
+edition = "2021"
+rust-version = "1.80"
 description = "Zero-dependency compile-once Rust test bridge for DRIFT"
 license = "MIT"
 repository = "https://github.com/rad-ox/drift"

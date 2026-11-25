@@ -47,37 +47,30 @@ fn qualify_peer_03(s: &str) -> String {
     }
 }
 
+fn peer_refs(items: &[JsonValue]) -> JsonValue {
+    JsonValue::Array(
+        items
+            .iter()
+            .filter_map(|x| x.as_str().map(|s| JsonValue::Str(qualify_peer_03(s))))
+            .collect(),
+    )
+}
+
 fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonValue> {
     let mut out = BTreeMap::new();
     for (k, v) in raw {
         match k.as_str() {
-            "tol" => {
+            "tol" | "len" | "keys" => {
+                let pairs = match k.as_str() {
+                    "tol" => [("abs", "abs_tol"), ("rel", "rel_tol")],
+                    "len" => [("min", "min_len"), ("max", "max_len")],
+                    _ => [("allow", "allowed_keys"), ("forbid", "forbid_keys")],
+                };
                 if let Some(m) = v.as_object() {
-                    if let Some(a) = m.get("abs") {
-                        out.insert("abs_tol".to_string(), a.clone());
-                    }
-                    if let Some(r) = m.get("rel") {
-                        out.insert("rel_tol".to_string(), r.clone());
-                    }
-                }
-            }
-            "len" => {
-                if let Some(m) = v.as_object() {
-                    if let Some(l) = m.get("min") {
-                        out.insert("min_len".to_string(), l.clone());
-                    }
-                    if let Some(u) = m.get("max") {
-                        out.insert("max_len".to_string(), u.clone());
-                    }
-                }
-            }
-            "keys" => {
-                if let Some(m) = v.as_object() {
-                    if let Some(al) = m.get("allow") {
-                        out.insert("allowed_keys".to_string(), al.clone());
-                    }
-                    if let Some(fb) = m.get("forbid") {
-                        out.insert("forbid_keys".to_string(), fb.clone());
+                    for (src, dst) in pairs {
+                        if let Some(val) = m.get(src) {
+                            out.insert(dst.to_string(), val.clone());
+                        }
                     }
                 }
             }
@@ -89,21 +82,13 @@ fn desugar_03_rel(raw: &BTreeMap<String, JsonValue>) -> BTreeMap<String, JsonVal
                         }
                     }
                     if let Some(arr) = m.get("sum").and_then(|x| x.as_array()) {
-                        let sfs: Vec<JsonValue> = arr
-                            .iter()
-                            .filter_map(|x| x.as_str().map(|s| JsonValue::Str(qualify_peer_03(s))))
-                            .collect();
-                        out.insert("sum_fields".to_string(), JsonValue::Array(sfs));
+                        out.insert("sum_fields".to_string(), peer_refs(arr));
                     }
                     if let Some(bm) = m.get("balance").and_then(|x| x.as_object()) {
                         let mut nb = BTreeMap::new();
                         for side in ["add", "sub"] {
                             if let Some(arr) = bm.get(side).and_then(|x| x.as_array()) {
-                                let items: Vec<JsonValue> = arr
-                                    .iter()
-                                    .filter_map(|x| x.as_str().map(|s| JsonValue::Str(qualify_peer_03(s))))
-                                    .collect();
-                                nb.insert(side.to_string(), JsonValue::Array(items));
+                                nb.insert(side.to_string(), peer_refs(arr));
                             }
                         }
                         out.insert("balance_fields".to_string(), JsonValue::Object(nb));
@@ -228,12 +213,22 @@ fn write_pointer_segs(cur: &mut BTreeMap<String, JsonValue>, segs: &[String], va
     cur.insert(head.clone(), JsonValue::Object(child));
 }
 
-pub fn values_equal(a: &JsonValue, b: &JsonValue) -> bool {
+fn is_unsafe_f64_int(n: f64) -> bool {
+    n.is_finite() && n.fract() == 0.0 && n.abs() >= 9007199254740992.0
+}
+
+fn values_equal_mode(a: &JsonValue, b: &JsonValue, exact: bool) -> bool {
     match (a, b) {
         (JsonValue::Bool(ba), JsonValue::Bool(bb)) => ba == bb,
         (JsonValue::Bool(_), _) | (_, JsonValue::Bool(_)) => false,
         (JsonValue::Number(na), JsonValue::Number(nb)) => {
-            na.is_finite() && nb.is_finite() && (na - nb).abs() <= 1e-9
+            na.is_finite()
+                && nb.is_finite()
+                && if exact {
+                    !(is_unsafe_f64_int(*na) && is_unsafe_f64_int(*nb)) && na == nb
+                } else {
+                    (na - nb).abs() <= 1e-9
+                }
         }
         (JsonValue::Null, JsonValue::Null) => true,
         (JsonValue::Null, _) | (_, JsonValue::Null) => false,
@@ -243,16 +238,24 @@ pub fn values_equal(a: &JsonValue, b: &JsonValue) -> bool {
                 && aa
                     .iter()
                     .zip(ab.iter())
-                    .all(|(va, vb)| values_equal(va, vb))
+                    .all(|(va, vb)| values_equal_mode(va, vb, exact))
         }
         (JsonValue::Object(ma), JsonValue::Object(mb)) => {
             ma.len() == mb.len()
                 && ma
                     .iter()
-                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_equal(va, vb)))
+                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_equal_mode(va, vb, exact)))
         }
         _ => false,
     }
+}
+
+pub fn values_equal(a: &JsonValue, b: &JsonValue) -> bool {
+    values_equal_mode(a, b, false)
+}
+
+pub fn values_equal_exact(a: &JsonValue, b: &JsonValue) -> bool {
+    values_equal_mode(a, b, true)
 }
 
 pub fn is_relational_table(v: &JsonValue) -> bool {
@@ -309,7 +312,21 @@ pub fn check_relational_leaf(
 ) -> Result<(), String> {
     let rel = normalize_constraint_03(raw_rel, doc.as_object(), pred)?;
     if let Some(eq_v) = rel.get("eq") {
-        if !values_equal(actual, eq_v) {
+        let has_tol = rel.contains_key("abs_tol") || rel.contains_key("rel_tol");
+        if !has_tol
+            && matches!((actual, eq_v), (JsonValue::Number(na), JsonValue::Number(nb)) if is_unsafe_f64_int(*na) && is_unsafe_f64_int(*nb))
+        {
+            return Err(format!(
+                "{}: integer >= 2^53 cannot be compared losslessly as f64; use {{\"$t\":\"i64\"|\"u64\"}}",
+                pred
+            ));
+        }
+        let eq_ok = if has_tol {
+            values_equal(actual, eq_v)
+        } else {
+            values_equal_exact(actual, eq_v)
+        };
+        if !eq_ok {
             return Err(format!(
                 "{}: mismatch on eq: got {}, expected {}",
                 pred,

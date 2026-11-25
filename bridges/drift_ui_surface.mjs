@@ -1,23 +1,24 @@
 // Surface key evaluation and DOM capture helper for DRIFT JS bridge.
 import { checkRequiredAdapterCapability, evaluateElementClipping, evaluateFocusObscuration, evaluateWcag22Contrast, isElementHidden, isElementScrollable } from './drift_ui.mjs';
+import { isFinNum } from './drift_ui_recovery.mjs';
 
-const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v), isStr = (v) => typeof v === 'string', isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v), isStr = (v) => typeof v === 'string';
 const REL_KEYS = new Set(['min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion']);
 const cloneJson = (val) => (Array.isArray(val) ? val.map(cloneJson) : (isObj(val) ? Object.fromEntries(Object.entries(val).map(([k, v]) => [k, cloneJson(v)])) : val));
 const splitResourcePointer = (s) => { const st = s[0] === '/' ? 1 : 0, col = s.indexOf(':/', st); return (col > st && /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(s.slice(st, col))) ? [s.slice(st, col), s.slice(col + 1)] : ['', s]; };
 
-export function checkSurfaceKey(contractId, caseId, k, exp, v, thenTable, proj, mutationOverride, checkRelationalLeaf, throwAssertionError) {
+export function checkSurfaceKey(contractId, caseId, k, exp, v, thenTable, proj, mutationOverride, checkRelationalLeaf, fail) {
   const pfx = `${contractId}.${caseId}`, els = Array.isArray(v.elements) ? v.elements : [];
   const failUnverifiable = (msg) => {
     if (isObj(v.evidence) && typeof v.evidence.unverifiable_checks === 'number') {
       v.evidence.unverifiable_checks += 1;
       if (Array.isArray(v.evidence.unverifiable_reasons)) v.evidence.unverifiable_reasons.push(`unverifiable_then:${k}`);
     }
-    throwAssertionError(msg);
+    fail(msg);
   };
-  const assertEq = (key, expected, act) => { if (act !== expected) throwAssertionError(`${pfx}: expected ${key}=${expected}, got ${act}`); };
+  const assertEq = (key, expected, act) => { if (act !== expected) fail(`${pfx}: expected ${key}=${expected}, got ${act}`); };
   const assertBound = (key, op, expected, act) => {
-    if (!isFinNum(act) || !isFinNum(Number(expected)) || (op === '<=' ? act > Number(expected) : act < Number(expected))) throwAssertionError(`${pfx}: expected ${key}${op}${expected}, got ${act}`);
+    if (!isFinNum(act) || !isFinNum(Number(expected)) || (op === '<=' ? act > Number(expected) : act < Number(expected))) fail(`${pfx}: expected ${key}${op}${expected}, got ${act}`);
   };
   if (v.adapter?.capabilities) checkRequiredAdapterCapability(contractId, caseId, k, v, proj);
   if (k === 'clipped_elements' || k === 'unintentional_clipped_count') {
@@ -219,6 +220,17 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
     }
     return { lo: undefined, hi: undefined };
   };
+  const residualBounds = (mult, rep, multFn) => {
+    let lo = 0, hi = 0, allLo = true, allHi = true;
+    for (const [ck, mp] of mult.entries()) {
+      const d = multFn(ck, mp);
+      if (d <= 0) continue;
+      const b = lookupBounds(rep.get(ck));
+      if (b.lo !== undefined) lo += d * b.lo; else allLo = false;
+      if (b.hi !== undefined) hi += d * b.hi; else allHi = false;
+    }
+    return { lo, hi, allLo, allHi };
+  };
   for (let pass = 0; pass < 3; pass++) {
     for (const [tk, tv] of Object.entries(out)) {
       if (!isRelationalMap(tv)) continue;
@@ -251,25 +263,13 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
         }
         const mk = mult.get(ckTarget) || 0;
         if (mk < 1) continue;
-        let remLo = 0, remHi = 0, allRemLo = true, allRemHi = true;
-        for (const [ck, mp] of mult.entries()) {
-          if (ck === ckTarget) continue;
-          const b = lookupBounds(rep.get(ck));
-          if (b.lo !== undefined) remLo += mp * b.lo; else allRemLo = false;
-          if (b.hi !== undefined) remHi += mp * b.hi; else allRemHi = false;
-        }
+        let { lo: remLo, hi: remHi, allLo: allRemLo, allHi: allRemHi } = residualBounds(mult, rep, (ck, mp) => (ck === ckTarget ? 0 : mp));
         for (const [ckP, mp] of mult.entries()) {
           const ord = ckP === ckTarget ? 0 : peerOrderRelation(ckTarget, ckP, out, wp, tp);
           if (ord === 0) continue;
-          let oLo = 0, oHi = 0, oAllLo = true, oAllHi = true;
-          for (const [ckQ, mq] of mult.entries()) {
-            if (ckQ === ckTarget || ckQ === ckP) continue;
-            const b = lookupBounds(rep.get(ckQ));
-            if (b.lo !== undefined) oLo += mq * b.lo; else oAllLo = false;
-            if (b.hi !== undefined) oHi += mq * b.hi; else oAllHi = false;
-          }
-          if ((ord === 1 || ord === 3) && sHi !== undefined && oAllLo) hiK = minU(hiK, roundTightenedMax(loK, hiK, (sHi - oLo) / (mk + mp)));
-          if ((ord === 2 || ord === 3) && sLo !== undefined && oAllHi) loK = maxU(loK, roundTightenedMin(loK, hiK, (sLo - oHi) / (mk + mp)));
+          const o = residualBounds(mult, rep, (ck, mq) => (ck === ckTarget || ck === ckP ? 0 : mq));
+          if ((ord === 1 || ord === 3) && sHi !== undefined && o.allLo) hiK = minU(hiK, roundTightenedMax(loK, hiK, (sHi - o.lo) / (mk + mp)));
+          if ((ord === 2 || ord === 3) && sLo !== undefined && o.allHi) loK = maxU(loK, roundTightenedMin(loK, hiK, (sLo - o.hi) / (mk + mp)));
         }
         for (const [bk, bv] of Object.entries(out)) {
           if (bk === sk || bk === tk || !isRelationalMap(bv) || !Array.isArray(bv.sum_fields) || bv.sum_fields.length < 2 || bv.sum_fields.length >= sv.sum_fields.length) continue;
@@ -283,16 +283,9 @@ export function tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp) {
             multB.set(ck, (multB.get(ck) || 0) + 1);
           }
           if (!okSub || ![...multB.entries()].every(([ck, m]) => (mult.get(ck) || 0) >= m)) continue;
-          let exLo = 0, exHi = 0, exAllLo = true, exAllHi = true;
-          for (const [ck, mp] of mult.entries()) {
-            const d = ck === ckTarget ? 0 : (mp - (multB.get(ck) || 0));
-            if (d <= 0) continue;
-            const b = lookupBounds(rep.get(ck));
-            if (b.lo !== undefined) exLo += d * b.lo; else exAllLo = false;
-            if (b.hi !== undefined) exHi += d * b.hi; else exAllHi = false;
-          }
-          if (bLo !== undefined && exAllLo) { remLo = allRemLo ? Math.max(remLo, bLo + exLo) : (bLo + exLo); allRemLo = true; }
-          if (bHi !== undefined && exAllHi) { remHi = allRemHi ? Math.min(remHi, bHi + exHi) : (bHi + exHi); allRemHi = true; }
+          const ex = residualBounds(mult, rep, (ck, mp) => (ck === ckTarget ? 0 : mp - (multB.get(ck) || 0)));
+          if (bLo !== undefined && ex.allLo) { remLo = allRemLo ? Math.max(remLo, bLo + ex.lo) : (bLo + ex.lo); allRemLo = true; }
+          if (bHi !== undefined && ex.allHi) { remHi = allRemHi ? Math.min(remHi, bHi + ex.hi) : (bHi + ex.hi); allRemHi = true; }
         }
         if (sLo !== undefined && allRemHi) loK = maxU(loK, roundTightenedMin(loK, hiK, (sLo - remHi) / mk));
         if (sHi !== undefined && allRemLo) hiK = minU(hiK, roundTightenedMax(loK, hiK, (sHi - remLo) / mk));

@@ -2,7 +2,7 @@
 
 use crate::checks::values_equal;
 use crate::context::{
-    allowed_write_sets_of, forbidden_writes_of, is_write_resource_allowed,
+    allowed_write_sets_of, env_trim, forbidden_writes_of, is_write_resource_allowed,
     record_discovered_inventory, verify_single_frame_obs,
 };
 use crate::json::{parse_json, JsonValue};
@@ -56,6 +56,21 @@ fn contains_str_leaf(val: &JsonValue, needle: &str) -> bool {
     }
 }
 
+fn frame_entry_wrote(obs: &JsonValue) -> bool {
+    if as_non_neg_int(obs).is_some_and(|n| n > 0) {
+        return true;
+    }
+    let Some(om) = obs.as_object() else { return false };
+    for wk in ["writes", "operations", "events"] {
+        if let Some(wv) = om.get(wk) {
+            if as_non_neg_int(wv).is_some_and(|n| n > 0) || wv.as_array().is_some_and(|a| !a.is_empty()) {
+                return true;
+            }
+        }
+    }
+    om.get("before").zip(om.get("after")).is_some_and(|(b, a)| !values_equal(b, a))
+}
+
 impl DriftContext {
     pub fn check_frame(&mut self, case_id: &str, frame_json: &str) -> Result<(), TestError> {
         self.check_frame_with_mode(case_id, frame_json, true)
@@ -67,16 +82,20 @@ impl DriftContext {
         let doc = parse_json(frame_json).map_err(|e| TestError::assertion(format!("bad frame_json: {}", e)))?;
         let fmap = doc.as_object().ok_or_else(|| TestError::assertion("frame_json must be object"))?;
         let mut checked = BTreeSet::new();
+        let mut all_obs = true;
+        let mut obs_writes = Vec::new();
         for res in &forbidden {
             let base = res.split('#').next().unwrap_or(res.as_str());
             checked.insert(res.as_str());
             checked.insert(base);
             let Some(obs) = fmap.get(res).or_else(|| fmap.get(base)) else {
+                all_obs = false;
                 if strict { return Err(TestError::assertion(format!("{}.{}: missing frame for '{}'", self.contract_id, case_id, res))); }
                 continue;
             };
             if has_frame_metrics_entry(obs) { verify_single_frame_obs(&self.contract_id, case_id, res, obs, false)?; }
             if is_unobserved_frame_entry(obs) {
+                all_obs = false;
                 if strict { return Err(TestError::assertion(format!("{}.{}: frame.observer_missing '{}'", self.contract_id, case_id, res))); }
                 continue;
             }
@@ -85,15 +104,25 @@ impl DriftContext {
         }
         let extra: Vec<(String, JsonValue)> = {
             let (al, ab, _) = allowed_write_sets_of(&self.view, case_id);
-            fmap.iter().filter(|(k, _)| !checked.contains(k.as_str()) && !is_write_resource_allowed(k.as_str(), &al, &ab)).map(|(k, v)| (k.clone(), v.clone())).collect()
+            fmap.iter().filter(|(k, obs_k)| {
+                if is_unobserved_frame_entry(obs_k) { all_obs = false; }
+                if frame_entry_wrote(obs_k) { obs_writes.push((*k).clone()); }
+                !checked.contains(k.as_str()) && !is_write_resource_allowed(k.as_str(), &al, &ab)
+            }).map(|(k, v)| (k.clone(), v.clone())).collect()
         };
         for (k, obs_k) in &extra {
             if has_frame_metrics_entry(obs_k) { verify_single_frame_obs(&self.contract_id, case_id, k, obs_k, true)?; }
             if is_unobserved_frame_entry(obs_k) {
+                all_obs = false;
                 if strict { return Err(TestError::assertion(format!("{}.{}: frame.observer_missing '{}'", self.contract_id, case_id, k))); }
                 continue;
             }
             if !has_frame_metrics_entry(obs_k) { verify_single_frame_obs(&self.contract_id, case_id, k, obs_k, true)?; }
+        }
+        if !self.in_mutation && all_obs && (!forbidden.is_empty() || !obs_writes.is_empty()) {
+            self.obs_frames.insert(case_id.to_string(), obs_writes);
+        } else {
+            self.obs_frames.remove(case_id);
         }
         Ok(())
     }
@@ -241,7 +270,7 @@ pub fn parse_list_terse_output(crate_name: &str, list_stdout: &str) -> (Vec<Stri
         };
         let cls = if mod_part.is_empty() {
             clean_crate.clone()
-        } else if mod_part.starts_with(&format!("{}::", clean_crate)) || clean_crate.is_empty() {
+        } else if clean_crate.is_empty() {
             mod_part.to_string()
         } else {
             format!("{}::{}", clean_crate, mod_part)
@@ -253,26 +282,36 @@ pub fn parse_list_terse_output(crate_name: &str, list_stdout: &str) -> (Vec<Stri
     (classes.into_iter().collect(), tests.into_iter().collect())
 }
 
-pub fn discover_binary_tests(
-    crate_name: &str,
-    events_dir: &str,
-) -> Result<(Vec<String>, Vec<String>), TestError> {
-    if env::var("DRIFT_IN_LIST_DISCOVERY").as_deref() == Ok("1") {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let exe = env::current_exe().map_err(|e| TestError::harness(e.to_string()))?;
-    let out = Command::new(&exe)
-        .args(["--list", "--format=terse"])
-        .env("DRIFT_IN_LIST_DISCOVERY", "1")
-        .output()
-        .map_err(|e| TestError::harness(format!("failed to run --list discovery: {}", e)))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let (classes, tests) = parse_list_terse_output(crate_name, &stdout);
-    let ev_dir = if !events_dir.trim().is_empty() {
-        events_dir.trim().to_string()
+fn run_list_terse(exe: &Path, extra: Option<&str>) -> Result<String, TestError> {
+    let mut cmd = Command::new(exe);
+    if let Some(a) = extra { cmd.arg(a); }
+    let out = cmd.args(["--list", "--format=terse"]).env("DRIFT_IN_LIST_DISCOVERY", "1")
+        .output().map_err(crate::ctx_err("failed --list discovery"))?;
+    if !out.status.success() { return Err(crate::herr(format!("--list discovery exited {}", out.status))); }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+pub fn discover_binary_tests(crate_name: &str, events_dir: &str) -> Result<(Vec<String>, Vec<String>), TestError> {
+    if env::var("DRIFT_IN_LIST_DISCOVERY").as_deref() == Ok("1") { return Ok((Vec::new(), Vec::new())); }
+    let exe = env::current_exe().map_err(crate::ctx_err("current_exe"))?;
+    let args: Vec<String> = env::args().collect();
+    let inc_ign = args.iter().any(|a| a == "--include-ignored");
+    let only_ign = !inc_ign && args.iter().any(|a| a == "--ignored");
+    let all_out = run_list_terse(&exe, None)?;
+    let (classes, all_tests) = parse_list_terse_output(crate_name, &all_out);
+    let tests = if inc_ign {
+        all_tests
     } else {
-        env::var("DRIFT_EVENTS").unwrap_or_default().trim().to_string()
+        let ign_out = run_list_terse(&exe, Some("--ignored"))?;
+        if only_ign {
+            parse_list_terse_output(crate_name, &ign_out).1
+        } else {
+            let ign: BTreeSet<&str> = ign_out.lines().map(str::trim).filter(|l| l.ends_with(": test")).collect();
+            let active: String = all_out.lines().filter(|l| !ign.contains(l.trim())).collect::<Vec<_>>().join("\n");
+            parse_list_terse_output(crate_name, &active).1
+        }
     };
+    let ev_dir = if !events_dir.trim().is_empty() { events_dir.trim().into() } else { env_trim("DRIFT_EVENTS") };
     if !ev_dir.is_empty() && (!classes.is_empty() || !tests.is_empty()) {
         record_discovered_inventory(&ev_dir, &classes, &tests)?;
     }
@@ -306,144 +345,77 @@ fn fallback_view_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, Jso
 }
 
 pub fn resolve_state_root(cwd: &Path) -> Result<Option<PathBuf>, TestError> {
-    let raw = env::var("DRIFT_STATE_DIR").unwrap_or_default();
-    let t = raw.trim();
-    if t.is_empty() { return Ok(None); }
-    let p = PathBuf::from(t);
+    let raw = env_trim("DRIFT_STATE_DIR");
+    if raw.is_empty() { return Ok(None); }
+    let p = PathBuf::from(&raw);
     let sd = fs::canonicalize(&p).unwrap_or_else(|_| if p.is_absolute() { p } else { cwd.join(p) });
     let rc = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mf = sd.join("shadow.toml");
     if let Ok(md) = fs::symlink_metadata(&mf) {
-        if md.file_type().is_symlink() || !md.is_file() { return Err(TestError::harness("bad shadow.toml")); }
-        let txt = fs::read_to_string(&mf).map_err(|e| TestError::harness(e.to_string()))?;
-        let mut sr = env::var("DRIFT_SOURCE_ROOT").unwrap_or_default().trim().to_string();
+        if md.file_type().is_symlink() || !md.is_file() { return Err(crate::herr("bad shadow.toml")); }
+        let txt = fs::read_to_string(&mf).map_err(crate::ctx_err("shadow.toml"))?;
+        let mut sr = crate::context::env_trim("DRIFT_SOURCE_ROOT");
         if sr.is_empty() {
             for ln in txt.lines() {
                 let s = ln.trim();
                 if s.starts_with("source_root") {
-                    if let (Some(a), Some(b)) = (s.find('"'), s.rfind('"')) { if b > a { sr = s[a + 1..b].to_string(); } }
+                    if let (Some(a), Some(b)) = (s.find('"'), s.rfind('"')) { if b > a { sr = s[a + 1..b].into(); } }
                 }
             }
         }
         let rs = fs::canonicalize(sd.join(&sr)).unwrap_or_else(|_| sd.join(&sr));
         if !txt.contains("\"drift.shadow-area/1\"") || sr.is_empty() || sd.starts_with(&rs) || !rc.starts_with(&rs) {
-            return Err(TestError::harness("state_dir mismatch"));
+            return Err(crate::herr("state_dir mismatch"));
         }
     }
     Ok(Some(sd))
 }
 
-pub(crate) fn load_contract_view(
-    contract_id: &str,
-    resolved_dir: &str,
-) -> Result<BTreeMap<String, JsonValue>, TestError> {
-    let cwd = env::current_dir().map_err(|e| TestError::harness(e.to_string()))?;
+pub(crate) fn load_contract_view(contract_id: &str, resolved_dir: &str) -> Result<BTreeMap<String, JsonValue>, TestError> {
+    let cwd = env::current_dir().map_err(crate::ctx_err("current_dir"))?;
     let state_root = resolve_state_root(&cwd)?;
-    let rdir = if !resolved_dir.trim().is_empty() {
-        resolved_dir.trim().to_string()
-    } else {
-        env::var("DRIFT_RESOLVED")
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
+    let rdir = if !resolved_dir.trim().is_empty() { resolved_dir.trim().into() } else { env_trim("DRIFT_RESOLVED") };
     // Fail-closed when DRIFT_RESOLVED / resolved_dir is explicitly configured.
     if !rdir.is_empty() {
-        let p = Path::new(&rdir).join(format!("{}.json", contract_id));
-        let txt = fs::read_to_string(&p).map_err(|e| {
-            TestError::harness(format!(
-                "cannot read resolved view '{}': {}",
-                p.display(),
-                e
-            ))
-        })?;
-        let doc = parse_json(&txt)
-            .map_err(|e| TestError::harness(format!("invalid JSON in '{}': {}", p.display(), e)))?;
-        return match doc {
+        let p = Path::new(&rdir).join(format!("{contract_id}.json"));
+        let txt = fs::read_to_string(&p).map_err(crate::ctx_err("cannot read resolved view"))?;
+        return match parse_json(&txt).map_err(crate::ctx_err("invalid resolved JSON"))? {
             JsonValue::Object(m) => Ok(m),
-            _ => Err(TestError::harness(format!(
-                "resolved view '{}' is not a JSON object",
-                p.display()
-            ))),
+            _ => Err(crate::herr(format!("resolved view '{}' is not a JSON object", p.display()))),
         };
     }
 
     if state_root.is_none() {
-        if let Ok(guard) = fallback_view_cache().lock() {
-            if let Some(cached) = guard.get(contract_id) {
-                return Ok(cached.clone());
-            }
+        if let Ok(g) = fallback_view_cache().lock() {
+            if let Some(cached) = g.get(contract_id) { return Ok(cached.clone()); }
         }
     }
 
     let mut dir = state_root.clone().unwrap_or(cwd);
-    let mut toml_path: Option<PathBuf> = None;
+    let mut toml_path = None;
     loop {
-        let cand = dir
-            .join(".drift")
-            .join("contracts")
-            .join(format!("{}.toml", contract_id));
-        if cand.is_file() {
-            toml_path = Some(cand);
-            break;
-        }
-        if state_root.is_some() || !dir.pop() {
-            break;
-        }
+        let cand = dir.join(".drift").join("contracts").join(format!("{contract_id}.toml"));
+        if cand.is_file() { toml_path = Some(cand); break; }
+        if state_root.is_some() || !dir.pop() { break; }
     }
     let toml_path = toml_path.ok_or_else(|| {
-        TestError::harness(format!("cannot locate contract '{}.toml' and DRIFT_RESOLVED is not set (mark DRIFT #[test] with #[ignore] and run via --include-ignored or drift select --cmd)", contract_id))
+        crate::herr(format!("cannot locate contract '{contract_id}.toml' and DRIFT_RESOLVED is not set (mark DRIFT #[test] with #[ignore] and run via --include-ignored or drift select --cmd)"))
     })?;
     let cli = find_drift_cli();
     let mut cmd = Command::new(&cli);
     cmd.arg("show").arg(&toml_path);
-    if let Some(ref sd) = state_root {
-        cmd.arg("--state-dir").arg(sd);
-    }
-    let out = cmd
-        .arg("--as")
-        .arg("json")
-        .output()
-        .map_err(|e| TestError::harness(format!("failed to invoke '{}': {}", cli, e)))?;
+    if let Some(ref sd) = state_root { cmd.arg("--state-dir").arg(sd); }
+    let out = cmd.args(["--as", "json"]).output().map_err(crate::ctx_err("failed to invoke drift"))?;
     if !out.status.success() {
-        return Err(TestError::harness(format!(
-            "drift show failed for '{}': {}",
-            toml_path.display(),
-            String::from_utf8_lossy(&out.stderr)
-        )));
+        return Err(crate::herr(format!("drift show failed for '{}': {}", toml_path.display(), String::from_utf8_lossy(&out.stderr))));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let doc = parse_json(&stdout).map_err(|e| {
-        TestError::harness(format!(
-            "invalid JSON from drift show '{}': {}",
-            toml_path.display(),
-            e
-        ))
-    })?;
-    let JsonValue::Object(map) = doc else {
-        return Err(TestError::harness(
-            "drift show output is not a JSON object".to_string(),
-        ));
+    let JsonValue::Object(map) = parse_json(&String::from_utf8_lossy(&out.stdout)).map_err(crate::ctx_err("invalid drift show JSON"))? else {
+        return Err(crate::herr("drift show output is not a JSON object"));
     };
-    if let Ok(mut guard) = fallback_view_cache().lock() {
-        guard.insert(contract_id.to_string(), map.clone());
-    }
+    if let Ok(mut g) = fallback_view_cache().lock() { g.insert(contract_id.into(), map.clone()); }
     Ok(map)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recursive_forbid_keys_and_bola_pair_validation() {
-        let nested = parse_json(r#"{"status":200,"details":{"token":"leak"}}"#).unwrap();
-        assert!(has_key_recursive(&nested, "token", true));
-        let prose = parse_json(r#"{"status":200,"message":"token=ok"}"#).unwrap();
-        assert!(!has_key_recursive(&prose, "token", true));
-        let same_owner = parse_json(r#"{"actor_owner":"t1","resource_owner":"t1"}"#).unwrap();
-        assert!(check_bola_variant_pair("c.deny", &same_owner).is_err());
-        let cross_owner = parse_json(r#"{"actor_owner":"t1","resource_owner":"t2"}"#).unwrap();
-        assert_eq!(check_bola_variant_pair("c.deny", &cross_owner).unwrap(), true);
-    }
-}
+#[path = "probes_test.rs"]
+mod tests;

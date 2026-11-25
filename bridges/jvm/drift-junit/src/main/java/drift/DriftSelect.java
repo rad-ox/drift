@@ -1,31 +1,20 @@
 package drift;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import static drift.DriftViewChecks.badArg;
+import static drift.DriftViewChecks.badState;
+import java.io.*;
 import java.lang.reflect.Method;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import org.junit.platform.engine.FilterResult;
-import org.junit.platform.engine.TestDescriptor;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import org.junit.platform.engine.*;
 import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.PostDiscoveryFilter;
 
 /**
  * Keeps only the tests chosen by {@code drift select --json}, read from the file named by the
  * system property {@code drift.select}; several files may be joined with the path separator.
- * Without the property, or when any selection widens, every test runs. Otherwise a test method
- * runs when its {@link DriftCase} names a selected case of the same contract or when its
- * {@code Class#method} is a selected test. A direct code hit or one-hop resource hit keeps every
- * tagged test of that contract; every other test, untagged ones included, is excluded. Descriptors
- * without a method source are kept and pruned by JUnit when empty.
+ * Without the property, or when any selection widens, every test runs.
  */
 public final class DriftSelect implements PostDiscoveryFilter {
     public static final String SELECT = "drift.select";
@@ -36,13 +25,13 @@ public final class DriftSelect implements PostDiscoveryFilter {
     private final boolean all;
 
     public DriftSelect() {
-        String files = Drift.mutationRun() ? null : System.getProperty(SELECT);
-        if ((files == null || files.isBlank()) && !Drift.mutationRun()) {
+        DriftListener.validateConfig();
+        boolean mut = Drift.mutationRun();
+        String files = mut ? null : DriftListener.propOrEnv(SELECT, "DRIFT_SELECT");
+        if (files == null && !mut) {
             files = DriftInternal.sessionProperty("select", true);
         }
-        String contractsProp = Drift.mutationRun()
-                ? null
-                : System.getProperty("drift.contracts", System.getenv().getOrDefault("DRIFT_CONTRACTS", ""));
+        String contractsProp = mut ? null : DriftListener.propOrEnv("drift.contracts", "DRIFT_CONTRACTS");
         Map<String, Set<String>> byContract = new HashMap<>();
         Set<String> selectedMethods = new HashSet<>();
         Set<String> codeHits = new HashSet<>();
@@ -55,7 +44,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
         }
         boolean every = (files == null || files.isBlank()) && codeHits.isEmpty();
         if (files != null && !files.isBlank()) {
-            for (String f : files.split(java.io.File.pathSeparator)) {
+            for (String f : files.split(File.pathSeparator)) {
                 if (f.isBlank()) {
                     continue;
                 }
@@ -133,7 +122,10 @@ public final class DriftSelect implements PostDiscoveryFilter {
                 return FilterResult.included("drift: code hit for contract " + tag.contract());
             }
             Set<String> cases = casesByContract.get(tag.contract());
-            if (cases != null) {
+            if (cases != null && !cases.isEmpty()) {
+                if (tag.cases().length == 0) {
+                    return FilterResult.included("drift: dynamic contract " + tag.contract());
+                }
                 for (String id : tag.cases()) {
                     if (cases.contains(id)) {
                         return FilterResult.included("drift: tagged with changed case " + id);
@@ -161,7 +153,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
         if (o instanceof Map<?, ?> m) {
             return (Map<String, Object>) m;
         }
-        throw new IllegalStateException(where + " is not a JSON object");
+        throw badState(where + " is not a JSON object");
     }
 
     private static List<?> list(Object o, String where) {
@@ -171,7 +163,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
         if (o instanceof List<?> l) {
             return l;
         }
-        throw new IllegalStateException(where + " is not a JSON array");
+        throw badState(where + " is not a JSON array");
     }
 
     private static void addUniqueLong(List<Long> pts, long val) {
@@ -182,7 +174,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
 
     static List<Long> intDomain(long min, long max) {
         if (min > max) {
-            throw new IllegalArgumentException("invalid int domain [" + min + ", " + max + "]");
+            throw badArg("invalid int domain [" + min + ", " + max + "]");
         }
         long mid = (min / 2) + (max / 2) + ((min % 2 + max % 2) / 2);
         List<Long> pts = new ArrayList<>(6);
@@ -203,7 +195,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
 
     static List<String> enumDomain(String... values) {
         if (values == null || values.length == 0) {
-            throw new IllegalArgumentException("enum domain must not be empty");
+            throw badArg("enum domain must not be empty");
         }
         LinkedHashSet<String> pts = new LinkedHashSet<>(List.of(values));
         return List.copyOf(pts);
@@ -238,8 +230,8 @@ public final class DriftSelect implements PostDiscoveryFilter {
     }
 
     static boolean observe(String contract, String caseId, String test, Map<String, Object> when, Map<String, Object> then) {
-        String tgt = System.getProperty("drift.observe", System.getenv("DRIFT_OBSERVE") == null ? "" : System.getenv("DRIFT_OBSERVE")).trim();
-        if (tgt.isEmpty() || then == null || then.isEmpty()) return false;
+        String tgt = DriftListener.propOrEnv("drift.observe", "DRIFT_OBSERVE");
+        if (tgt == null || then == null || then.isEmpty()) return false;
         Path out = tgt.endsWith(".jsonl") ? Path.of(tgt) : Path.of(tgt, "trace-" + ProcessHandle.current().pid() + ".jsonl");
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("kind", "trace");
@@ -253,8 +245,8 @@ public final class DriftSelect implements PostDiscoveryFilter {
         writeJsonVal(sb, row);
         sb.append('\n');
         try {
-            if (out.getParent() != null) java.nio.file.Files.createDirectories(out.getParent());
-            java.nio.file.Files.writeString(out, sb.toString(), java.nio.charset.StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+            if (out.getParent() != null) Files.createDirectories(out.getParent());
+            Files.writeString(out, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             return true;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -265,12 +257,10 @@ public final class DriftSelect implements PostDiscoveryFilter {
     public static List<String> precheckTestLiterals(String javaSource, Map<String, Map<String, Object>> resolvedViews) {
         if (javaSource == null || resolvedViews == null) return List.of();
         List<String> findings = new ArrayList<>();
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                "@DriftCase\\s*\\(([^)]*)\\)").matcher(javaSource);
+        Matcher m = Pattern.compile("@DriftCase\\s*\\(([^)]*)\\)").matcher(javaSource);
         while (m.find()) {
             String args = m.group(1);
-            java.util.regex.Matcher cm = java.util.regex.Pattern.compile(
-                    "contract\\s*=\\s*\"([^\"]+)\"").matcher(args);
+            Matcher cm = Pattern.compile("contract\\s*=\\s*\"([^\"]+)\"").matcher(args);
             if (!cm.find()) continue;
             String cid = cm.group(1);
             Map<String, Object> view = resolvedViews.get(cid);
@@ -278,18 +268,14 @@ public final class DriftSelect implements PostDiscoveryFilter {
                 findings.add("test.unknown_contract: " + cid);
                 continue;
             }
-            Object rawCases = view.get("cases");
-            Map<String, Object> casesTbl = rawCases instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
-            java.util.regex.Matcher csm = java.util.regex.Pattern.compile(
-                    "cases\\s*=\\s*(?:\\{([^}]*)\\}|\"([^\"]+)\")").matcher(args);
+            Map<String, Object> casesTbl = view.get("cases") instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+            Matcher csm = Pattern.compile("cases\\s*=\\s*(?:\\{([^}]*)\\}|\"([^\"]+)\")").matcher(args);
             if (csm.find()) {
                 String listBody = csm.group(1) != null ? csm.group(1) : "\"" + csm.group(2) + "\"";
-                java.util.regex.Matcher lm = java.util.regex.Pattern.compile("\"([^\"]+)\"").matcher(listBody);
+                Matcher lm = Pattern.compile("\"([^\"]+)\"").matcher(listBody);
                 while (lm.find()) {
                     String caseId = lm.group(1);
-                    if (!casesTbl.containsKey(caseId)) {
-                        findings.add("test.unknown_case: " + cid + "." + caseId);
-                    }
+                    if (!casesTbl.containsKey(caseId)) findings.add("test.unknown_case: " + cid + "." + caseId);
                 }
             }
         }
@@ -298,7 +284,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
 
     static List<Map<String, Object>> cartesianDomain(Map<String, ? extends List<?>> domains) {
         if (domains == null || domains.isEmpty()) {
-            throw new IllegalArgumentException("Cartesian domain map must not be empty");
+            throw badArg("Cartesian domain map must not be empty");
         }
         List<String> keys = domains.keySet().stream().sorted().toList();
         int d = keys.size();
@@ -308,7 +294,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
         for (String key : keys) {
             List<?> vals = domains.get(key);
             if (vals == null || vals.isEmpty()) {
-                throw new IllegalArgumentException("domain for key " + key + " must not be empty");
+                throw badArg("domain for key " + key + " must not be empty");
             }
             valsByKey.add(vals);
             cur.put(key, vals.get(0));
@@ -347,17 +333,17 @@ public final class DriftSelect implements PostDiscoveryFilter {
     @SuppressWarnings("unchecked")
     static List<Object> profileSingleDomain(String contract, Map<String, Object> specs, String param) {
         if (param == null || param.isBlank()) {
-            throw new IllegalArgumentException("profile parameter name must not be blank");
+            throw badArg("profile parameter name must not be blank");
         }
         Object rawSpec = specs.get(param);
         if (rawSpec == null) {
-            throw new IllegalArgumentException("contract " + contract + " has no bounded param_specs." + param);
+            throw badArg("contract " + contract + " has no bounded param_specs." + param);
         }
         Map<String, Object> spec = DriftInternal.map(rawSpec, contract + ".param_specs." + param);
         String type = spec.get("type") instanceof String s ? s : "";
         if ("int".equals(type)) {
             if (!(spec.get("min") instanceof Number lo) || !(spec.get("max") instanceof Number hi)) {
-                throw new IllegalArgumentException("param_specs." + param + " requires numeric min and max");
+                throw badArg("param_specs." + param + " requires numeric min and max");
             }
             return (List<Object>) (List<?>) intDomain(lo.longValue(), hi.longValue());
         }
@@ -371,7 +357,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
         if ("bool".equals(type)) {
             return (List<Object>) (List<?>) boolDomain();
         }
-        throw new IllegalArgumentException("unsupported param_specs." + param + " type: " + type);
+        throw badArg("unsupported param_specs." + param + " type: " + type);
     }
 
     static List<Object> profileDomain(String contract, String param) {
@@ -382,7 +368,7 @@ public final class DriftSelect implements PostDiscoveryFilter {
 
     static List<Map<String, Object>> profileDomain(String contract, java.util.Collection<String> params) {
         if (params == null || params.isEmpty()) {
-            throw new IllegalArgumentException("profile parameter collection must not be empty");
+            throw badArg("profile parameter collection must not be empty");
         }
         Map<String, Object> specs = DriftInternal.map(Drift.view(contract).getOrDefault("param_specs", Map.of()),
                 contract + ".param_specs");

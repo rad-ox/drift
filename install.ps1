@@ -606,6 +606,17 @@ try {
             }
         }
     }
+    if (Test-Path -LiteralPath (Join @($here, 'map-ui'))) {
+        Remove-Safely (Join @($Prefix, 'map-ui')) 'map-ui'
+        Invoke-Step "copy map-ui to $Prefix" {
+            New-Item -ItemType Directory -Force -Path (Join @($Prefix, 'map-ui')) | Out-Null
+            foreach ($name in @('drift-map-ui', 'drift_map_ui.py', 'drift_map_ui.html')) {
+                if (Test-Path -LiteralPath (Join @($here, 'map-ui', $name))) {
+                    Copy-Item -LiteralPath (Join @($here, 'map-ui', $name)) -Destination (Join @($Prefix, 'map-ui', $name)) -Force
+                }
+            }
+        }
+    }
     if ($onWindows) {
         Invoke-Step 'unblock the installed files' {
             Get-ChildItem -LiteralPath $Prefix -Recurse -File | Unblock-File

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Isolated offline flow-map explorer launcher for DRIFT.
+# Runs completely separate from drift-ask-ui with zero approval authority.
+set -eu
+
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+MAP_DIR=$HERE
+if [ ! -f "$MAP_DIR/drift_map_ui.py" ] && [ -f "$HERE/../share/drift/map-ui/drift_map_ui.py" ]; then
+  MAP_DIR="$HERE/../share/drift/map-ui"
+elif [ ! -f "$MAP_DIR/drift_map_ui.py" ] && [ -f "$HERE/../map-ui/drift_map_ui.py" ]; then
+  MAP_DIR="$HERE/../map-ui"
+fi
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+  printf 'drift-map-ui: python3 >= 3.11 unavailable; run `drift map <target> --as mermaid` instead\n' >&2
+  exit 10
+fi
+
+exec python3 -I "$MAP_DIR/drift_map_ui.py" --launcher-dir "$HERE" "$@"

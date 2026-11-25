@@ -219,22 +219,8 @@ def evaluate_contract_security_impl(contract: dict[str, Any], sec_receipts: list
     return reasons, eval_list
 
 
-def validate_formal_equivalence(rec: dict[str, Any], ob_ver: str, ob_pkind: str, ob_minev: str, raw_cases: dict[str, Any]) -> str:
-    return validate_formal_equivalence_core(rec, ob_ver, ob_pkind, ob_minev, raw_cases)
-
-
-def evaluate_contract_formal_impl(
-    contract: dict[str, Any],
-    formal_receipts: list[dict[str, Any]],
-    phase: str,
-    expected_subject_ref: str,
-    expected_snapshot: str,
-    shard_subject_refs: set[str],
-    area_root: Path | None,
-    manifest_sources: dict[str, str] | None,
-    digest_matches_fn: Callable[[str, str], bool],
-) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-    return evaluate_contract_formal_core(contract, formal_receipts, phase, expected_subject_ref, expected_snapshot, shard_subject_refs, area_root, manifest_sources, digest_matches_fn)
+validate_formal_equivalence = validate_formal_equivalence_core
+evaluate_contract_formal_impl = evaluate_contract_formal_core
 
 
 def load_migration_receipts_impl(events_paths: list[Path], decode_fn: Callable[[str], Any]) -> tuple[list[dict[str, Any]], list[str]]:

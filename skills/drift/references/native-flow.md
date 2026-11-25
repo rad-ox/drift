@@ -97,3 +97,20 @@ slash-command family. Do not poll while idle or make an extra model call for
 each state transition. A text response or valid package does not prove that a
 host correlated consent or followed this procedure. Keep installed caches
 untouched; canonical sources and their package generators own changes.
+
+## Flow maps, Mermaid export, symbolic walks, and `drift-map-ui`
+
+- Use `drift map <file|dir> [--view cases|flow|state] [--as text|json|mermaid]`
+  to project contract cases (Free), area dataflow (Pro, `--flow` overlay in
+  Enterprise), or explicit FSM states (Enterprise) with stable handles (`N<k>`,
+  `C<k>`, `E<k>`) and exact folded-element quadrature.
+- Use `drift map focus <file|dir> <handle>... [--map <12hex>] [--as json]` to
+  resolve clicked or cited handles (leading `@` optional) into fail-closed,
+  `pure_read` `show`/`recall`/`impact` commands (`drift.focus/1`).
+- Use `drift map walk <dir> --from <H#case> [--via <H#case>...] [--as json|mermaid]`
+  (Enterprise) to inspect witness-backed `compatible|unknown|refuted` hops and
+  `sequenceDiagram` traces without emitting proof events or affecting `gate`.
+- For interactive click-to-expand SVG exploration, run `drift-map-ui <target>`
+  (`install/map-ui/`, isolated from `drift-ask-ui` with zero approval
+  authority); on headless/fallback (`exit 10`), use the printed `--as mermaid`
+  command directly.

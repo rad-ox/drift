@@ -241,7 +241,7 @@ if [ "$action" = uninstall ]; then
 			if [ -f "$path" ]; then
 				bname=${path##*/}
 				case $bname in
-				drift | drift-pro | drift-enterprise | drift-ask-ui) remove "$path" "/$bname" ;;
+				drift | drift-pro | drift-enterprise | drift-ask-ui | drift-map-ui) remove "$path" "/$bname" ;;
 				esac
 				ok "removed $(tilde "$path")" "rimosso $(tilde "$path")"
 			fi
@@ -507,6 +507,16 @@ if [ -f "$here/ui/drift-ask-ui" ]; then
 	new_bins="$new_bins$bindir/drift-ask-ui$tab"
 	ok "drift-ask-ui → $(tilde "$bindir/drift-ask-ui")" "drift-ask-ui → $(tilde "$bindir/drift-ask-ui")"
 fi
+if [ -f "$here/map-ui/drift-map-ui" ]; then
+	if [ -e "$bindir/.drift-map-ui.new" ] || [ -L "$bindir/.drift-map-ui.new" ]; then
+		remove "$bindir/.drift-map-ui.new" "/.drift-map-ui.new"
+	fi
+	run cp "$here/map-ui/drift-map-ui" "$bindir/.drift-map-ui.new"
+	run chmod 0755 "$bindir/.drift-map-ui.new"
+	run mv -f "$bindir/.drift-map-ui.new" "$bindir/drift-map-ui"
+	new_bins="$new_bins$bindir/drift-map-ui$tab"
+	ok "drift-map-ui → $(tilde "$bindir/drift-map-ui")" "drift-map-ui → $(tilde "$bindir/drift-map-ui")"
+fi
 if [ -n "${old_bins:-}" ]; then
 	saved_ifs=$IFS
 	IFS=$tab
@@ -518,7 +528,7 @@ if [ -n "${old_bins:-}" ]; then
 			if [ -f "$b_old" ]; then
 				bname_old=${b_old##*/}
 				case $bname_old in
-				drift | drift-pro | drift-enterprise | drift-ask-ui) remove "$b_old" "/$bname_old" ;;
+				drift | drift-pro | drift-enterprise | drift-ask-ui | drift-map-ui) remove "$b_old" "/$bname_old" ;;
 				esac
 			fi
 			;;
@@ -551,6 +561,12 @@ if [ -d "$here/ui" ]; then
 	run mkdir -p "$data/ui"
 	run cp "$here/ui/drift-ask-ui" "$here/ui/drift_ui_deck.py" "$here/ui/drift_ui_deck.html" "$here/ui/drift-ask-ui.ps1" "$here/ui/drift-ask-ui.cmd" "$here/ui/DriftUiWin.cs" "$here/ui/app.manifest" "$data/ui/"
 	run chmod 0755 "$data/ui/drift-ask-ui" "$data/ui/drift_ui_deck.py"
+fi
+if [ -d "$here/map-ui" ]; then
+	remove "$data/map-ui" /map-ui
+	run mkdir -p "$data/map-ui"
+	run cp "$here/map-ui/drift-map-ui" "$here/map-ui/drift_map_ui.py" "$here/map-ui/drift_map_ui.html" "$data/map-ui/"
+	run chmod 0755 "$data/map-ui/drift-map-ui" "$data/map-ui/drift_map_ui.py"
 fi
 for f in install.sh VERSION INSTALL.md INSTALL.it.md SHA256SUMS; do
 	[ ! -f "$here/$f" ] || run cp "$here/$f" "$data/$f"

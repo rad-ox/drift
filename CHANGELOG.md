@@ -2,6 +2,58 @@
 
 User-visible changes and capabilities by release.
 
+## 0.11.0
+
+- Release `0.11.0`.
+- Package and install `drift-map-ui` across `make install`, release archives, installers, and public export; sync `0.11.0` public docs (`README`, `GUIDE*`, `INSTALL*`, `EDITIONS`, `GUARANTEES`).
+- Add Free `drift run [--events DIR] [--gate] [--state-dir DIR] -- <cmd>` wrapper with atomic view export, zero-clobber events, and optional `--gate`.
+- Redesign `drift-map-ui` canvas: layered routed links (arrows, labels, legend filters), pan/zoom, search, history, link inspector, on-map Walk; self-test checks served-page CSP hygiene.
+- Add `drift map` (`cases`/`flow`/`state`, `--as mermaid`, `--what-if`), `drift map focus`, `drift map walk`, and isolated offline `drift-map-ui` explorer.
+- Align CLI `--help` synopses for `gate --as junit|summary|md` (Free: `summary|md`) and `init <owner> [dir] [--observed] [--taplo]`.
+- Enforce exact numeric `eq` (no implicit `1e-9` slack without `tol`, plus `BigInt`/unsafe-int guards) on schema `0.3` in Rust, JS, and Python bridges.
+- Fail closed with `obs.frame_missing` (`inconclusive`) when `scope.writes \ permitted != empty` and `frame`/`frame.writes` is omitted, across V kernel, offline verifier, and fuzzer.
+- Reject non-canonical `(`, `)`, `[`, `]` in `.meta.json` `classes`, `tests`, and `inputs` keys fail-closed (`DR-E701`) in both V kernel and offline verifier.
+- Add declarative cross-bridge behavioral conformance matrix (`oracle.jsonl`, Rust `--edition=2021`) checking local, wire, kernel, and verifier parity across JVM, JS, Python, Rust, and C++20.
+- Emit contract/config/event findings (`DR-E601`, `DR-E701`) under not-green contracts in `drift gate --as md` and clarify reruns/retries and `(JS/TS)` scope in the superseded explain note.
+- Restrict JVM projected observations to exact needed pointers (skipping unused ancestors and UI payloads) and enforce the 1024-char cap in Unicode code points while rejecting lone surrogates.
+- Harden drift-junit strictWhen (dynamic cases, DynamicTest, OR env/prop, META-INF Extension, end/finally cleanup), standalone caller IDs, and snapshot-mismatch stderr diagnostics.
+- Harden Python bridge: lexical precheck & then-wrapper, strict plan keys, exact int eq, generator guard, sync snapshot check, .plans manifest/autoload, safe sidecar merge/lock, and sibling loader.
+- Add cross-process lock + atomic rename on JS/Python single-file `.meta.json`, validate `DRIFT_SNAPSHOT` synchronously in JS, and mirror `.plans/` + unify `attachBridgePlan` on cold auto-resolve.
+- Restrict JS/Python projected observations to peer/invariant-referenced pointers (skipping unreferenced ancestors) and align Unicode caps on code points and UTF-8 bytes.
+- Treat TOML literal maps containing `"$t"` (in `then` and `when` peer clauses) as plain application maps rather than tagged wire nodes in both the kernel oracle and offline verifier.
+- Unescape RFC 8259 JSON object keys (with post-unescape duplicate detection) in `inventory`, `openapi`, `upstream`, `formal`, and `build_graph` parsers, and allow UTF-8 trailing bytes in test IDs.
+- Preserve `obs_red` provenance in `drift gate --explain`, render `bound` reasons in `--as md` with `--explain` support, and omit redundant `--explain` advice when already set.
+- Harden `drift_cpp.hpp` within the `11200` budget: validate 40/64-hex snapshots, reject stray `]` and blank `inputs`, allow `(...)`/`[...]` spaces, and add `ObsScalar::floating`/`null`.
+- Reject non-object `frame`/`presence`, falsy non-list `frame.writes`, and malformed `touched_symbols`/`init_only_symbols` in `drift.observation/1` across both CLI (`DR-E701`) and offline verifier.
+- Explain `bound` downgrades from missing `drift.observation/1` or `self_stubbed` in single-contract and directory `drift gate --explain`, keeping exit codes and `--json` unchanged.
+- Harden `drift_rust` discovery & shards: subtract `--ignored`, align homonym IDs, project `then` pointers in observations, and merge foreign classes + check snapshots on single-file `.jsonl`.
+- Harden `drift_rust` runtime: emit failed events on panics, isolate mutant files, format large floats, reject non-int casts, validate `DRIFT_SNAPSHOT`, and catch `./` self-stubs.
+- Add C++20 canonical sidecar inventory and typed `ObsScalar`/`emitObservedProofBatch` `drift.observation/1` emission (`cpp` ceiling `10150 -> 11200`).
+- Add JUnit 5 `@DriftCase(strictWhen)` / `DRIFT_STRICT_WHEN` (`AfterTestExecutionCallback`), `unreadWhen()`, and standalone `Drift.runCase()` for MUnit suites.
+- Emit bounded `drift.observation/1` payloads from actual pointer reads in JS `checkProjection` and Python `check_projection` (including `__plan` fast-path).
+- Add opt-in `strict_when` / `DRIFT_STRICT_WHEN` and `DriftContext.unread_when()` parity to Python bridge.
+- Add Free `drift init --observed` preset (`proof = "verified"` + `require_observations = true`, default unchanged) and non-blocking `verified`-without-observations advisory.
+- Resolve selected `.drift/config.toml` first in memory during multi-target `drift approve` batches, preserving preflight rollback, area isolation, and `--reviewed` binding.
+- Document Gradle + JUnit 5 usage in `docs/bridges.md` (env vars vs allowlisted `systemProperty`, `--rerun`, directory-mode `maxParallelForks`, clean dirs, dynamic `@DriftCase`).
+- Harden `drift-junit`: `DRIFT_SNAPSHOT`/`DRIFT_SELECT` env, `@Disabled` container drop, fail-fast config & atomic flush, single-file snapshot lock, empty-cases `@DriftCase`, ClassSource IDs.
+- Document Scala 3 / MUnit operational contract in `docs/bridges.md` (clean `DRIFT_EVENTS`, forked sbt env vars, `afterAll` flush, standalone verify boundary, Scala 2.12 caveat).
+- Harden `drift-junit`: standalone ThreadLocal reset, Scala 3 case-class/`Map.empty` verify, self-stub & `inputsUnchanged` guards, idempotent flush, `(` IDs, env fallbacks, and projected 0.3 obs.
+- Harden Python bridge: pytest/0-event runner guard, fork/switch shard isolation, mutants rc/setup-error handling, async rejection, pytest env.runner, module.Class IDs, and strict CLI parsing.
+- Fix Python bridge mtime-guarded inventory merge, gate/prove runner rc propagation, self-stub obs suppression, '(' canonical test IDs, and fail-closed cold 0-file test runs.
+- Fix JS bridge Mocha titlePath(), test/ cold discovery and fail-closed empty test runs, runner env detection, UTF-8 4 KiB observation cap, project-scoped DERIVED keys, and retry supersession.
+- Fix JS bridge canonical test IDs on '(', gate/prove runner exit-code propagation, and mtime-guarded prior inventory merge to prevent deleted/skipped test resurrection.
+- Fix offline verifier canonical_test_id '(' truncation, multi-shard inventory membership parity, and 0.3 missing-profile ValueError/DR-E401 handling.
+- Align `docs/bridges.md` (remove `checkLogSink`/plan-loader overclaims on C++/C#/GDScript) and clarify `GUARANTEES.md` exit-2 inventory rejection.
+- Fix drift_cpp.hpp NaN/Inf guards, maxDelta==0, multi-run emitProofBatch with outcome/level/0.3 capabilities, JSON escaping, 0.3 monotonic, replayCounterexamples, _frame guard, and emitSimReceipt.
+- Fix offline verifier f32/f64 bits decoding, IEEE-754 f32 rounding, and false-positive unevaluated ["touched"] on .meta.json shards without touched.
+- Add `drift.observation/1`, single-file `.jsonl` `DRIFT_EVENTS`, `strict_when`, Edition 2021 (`1.80`) to `drift_rust`, and align verifier float `peer.sum`/`balance`.
+- Add opaque `[policy]`/`superseded` advisories, JS `drift.d.mts`, `project`/`DRIFT_TEST_PREFIX`, `strictWhen`/`DRIFT_STRICT_WHEN`, and `drift_verify.py --compare-gate`.
+- Add native pure-V OpenAPI 3.x YAML 1.2 Core decoder (`sweep`, `export boundary`, `new --openapi`) with fail-closed duplicate/anchor/alias/merge/tab/budget guards.
+- Auto-emit schema-valid `drift.observation/1` (`outcome = "returned"`, measured `frame.writes`) in JVM/JS/Python, align JVM 0.3 `eq`, and fix verifier `$$`/U+2028 parity.
+- Default `show --out` & `.drift/` under `--state-dir`, add Free frame/floor advisories, and add `drift.stateDir` to `drift-maven-plugin`.
+- Exclude doc/line comments from `bridge_budget_test.v` non-ws counting and accept unary `!` mutations in `scripts/selection_check.py`.
+- Parallelize `release-build.yml` verify into 3 cached pre-gate jobs, parallelize cross-compile toolchains, and isolate parallel 4-target Free builds in `release_packaging.py`.
+
 ## 0.10.0
 
 - Release `0.10.0`.

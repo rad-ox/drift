@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import struct
 from decimal import Decimal as D
 from typing import Any
 
@@ -31,26 +33,68 @@ def _ob(v: Any) -> Any:
         if t == "dec" and isinstance(x, str) and re.fullmatch(r"[+-]?(?=\.?\d)\d*\.?\d*", x.strip()):
             return D(x.strip())
         if t in ("f32", "f64"):
-            return float(x)
+            if "bits" in v:
+                bs = v["bits"]
+                if not isinstance(bs, str):
+                    raise ValueError(t)
+                hs = bs[2:] if bs.startswith("0x") else bs
+                if not re.fullmatch(r"[0-9a-fA-F]{1," + ("8" if t == "f32" else "16") + r"}", hs):
+                    raise ValueError(t)
+                nbytes = 4 if t == "f32" else 8
+                return struct.unpack(">f" if t == "f32" else ">d", int(hs, 16).to_bytes(nbytes, "big"))[0]
+            if "v" not in v or isinstance(x, bool):
+                raise ValueError(t)
+            if isinstance(x, str):
+                if "_" in x:
+                    raise ValueError(t)
+                if x in ("-0.0", "-0"):
+                    f = -0.0
+                elif x in ("NaN", "nan"):
+                    f = math.nan
+                elif x in ("+Inf", "Inf", "+Infinity", "Infinity"):
+                    f = math.inf
+                elif x in ("-Inf", "-Infinity"):
+                    f = -math.inf
+                else:
+                    f = float(x)
+            elif isinstance(x, (int, float)):
+                f = float(x)
+            else:
+                raise ValueError(t)
+            if t == "f32":
+                try:
+                    return struct.unpack(">f", struct.pack(">f", f))[0]
+                except OverflowError:
+                    return math.copysign(math.inf, f)
+            return f
         if t == "bytes":
             return bytes.fromhex(x)
         raise ValueError(t)
     o: dict[str, Any] = {}
     for k, x in v.items():
-        if (k.startswith("$") and not k.startswith("$$")) or (k.lstrip("$") in o and k.startswith("$$")):
+        if k.startswith("$") and not k.startswith("$$"):
             raise ValueError(k)
-        o[k[1:] if k.startswith("$$") else k] = _ob(x)
+        dk = k[1:] if k.startswith("$$") else k
+        if dk in o:
+            raise ValueError(k)
+        o[dk] = _ob(x)
     return o
 
 
 def _env(e: Any) -> tuple[Any, ...]:
     if not isinstance(e, dict) or e.get("schema") != "drift.observation/1" or e.get("outcome", "returned") not in ("returned", "thrown", "timeout", "interrupted"):
         raise ValueError("observation")
-    ts = e.get("touched_symbols") or []
-    io = e.get("init_only_symbols") or []
+    ts = e["touched_symbols"] if "touched_symbols" in e else []
+    io = e["init_only_symbols"] if "init_only_symbols" in e else []
     if not isinstance(ts, list) or not all(isinstance(x, str) for x in ts) or not isinstance(io, list) or not all(isinstance(x, str) for x in io):
         raise ValueError("touched_symbols")
-    return e.get("outcome", "returned"), _ob(e["payload"]) if "payload" in e else _ABS, e.get("presence", {}), e.get("frame", {}), ts, io
+    pr = e["presence"] if "presence" in e else {}
+    if not isinstance(pr, dict) or not all(isinstance(k, str) and v in ("exact", "null_collapsed", "absent_collapsed", "unobservable") for k, v in pr.items()):
+        raise ValueError("presence")
+    fr = e["frame"] if "frame" in e else {}
+    if not isinstance(fr, dict):
+        raise ValueError("frame")
+    return e.get("outcome", "returned"), _ob(e["payload"]) if "payload" in e else _ABS, pr, fr, ts, io
 
 
 def obs03(d: dict[str, Any], cs: list[str], sch: str) -> dict[str, Any]:
@@ -110,18 +154,23 @@ def _contains(cont: Any, o: Any, exact_scale: bool) -> bool:
 def _linear_peer(o: Any, add_refs: list[str], sub_refs: list[str], g: Any, has_tol: bool, tol: tuple[Any, Any]) -> bool:
     if not _nm(o) or _d(o).is_nan():
         return False
-    acc = D(0)
-    for r in add_refs:
-        po = g(r)
-        if po is _ABS or not _nm(po) or _d(po).is_nan():
-            return False
-        acc += _d(po)
-    for r in sub_refs:
-        po = g(r)
-        if po is _ABS or not _nm(po) or _d(po).is_nan():
-            return False
-        acc -= _d(po)
-    return abs(_d(o) - acc) <= tol[0] + tol[1] * abs(acc) if has_tol else _d(o) == acc
+    adds, subs = [], []
+    for refs, dst in ((add_refs, adds), (sub_refs, subs)):
+        for r in refs:
+            po = g(r)
+            if po is _ABS or not _nm(po) or _d(po).is_nan():
+                return False
+            dst.append(po)
+    if not has_tol and type(o) is int and all(type(x) is int for x in (*adds, *subs)):
+        return o == sum(adds) - sum(subs)
+    if not has_tol and isinstance(o, D) and all(isinstance(x, D) for x in (*adds, *subs)):
+        return o == sum(adds, D(0)) - sum(subs, D(0))
+    obs_n, s_tot, mag = float(o), 0.0, 0.0
+    for x in adds:
+        pv = float(x); s_tot += pv; mag += abs(pv)
+    for x in subs:
+        pv = float(x); s_tot -= pv; mag += abs(pv)
+    return abs(obs_n - s_tot) <= float(tol[0]) + float(tol[1]) * mag
 
 
 def _peer(pm: dict[str, Any], o: Any, g: Any, has_tol: bool = False, tol: tuple[Any, Any] = (0, 0), exact_scale: bool = False) -> bool:
@@ -225,10 +274,14 @@ def _match_ft(sym: str, pat: str) -> bool:
 def _judge(c: dict[str, Any], cid: str, e: Any, dec: Any = None) -> str:
     out, pay, pres, fr, ts, io = dec if dec is not None else _env(e)
     cm, cx = c["cases"][cid], c["obs"]
-    ws, ps = fr.get("writes") or [], cm["writes"] if isinstance(cm.get("writes"), list) else cx["w"]
+    cw = cm.get("writes")
+    ps = cw if isinstance(cw, list) else cx["w"]
+    wp = lambda w: w in ps or w.split("#")[0] in ps or ("#" not in w and any(x.split("#")[0] == w for x in ps))
+    has_fr = "writes" in fr
+    ws = fr["writes"] if has_fr else []
     if not isinstance(ws, list) or not all(isinstance(w, str) for w in ws):
         return "inconclusive"
-    if out != "returned" or any(not (w in ps or w.split("#")[0] in ps or ("#" not in w and any(x.split("#")[0] == w for x in ps))) for w in ws):
+    if out != "returned" or any(not wp(w) for w in ws):
         return "violated"
     init_s = {x.strip() for x in io}
     fts = cx.get("ft") or ()
@@ -246,10 +299,12 @@ def _judge(c: dict[str, Any], cid: str, e: Any, dec: Any = None) -> str:
     th = cm.get("then") or {}
     peers: dict[str, Any] = {}
     if any(isinstance(n, dict) and "peer" in n for n in th.values()):
-        peers = {f"when.{k}": _ob(x["eq"]) for k, x in (cm.get("when") or {}).items() if list(x) == ["eq"]}
+        peers = {f"when.{k}": x["eq"] for k, x in (cm.get("when") or {}).items() if list(x) == ["eq"]}
         for k in {*th, *cx["proj"]}:
             peers[f"then.{k}"] = peers[k] = at(k)
     rs = {_cl(n, at(k), ptr(k), pres, cx["units"], cx["unit"].get(k, ""), lambda r: peers.get(r, _ABS)) for k, n in th.items()}
+    if not has_fr and isinstance(cw, list) and any(not wp(w) for w in cx["w"]):
+        rs.add("inconclusive")
     return "violated" if "violated" in rs else ("inconclusive" if "inconclusive" in rs else "passed")
 
 

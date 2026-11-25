@@ -462,3 +462,67 @@ def _merge_pred_03(b: dict[str, Any], c: dict[str, Any]) -> dict[str, Any]:
         if c.get(k):
             out[k] = c[k]
     return out
+
+
+def sub_use_text_params(val: Any, use_tbl: Any) -> Any:
+    params = {k: str(v) for k, v in use_tbl.items() if k not in ("profile", "waive", "vocabulary", "concepts") and isinstance(v, (str, int, bool))} if isinstance(use_tbl, dict) else {}
+
+    def _sub(x: Any) -> Any:
+        if isinstance(x, str):
+            for pk, pv in params.items():
+                if x == f"${{{pk}}}":
+                    return pv
+                x = x.replace(f"${{{pk}}}", pv)
+            return x
+        return [_sub(i) for i in x] if isinstance(x, list) else ({k: _sub(v) for k, v in x.items()} if isinstance(x, dict) else x)
+
+    return _sub(val)
+
+
+def check_receipt_scope_snap_subj(rec: dict[str, Any], scope_code: list[str], active_cases: set[str], expected_snapshot: str, expected_subject_ref: str, cov_matches_fn: Any, prefix: str, extra_ok: bool = True) -> tuple[str, str] | None:
+    eff = rec["outcome"]
+    deg = "inconclusive" if eff == "passed" else eff
+    if not extra_ok or not scope_code or not all(any(cov_matches_fn(c, sc) for c in rec["covered_scope"]) for sc in scope_code) or not active_cases or not all(c in active_cases for c in rec["cases"]):
+        return deg, f"{prefix}.incomplete_scope"
+    if expected_snapshot and rec["code_snapshot"] != expected_snapshot:
+        return deg, f"{prefix}.snapshot_mismatch"
+    if expected_subject_ref and rec["subject_ref"] != expected_subject_ref:
+        return deg, f"{prefix}.subject_mismatch"
+    return None
+
+
+def reduce_receipt_groups(by_target: dict[Any, dict[str, dict[str, Any]]], eval_rec_fn: Any, prefix: str) -> tuple[list[str], list[dict[str, Any]]]:
+    eval_list, reasons, has_viol, has_inc = [], [], False, False
+    c_rsn, v_rsn, i_rsn = f"{prefix}.conflicting_receipts", f"{prefix}.violated", f"{prefix}.inconclusive"
+    for tkey in sorted(by_target):
+        bucket = by_target[tkey]
+        group = [bucket[k] for k in sorted(bucket)]
+        has_conflict = len(group) > 1
+        grp_evals = [(rec, *eval_rec_fn(rec)) for rec in group]
+        grp_viol = any(eff == "violated" for _, eff, _ in grp_evals)
+        for rec, eff0, rsn0 in grp_evals:
+            eff, rsn = eff0, rsn0
+            if has_conflict:
+                if grp_viol:
+                    eff, rsn = "violated", (rsn0 if (rsn0 and rsn0 != v_rsn) else c_rsn)
+                else:
+                    eff, rsn = "inconclusive", c_rsn
+            item = {**rec, "effective_outcome": eff, "provenance": "measured"}
+            if rsn:
+                item["reason"] = rsn
+            eval_list.append(item)
+            if eff == "violated":
+                has_viol = True
+                if rsn and rsn not in reasons:
+                    reasons.append(rsn)
+                if has_conflict and c_rsn not in reasons:
+                    reasons.append(c_rsn)
+            elif eff != "passed":
+                has_inc = True
+                if rsn and rsn not in reasons:
+                    reasons.append(rsn)
+    if has_viol and v_rsn not in reasons:
+        reasons.append(v_rsn)
+    if has_inc and not has_viol and i_rsn not in reasons:
+        reasons.append(i_rsn)
+    return reasons, eval_list

@@ -1,12 +1,10 @@
 package drift;
 
+import static drift.DriftViewChecks.badState;
+import static drift.Json.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeSet;
+import java.util.*;
 
 /** Optional execution context of the inventory sidecar: execution_ref (version 2), pack_ref and touched paths. */
 final class ExecutionContext {
@@ -15,31 +13,31 @@ final class ExecutionContext {
 
     /** The validated execution reference, or null when none is configured. */
     static String executionRef() {
-        String ref = configured(DriftListener.EXECUTION_REF, "DRIFT_EXECUTION_REF");
+        String ref = DriftListener.propOrEnv(DriftListener.EXECUTION_REF, "DRIFT_EXECUTION_REF");
         if (ref != null && !ref.matches("sha256:[0-9a-f]{64}")) {
-            throw new IllegalStateException("invalid drift.executionRef / DRIFT_EXECUTION_REF");
+            throw badState("invalid drift.executionRef / DRIFT_EXECUTION_REF");
         }
         return ref;
     }
 
     /** Appends pack_ref and touched after the snapshot; touched is always written with an execution reference. */
     static void appendTail(StringBuilder json, String executionRef) {
-        String packRef = configured(DriftListener.PACK_REF, "DRIFT_PACK_REF");
+        String packRef = DriftListener.propOrEnv(DriftListener.PACK_REF, "DRIFT_PACK_REF");
         if (packRef != null) {
             if (!validPackRef(packRef)) {
-                throw new IllegalStateException("invalid drift.packRef / DRIFT_PACK_REF");
+                throw badState("invalid drift.packRef / DRIFT_PACK_REF");
             }
             Json.field(json.append(','), "pack_ref", packRef);
         }
         TreeSet<String> touched = new TreeSet<>();
-        String raw = configured(DriftListener.TOUCHED, "DRIFT_TOUCHED");
+        String raw = DriftListener.propOrEnv(DriftListener.TOUCHED, "DRIFT_TOUCHED");
         for (String value : raw == null ? new String[0] : raw.split("[\\n,]+")) {
             String path = value.trim();
             if (path.isEmpty()) {
                 continue;
             }
             if (!safePath(path)) {
-                throw new IllegalStateException("invalid touched path: " + path);
+                throw badState("invalid touched path: " + path);
             }
             touched.add(path);
         }
@@ -55,33 +53,25 @@ final class ExecutionContext {
         if (!(v2 || Long.valueOf(1).equals(version))
                 || (v2 ? !(inventory.get("execution_ref") instanceof String ref && ref.matches("sha256:[0-9a-f]{64}"))
                         : inventory.containsKey("execution_ref"))) {
-            throw new IllegalStateException(sidecar + " has an invalid inventory shape");
+            throw badState(sidecar + " has an invalid inventory shape");
         }
         if (inventory.containsKey("pack_ref")
                 && !(inventory.get("pack_ref") instanceof String packRef && validPackRef(packRef))) {
-            throw new IllegalStateException(sidecar + " has an invalid pack_ref");
+            throw badState(sidecar + " has an invalid pack_ref");
         }
         if (!inventory.containsKey("touched")) {
             return;
         }
         if (!(inventory.get("touched") instanceof List<?> list) || !list.stream().allMatch(String.class::isInstance)) {
-            throw new IllegalStateException(sidecar + " has invalid touched paths");
+            throw badState(sidecar + " has invalid touched paths");
         }
         List<String> paths = list.stream().map(String.class::cast).toList();
         if (!paths.stream().allMatch(ExecutionContext::safePath)) {
-            throw new IllegalStateException(sidecar + " has an invalid touched path");
+            throw badState(sidecar + " has an invalid touched path");
         }
         if (!paths.equals(paths.stream().distinct().sorted().toList())) {
-            throw new IllegalStateException(sidecar + " touched paths are not sorted and unique");
+            throw badState(sidecar + " touched paths are not sorted and unique");
         }
-    }
-
-    private static String configured(String property, String envName) {
-        String value = System.getProperty(property);
-        if (value == null || value.isBlank()) {
-            value = System.getenv(envName);
-        }
-        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private static boolean validPackRef(String value) {
@@ -116,14 +106,14 @@ final class ExecutionContext {
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> buildInput(Map<String, Object> when, Map<String, String> whenProj, Map<String, Object> base) {
-        Object out = Json.cloneJsonValue(base == null ? Map.of() : base);
+        Object out = cloneJsonValue(base == null ? Map.of() : base);
         for (Map.Entry<String, Object> e : when.entrySet()) {
             String key = e.getKey();
             Object val = e.getValue();
             if (whenProj.containsKey(key)) {
-                out = Json.writeJsonPointer(out, whenProj.get(key), val);
+                out = writeJsonPointer(out, whenProj.get(key), val);
             } else if (out instanceof Map<?, ?> m) {
-                ((Map<String, Object>) m).put(key, Json.cloneJsonValue(val));
+                ((Map<String, Object>) m).put(key, cloneJsonValue(val));
             }
         }
         return out instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
@@ -132,9 +122,9 @@ final class ExecutionContext {
     static String canonicalStubRef(Object rawRef, Map<String, String> whenProjections, Map<String, String> thenProjections) {
         if (!(rawRef instanceof String ref) || ref.isBlank()) return "";
         String s = ref.trim();
-        if (s.startsWith("/")) return Json.splitResourcePointer(s)[1];
+        if (s.startsWith("/")) return splitResourcePointer(s)[1];
         String p = thenProjections != null && thenProjections.containsKey(s) ? thenProjections.get(s) : (whenProjections != null && whenProjections.containsKey(s) ? whenProjections.get(s) : ("/" + s));
-        return Json.splitResourcePointer(p)[1];
+        return splitResourcePointer(p)[1];
     }
 
     static Number maxNum(Number a, Number b) { return a == null ? b : (b == null || a.doubleValue() >= b.doubleValue() ? a : b); }
@@ -155,7 +145,7 @@ final class ExecutionContext {
             for (Map.Entry<String, Object> e : m.entrySet()) {
                 if (e.getKey().equals(ref) || e.getKey().equals(bare) || canonicalStubRef(e.getKey(), whenProjections, pm).equals(ck)) {
                     if (e.getValue() instanceof Number n) return new Number[]{n, n};
-                    if (Json.isRelationalMap(e.getValue()) && e.getValue() instanceof Map<?, ?> rm) {
+                    if (isRelationalMap(e.getValue()) && e.getValue() instanceof Map<?, ?> rm) {
                         return new Number[]{rm.get("min") instanceof Number n1 ? n1 : null, rm.get("max") instanceof Number n2 ? n2 : null};
                     }
                 }
@@ -167,7 +157,7 @@ final class ExecutionContext {
     static int peerOrderRelation(String ckA, String ckB, Map<String, Object> thenMap, Map<String, String> wp, Map<String, String> tp) {
         if (ckA.isEmpty() || ckB.isEmpty() || ckA.equals(ckB) || thenMap == null) return 0;
         for (var e : thenMap.entrySet()) {
-            if (!Json.isRelationalMap(e.getValue()) || !(e.getValue() instanceof Map<?, ?> m)) continue;
+            if (!isRelationalMap(e.getValue()) || !(e.getValue() instanceof Map<?, ?> m)) continue;
             String ck = canonicalStubRef(e.getKey(), wp, tp);
             if (ck.equals(ckA)) {
                 if (m.containsKey("eq_field") && canonicalStubRef(m.get("eq_field"), wp, tp).equals(ckB)) return 3;
@@ -187,7 +177,7 @@ final class ExecutionContext {
         if (rawThen == null || rawThen.isEmpty()) return Map.of();
         boolean anyPeer = false;
         for (Object v : rawThen.values()) {
-            if (Json.isRelationalMap(v) && v instanceof Map<?, ?> m
+            if (isRelationalMap(v) && v instanceof Map<?, ?> m
                     && ((m.get("sum_fields") instanceof List<?> sf && sf.size() >= 2)
                     || m.containsKey("le_field") || m.containsKey("ge_field") || m.containsKey("eq_field"))) {
                 anyPeer = true;
@@ -195,10 +185,10 @@ final class ExecutionContext {
             }
         }
         if (!anyPeer) return rawThen;
-        Map<String, Object> out = (Map<String, Object>) Json.cloneJsonValue(rawThen);
+        Map<String, Object> out = (Map<String, Object>) cloneJsonValue(rawThen);
         for (int pass = 0; pass < 3; pass++) {
             for (var e : out.entrySet()) {
-                if (!Json.isRelationalMap(e.getValue()) || !(e.getValue() instanceof Map<?, ?> rawM)) continue;
+                if (!isRelationalMap(e.getValue()) || !(e.getValue() instanceof Map<?, ?> rawM)) continue;
                 Map<String, Object> tv = (Map<String, Object>) rawM;
                 String ckTgt = canonicalStubRef(e.getKey(), wp, tp);
                 Number loK = tv.get("min") instanceof Number n1 ? n1 : null;
@@ -210,7 +200,7 @@ final class ExecutionContext {
                     if ((pk.equals("eq_field") || pk.equals("le_field")) && pb[1] != null) hiK = minNum(hiK, pb[1]);
                 }
                 for (var pe : out.entrySet()) {
-                    if (pe.getKey().equals(e.getKey()) || !Json.isRelationalMap(pe.getValue()) || !(pe.getValue() instanceof Map<?, ?> pm)) continue;
+                    if (pe.getKey().equals(e.getKey()) || !isRelationalMap(pe.getValue()) || !(pe.getValue() instanceof Map<?, ?> pm)) continue;
                     Number pLo = pm.get("min") instanceof Number pn1 ? pn1 : null;
                     Number pHi = pm.get("max") instanceof Number pn2 ? pn2 : null;
                     if (pm.containsKey("eq_field") && canonicalStubRef(pm.get("eq_field"), wp, tp).equals(ckTgt)) {
@@ -221,7 +211,7 @@ final class ExecutionContext {
                     if (pm.containsKey("ge_field") && canonicalStubRef(pm.get("ge_field"), wp, tp).equals(ckTgt) && pHi != null) hiK = minNum(hiK, pHi);
                 }
                 for (var se : out.entrySet()) {
-                    if (se.getKey().equals(e.getKey()) || !Json.isRelationalMap(se.getValue()) || !(se.getValue() instanceof Map<?, ?> sm)
+                    if (se.getKey().equals(e.getKey()) || !isRelationalMap(se.getValue()) || !(se.getValue() instanceof Map<?, ?> sm)
                             || !(sm.get("sum_fields") instanceof List<?> sfList) || sfList.size() < 2) continue;
                     Number sLo = sm.get("min") instanceof Number sn1 ? sn1 : null, sHi = sm.get("max") instanceof Number sn2 ? sn2 : null;
                     if (sLo == null && sHi == null) continue;
@@ -258,7 +248,7 @@ final class ExecutionContext {
                         if ((ord == 2 || ord == 3) && sLo != null && oAllHi) loK = maxNum(loK, roundTightenedNum(loK, hiK, (sLo.doubleValue() - oHi) / (mk + mp), true));
                     }
                     for (var be : out.entrySet()) {
-                        if (be.getKey().equals(se.getKey()) || be.getKey().equals(e.getKey()) || !Json.isRelationalMap(be.getValue())
+                        if (be.getKey().equals(se.getKey()) || be.getKey().equals(e.getKey()) || !isRelationalMap(be.getValue())
                                 || !(be.getValue() instanceof Map<?, ?> bm) || !(bm.get("sum_fields") instanceof List<?> bSf) || bSf.size() < 2) continue;
                         Number bLo = bm.get("min") instanceof Number bn1 ? bn1 : null, bHi = bm.get("max") instanceof Number bn2 ? bn2 : null;
                         if (bLo == null && bHi == null) continue;
@@ -288,7 +278,7 @@ final class ExecutionContext {
                                 String zCk = multB.keySet().stream().filter(x -> !x.equals(yCk)).findFirst().orElse("");
                                 for (var ce : out.entrySet()) {
                                     if (ce.getKey().equals(se.getKey()) || ce.getKey().equals(be.getKey()) || ce.getKey().equals(e.getKey())
-                                            || !Json.isRelationalMap(ce.getValue()) || !(ce.getValue() instanceof Map<?, ?> cm)
+                                            || !isRelationalMap(ce.getValue()) || !(ce.getValue() instanceof Map<?, ?> cm)
                                             || !(cm.get("sum_fields") instanceof List<?> cSf) || cSf.size() != sfList.size()) continue;
                                     Map<String, Integer> multC = new LinkedHashMap<>();
                                     for (Object sf : cSf) {
@@ -315,40 +305,40 @@ final class ExecutionContext {
     }
 
     static int relPeerRank(Object val) {
-        if (!Json.isRelationalMap(val) || !(val instanceof Map<?, ?> m)) return 0;
+        if (!isRelationalMap(val) || !(val instanceof Map<?, ?> m)) return 0;
         return m.get("sum_fields") instanceof List<?> sf ? 2 + sf.size() : (m.containsKey("eq_field") || m.containsKey("ge_field") || m.containsKey("le_field") ? 1 : 0);
     }
 
-    static Json.PointerLookup resolveStubPeer(Object rawRef, Object base, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections) {
-        if (!(rawRef instanceof String ref) || ref.isBlank()) return new Json.PointerLookup(false, null);
+    static PointerLookup resolveStubPeer(Object rawRef, Object base, Map<String, Object> peerIdx, Map<String, String> whenProjections, Map<String, String> thenProjections) {
+        if (!(rawRef instanceof String ref) || ref.isBlank()) return new PointerLookup(false, null);
         String s = ref.trim();
         String bare = s.replaceFirst("^/+", "");
         if (s.startsWith("/")) {
-            Json.PointerLookup r = Json.readJsonPointer(base, s);
-            if (r.found() && !Json.isRelationalMap(r.value())) return r;
+            PointerLookup r = readJsonPointer(base, s);
+            if (r.found() && !isRelationalMap(r.value())) return r;
         } else {
-            if (base instanceof Map<?, ?> bm && bm.containsKey(s) && !Json.isRelationalMap(bm.get(s))) {
-                return new Json.PointerLookup(true, bm.get(s));
+            if (base instanceof Map<?, ?> bm && bm.containsKey(s) && !isRelationalMap(bm.get(s))) {
+                return new PointerLookup(true, bm.get(s));
             }
             for (Map<String, String> pm : List.of(thenProjections == null ? Map.<String, String>of() : thenProjections, whenProjections == null ? Map.<String, String>of() : whenProjections)) {
                 if (pm.containsKey(s)) {
-                    Json.PointerLookup r = Json.readJsonPointer(base, pm.get(s));
-                    if (r.found() && !Json.isRelationalMap(r.value())) return r;
+                    PointerLookup r = readJsonPointer(base, pm.get(s));
+                    if (r.found() && !isRelationalMap(r.value())) return r;
                 }
             }
-            Json.PointerLookup r = Json.readJsonPointer(base, "/" + bare);
-            if (r.found() && !Json.isRelationalMap(r.value())) return r;
+            PointerLookup r = readJsonPointer(base, "/" + bare);
+            if (r.found() && !isRelationalMap(r.value())) return r;
         }
         String rawTgt = s.startsWith("/") ? s : (thenProjections != null && thenProjections.containsKey(s) ? thenProjections.get(s) : (whenProjections != null && whenProjections.containsKey(s) ? whenProjections.get(s) : ("/" + bare)));
-        String tgt = Json.splitResourcePointer(rawTgt)[1];
+        String tgt = splitResourcePointer(rawTgt)[1];
         if (peerIdx != null) {
             for (String cand : List.of(s, bare, tgt)) {
                 if (!cand.isEmpty() && peerIdx.containsKey(cand)) {
-                    return new Json.PointerLookup(true, peerIdx.get(cand));
+                    return new PointerLookup(true, peerIdx.get(cand));
                 }
             }
         }
-        return new Json.PointerLookup(false, null);
+        return new PointerLookup(false, null);
     }
 
     static Map<String, Object> buildPeerIndex(Map<String, Object> whenMap, Map<String, Object> rawThenMap, Map<String, String> whenProjections, Map<String, String> thenProjections) {
@@ -356,21 +346,21 @@ final class ExecutionContext {
         Map<String, Object> idx = new LinkedHashMap<>();
         if (whenMap != null) {
             for (Map.Entry<String, Object> e : whenMap.entrySet()) {
-                if (Json.isRelationalMap(e.getValue())) continue;
+                if (isRelationalMap(e.getValue())) continue;
                 idx.put(e.getKey(), e.getValue());
-                String wp = whenProjections == null ? "" : Json.splitResourcePointer(whenProjections.getOrDefault(e.getKey(), ""))[1];
+                String wp = whenProjections == null ? "" : splitResourcePointer(whenProjections.getOrDefault(e.getKey(), ""))[1];
                 if (wp.startsWith("/")) idx.put(wp, e.getValue());
             }
         }
         List<Map.Entry<String, Object>> relEntries = new ArrayList<>();
         if (thenMap != null) {
             for (Map.Entry<String, Object> e : thenMap.entrySet()) {
-                if (Json.isRelationalMap(e.getValue())) {
+                if (isRelationalMap(e.getValue())) {
                     relEntries.add(e);
                     continue;
                 }
                 idx.put(e.getKey(), e.getValue());
-                String tp = thenProjections == null ? "" : Json.splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
+                String tp = thenProjections == null ? "" : splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
                 if (tp.startsWith("/")) idx.put(tp, e.getValue());
             }
         }
@@ -388,7 +378,7 @@ final class ExecutionContext {
                     }
                     Object w = DriftStubs.witnessVariants(e.getValue(), Map.of(), idx, whenProjections, thenProjections).get(0);
                     idx.put(e.getKey(), w);
-                    String tp = thenProjections == null ? "" : Json.splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
+                    String tp = thenProjections == null ? "" : splitResourcePointer(thenProjections.getOrDefault(e.getKey(), ""))[1];
                     if (tp.startsWith("/")) idx.put(tp, w);
                     progress = true;
                 }

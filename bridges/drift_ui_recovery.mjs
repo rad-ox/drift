@@ -3,16 +3,17 @@ export const DEFAULT_CURATED_UI_SCENARIOS = Object.freeze(['keyboard_only', 'nar
 export const CAPS_03 = ['rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1'];
 const isStr = (v) => typeof v === 'string';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
-const boolOrNull = (v, fb) => (typeof v === 'boolean' ? v : fb);
+export const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
+export const boolOrNull = (v, fb) => (typeof v === 'boolean' ? v : fb);
 export const unwrap03Eq = (v) => (isObj(v) && Object.keys(v).length === 1 && 'eq' in v ? v.eq : v);
 
-function isElHiddenBasic(el) {
+export function isElementHidden(el) {
   if (!isObj(el)) return false;
   const pres = String(el.presence ?? el.state ?? '').toLowerCase();
   if (pres === 'hidden' || pres === 'absent' || pres === 'collapsed' || el.hidden === true || el.ariaHidden === true || el['aria-hidden'] === 'true') return true;
   return String(el.display ?? el.style?.display ?? '').toLowerCase() === 'none' || ['hidden', 'collapse'].includes(String(el.visibility ?? el.style?.visibility ?? '').toLowerCase());
 }
+const isElHiddenBasic = isElementHidden;
 
 export function deriveObservedCapabilities(s, rawRoles, elements, before, transRaw, afterRaw, contrastSummary) {
   const caps = [], els = Array.isArray(elements) ? elements : [];

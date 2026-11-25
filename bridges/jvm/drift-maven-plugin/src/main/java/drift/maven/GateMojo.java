@@ -1,5 +1,6 @@
 package drift.maven;
 
+import static java.nio.file.Files.*;
 import java.io.IOException;
 import java.io.File;
 import java.nio.file.Files;
@@ -73,6 +74,8 @@ public final class GateMojo extends DriftMojo {
     @Parameter(property = "drift.explain", defaultValue = "false")
     boolean explain;
 
+    private static MojoFailureException failMojo(String m) { return new MojoFailureException(m); }
+
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (skipped("gate")) {
@@ -83,11 +86,11 @@ public final class GateMojo extends DriftMojo {
             throw new MojoExecutionException("drift.mode must be gate or prove, found " + mode);
         }
         requireArea();
-        if (!Files.isDirectory(contracts())) {
-            throw new MojoFailureException("drift: " + contracts() + " is missing: there is no contract to " + command);
+        if (!isDirectory(contracts())) {
+            throw failMojo("drift: " + contracts() + " is missing: there is no contract to " + command);
         }
         if (!hasEvents()) {
-            throw new MojoFailureException("drift: " + events() + " is missing: no test tagged with @DriftCase ran,"
+            throw failMojo("drift: " + events() + " is missing: no test tagged with @DriftCase ran,"
                     + " or prepare did not run before the tests");
         }
         if (feedback) {
@@ -103,6 +106,7 @@ public final class GateMojo extends DriftMojo {
             getLog().info("drift: generating mutation manifest " + mutantManifest);
             java.util.ArrayList<String> mutantArgs = new java.util.ArrayList<>(
                     List.of("mutants", contracts().toString(), "--out", mutantManifest.toString()));
+            appendStateDir(mutantArgs);
             if (mutantsWhen) {
                 mutantArgs.add("--when");
             }
@@ -115,7 +119,7 @@ public final class GateMojo extends DriftMojo {
             Cli.Result manifest = c.run(mutantArgs);
             log(manifest);
             if (manifest.status() != 0) {
-                throw new MojoFailureException("drift: could not generate the mutation manifest");
+                throw failMojo("drift: could not generate the mutation manifest");
             }
             LinkedHashSet<String> classpath = new LinkedHashSet<>();
             classpath.add(project.getBuild().getTestOutputDirectory());
@@ -137,6 +141,7 @@ public final class GateMojo extends DriftMojo {
         java.util.ArrayList<String> args = new java.util.ArrayList<>(
                 List.of(command, contracts().toString(), "--events", events().toString(), "--test-classes",
                         project.getBuild().getTestOutputDirectory()));
+        appendStateDir(args);
         if (at != null && !at.isBlank()) {
             args.add("--at");
             args.add(at.trim());
@@ -200,7 +205,7 @@ public final class GateMojo extends DriftMojo {
         Cli.Result r = c.run(args);
         log(r);
         if (r.status() == 1) {
-            throw new MojoFailureException("drift: the " + (command.equals("prove") ? "proof" : "gate")
+            throw failMojo("drift: the " + (command.equals("prove") ? "proof" : "gate")
                     + " is not green; see the contracts above");
         }
         if (r.status() != 0) {

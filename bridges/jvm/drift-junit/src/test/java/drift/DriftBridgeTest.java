@@ -329,7 +329,7 @@ class DriftBridgeTest {
         assertEquals(snap, metadata.get("snapshot"));
         @SuppressWarnings("unchecked")
         Map<String, Object> env = (Map<String, Object>) metadata.get("env");
-        assertEquals("drift-junit@0.10.0", env.get("adapter"));
+        assertEquals("drift-junit@0.11.0", env.get("adapter"));
         assertEquals("junit-platform", env.get("runner"));
     }
 
@@ -451,7 +451,7 @@ class DriftBridgeTest {
         d143Map.put("z_tax", Map.of("eq_field", "y_ship"));
         Map<String, Object> d143Syn = DriftStubs.synthesizeMap(
                 d143Map,
-                DriftStubs.buildPeerIndex(Map.of(), d143Map, Map.of(), Map.of()),
+                ExecutionContext.buildPeerIndex(Map.of(), d143Map, Map.of(), Map.of()),
                 Map.of(),
                 Map.of(),
                 Map.of(),
@@ -461,7 +461,7 @@ class DriftBridgeTest {
                 "a", Map.of("min", 0L, "max", 10L, "le_field", "b"),
                 "b", Map.of("min", 0L, "max", 10L),
                 "total", Map.of("min", 10L, "max", 10L, "sum_fields", List.of("a", "b")));
-        Map<String, Object> d150Tight = Json.tightenThenMapBySumResiduals(Map.of(), d150Raw, Map.of(), Map.of());
+        Map<String, Object> d150Tight = ExecutionContext.tightenThenMapBySumResiduals(Map.of(), d150Raw, Map.of(), Map.of());
         @SuppressWarnings("unchecked")
         Map<String, Object> d150A = (Map<String, Object>) d150Tight.get("a");
         @SuppressWarnings("unchecked")

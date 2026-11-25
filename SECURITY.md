@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest released `0.10.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
+Security fixes are provided for the latest released `0.11.x` line of DRIFT Free, DRIFT Pro, and DRIFT Enterprise, as well as the open reference verifier (`verifier/`) and polyglot test bridges (`bridges/`).
 
 | Version | Supported |
 |---|---|
-| `0.10.x` | Yes |
-| `< 0.10.0` | No (upgrade to `0.10.x`) |
+| `0.11.x` | Yes |
+| `< 0.11.0` | No (upgrade to `0.11.x`) |
 
 ## Reporting a Vulnerability
 

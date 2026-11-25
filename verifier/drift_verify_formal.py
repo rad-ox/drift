@@ -18,6 +18,7 @@ from drift_verify_base import (
     _req_str,
     _valid_rel_scope,
     collect_receipt_files,
+    sub_use_text_params,
 )
 
 SEC_OUTCOMES = frozenset(("passed", "violated", "inconclusive"))
@@ -45,22 +46,11 @@ def extract_contract_formal(raw: dict[str, Any], use_tbl: Any, dr1_digest_fn: Ca
     f_raw = raw.get("formal")
     if not isinstance(f_raw, dict) or not f_raw:
         return {}, False
-    params = {k: str(v) for k, v in use_tbl.items() if k not in ("profile", "waive", "vocabulary", "concepts") and isinstance(v, (str, int, bool))} if isinstance(use_tbl, dict) else {}
-
-    def _sub(val: Any) -> Any:
-        if isinstance(val, str):
-            for pk, pv in params.items():
-                if val == f"${{{pk}}}":
-                    return pv
-                val = val.replace(f"${{{pk}}}", pv)
-            return val
-        return [_sub(x) for x in val] if isinstance(val, list) else ({k: _sub(v) for k, v in val.items()} if isinstance(val, dict) else val)
-
     trimmed, resolved = {}, {}
     for fid, fm in f_raw.items():
         if isinstance(fm, dict):
             trimmed[fid] = {k: v for k, v in fm.items() if k not in ("note", "requirement_ref")}
-            sub_m = _sub(dict(fm))
+            sub_m = sub_use_text_params(dict(fm), use_tbl)
             sub_m["requirement_ref"] = dr1_digest_fn({k: v for k, v in sub_m.items() if k not in ("note", "requirement_ref")})
             resolved[fid] = sub_m
     raw["formal"] = trimmed

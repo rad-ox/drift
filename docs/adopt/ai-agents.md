@@ -49,3 +49,16 @@ drift-ask-ui --on                      # Re-enable desktop review UI
 - **Renderers:** Native WPF window on Windows 10/11 and WSL2; single-use `127.0.0.1` loopback Observatory Deck on macOS and Linux Desktop; automatic CLI fallback in SSH, headless, or CI sessions (`DRIFT_UI=off`).
 - **Decision Clarity:** Anchors trade-off options to a single non-dominated reference, flags dominated choices, surfaces baseline relaxations (`coarsened` / `relaxation_witnesses`), keeps the approver name editable per seal, and requires an intentional `Ctrl+Enter` / `Cmd+Enter` gesture after an anti-clickjacking arming window.
 - **Strict Local Boundary:** Zero external network calls, strict CSP, one-time `0600` bootstrap secret, and `0700` staging outside `.drift-work`. Configure dark/light/auto theme in `~/.config/drift/ui.toml` (or `%APPDATA%\drift\ui.toml`) via `[ui].theme = "auto|dark|light"`.
+
+---
+
+## 4. Flow Map Explorer (`drift map` & `drift-map-ui`)
+
+Explore contract cases, cross-contract dataflow, FSM states, and symbolic walks offline without touching approval authority:
+
+```bash
+drift map .drift/contracts --as mermaid          # Deterministic Mermaid diagram (cases in Free; flow in Pro; state/walk in Enterprise)
+drift-map-ui .drift/contracts                    # Isolated loopback SVG explorer (layered links, pan/zoom, Walk stepper, emits drift.focus/1)
+```
+
+`drift-map-ui` runs completely separate from `drift-ask-ui` with **zero approval writes** and falls back to `drift map --as mermaid` in headless, SSH, or CI sessions.

@@ -74,3 +74,18 @@ fn contains_unicode_and_empty_maps() {
     assert!(check(r#"{"non_empty":false}"#, r#"{"a":1}"#, "{}").is_err());
     assert!(check(r#"{"non_empty":false}"#, "0", "{}").is_err());
 }
+
+#[test]
+fn exact_03_eq_parity_and_unsafe_int_guard() {
+    assert!(check(r#"{"eq":1.0}"#, "1.0", "{}").is_ok());
+    assert!(check(r#"{"eq":0.0}"#, "-0.0", "{}").is_ok());
+    assert!(check(r#"{"eq":1.0}"#, "1.0000000005", "{}").is_err());
+    assert!(check(r#"{"eq":1.0,"tol":{"abs":1e-9}}"#, "1.0000000005", "{}").is_ok());
+    assert!(check(r#"{"eq":9007199254740991}"#, "9007199254740991", "{}").is_ok());
+    let unsafe_err = check(r#"{"eq":9007199254740992}"#, "9007199254740992", "{}").unwrap_err();
+    assert!(unsafe_err.contains("i64"), "{unsafe_err}");
+    assert!(!values_equal_exact(&JsonValue::Number(f64::NAN), &JsonValue::Number(f64::NAN)));
+    assert!(!values_equal_exact(&JsonValue::Number(f64::INFINITY), &JsonValue::Number(f64::INFINITY)));
+    assert!(values_equal(&JsonValue::Number(1.0 + 5e-10), &JsonValue::Number(1.0)));
+    assert!(!values_equal_exact(&JsonValue::Number(1.0 + 5e-10), &JsonValue::Number(1.0)));
+}

@@ -131,8 +131,8 @@ def check_value(
     if "non_empty" in exp:
         ne = exp["non_empty"]
         _req(isinstance(ne, bool) and act_len >= 0 and (act_len > 0 if ne else act_len == 0), key, "non_empty")
-    if "prefix" in exp: _req(isinstance(exp["prefix"], str) and isinstance(act, str) and act.startswith(exp["prefix"]), key, "prefix")
-    if "suffix" in exp: _req(isinstance(exp["suffix"], str) and isinstance(act, str) and act.endswith(exp["suffix"]), key, "suffix")
+    for op, fn in (("prefix", str.startswith), ("suffix", str.endswith)):
+        if op in exp: _req(isinstance(exp[op], str) and isinstance(act, str) and fn(act, exp[op]), key, op)
     if "contains" in exp:
         ce = exp["contains"]
         rl = ce if _is_seq(ce) else (ce,)

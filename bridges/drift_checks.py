@@ -1,7 +1,6 @@
 """Projection, relational domain, and UI view checks for the DRIFT Python bridge."""
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
@@ -10,19 +9,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce, drift_ui_collector as _uic
+    from . import drift_probes as _pm
 except ImportError:
-    try:
-        import drift_upstream as _up, drift_security as _sec, drift_ui as _ui, drift_ui_surface as _uis, drift_ui_recovery as _ce, drift_ui_collector as _uic  # type: ignore[no-redef]
-    except ImportError:
-        def _ld(n: str) -> Any:
-            s = importlib.util.spec_from_file_location(n, Path(__file__).with_name(f'{n}.py'))
-            assert s is not None and s.loader is not None
-            m = importlib.util.module_from_spec(s)
-            s.loader.exec_module(m)
-            return m
-        _up, _sec, _ui, _uis = _ld('drift_upstream'), _ld('drift_security'), _ld('drift_ui'), _ld('drift_ui_surface')
-        _ce, _uic = _ld('drift_ui_recovery'), _ld('drift_ui_collector')
+    import drift_probes as _pm  # type: ignore[no-redef]
+_up, _sec, _ui, _uis, _ce, _uic = _pm.sib(__package__, __file__, 'drift_upstream', 'drift_security', 'drift_ui', 'drift_ui_surface', 'drift_ui_recovery', 'drift_ui_collector')
 
 REL_KEYS = frozenset(('min', 'max', 'min_len', 'max_len', 'non_empty', 'le_field', 'ge_field', 'eq_field', 'in', 'not_in', 'sum_fields', 'contains', 'prefix', 'suffix', 'allowed_keys', 'forbid_keys', 'monotonic', 'sum_total', 'step_max_delta', 'approx', 'abs_tol', 'rel_tol', 'balance_fields', 'unit', 'unit_conversion', 'eq', 'len', 'keys', 'peer', 'series', 'tol', 'convert_from'))
 CAPS_03 = ('rel-keys-guard/1', 'rel-linear-balance/1', 'rel-peer-sum/1', 'rel-series/1', 'rel-tol/1', 'unit-conversion/1')
@@ -160,8 +150,21 @@ clear_bridge_plans = _uic.clear_bridge_plans
 attach_bridge_plan_file = _uic.attach_bridge_plan_file
 
 
-def eval_compiled_plan_case(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None = None) -> bool:
-    return _uic.eval_plan_case_impl(contract_id, case_id, plan_case, payload, seen, escape_pointer, read_pointer, check_relational_leaf)
+def values_mismatch_exact(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool): return type(a) is not type(b) or a != b
+    if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+        if not (is_finite_num(a) and is_finite_num(b)): return True
+        if isinstance(a, int) and isinstance(b, int): return a != b
+        if isinstance(a, int): return not b.is_integer() or int(b) != a
+        if isinstance(b, int): return not a.is_integer() or int(a) != b
+        return a != b
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)): return len(a) != len(b) or any(values_mismatch_exact(x, y) for x, y in zip(a, b))
+    if isinstance(a, Mapping) and isinstance(b, Mapping): return len(a) != len(b) or any(k not in b or values_mismatch_exact(v, b[k]) for k, v in a.items())
+    return a != b
+
+
+def eval_compiled_plan_case(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None = None, proj: Mapping[str, str] | None = None) -> bool:
+    return _uic.eval_plan_case_impl(contract_id, case_id, plan_case, payload, seen, escape_pointer, read_pointer, check_relational_leaf, proj)
 
 
 def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any, act: Any, payload: Any, proj: Mapping[str, str], mutation_override: Mapping[str, Any] | None, when_env: Mapping[str, Any] | None = None, contract: Mapping[str, Any] | None = None) -> bool:
@@ -171,7 +174,8 @@ def check_relational_leaf(contract_id: str, case_id: str, key: str, raw_exp: Any
     exp = desugar_03_rel(raw_exp, context.get('units', {}), context.get('schema', {}).get('then', {}).get(key, {}).get('unit'))
     pfx = f'{contract_id}.{case_id}'
     if 'eq' in exp:
-        if values_mismatch(act, exp['eq']):
+        mm = values_mismatch if ('abs_tol' in exp or 'rel_tol' in exp) else values_mismatch_exact
+        if mm(act, exp['eq']):
             raise AssertionError(f"{pfx}: exp then.{key}={exp['eq']!r}, got {act!r}")
         if len(exp) == 1:
             return True
@@ -309,14 +313,6 @@ def check_view_table(contract_id: str, case_id: str, then_table: Mapping[str, An
         if act != exp:
             raise AssertionError(f'{pfx}: exp {key}={exp}, got {act}')
 
-    def assert_bound(key: str, op: str, exp: Any, act: float) -> None:
-        if not is_finite_num(exp) or not is_finite_num(act):
-            raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
-        target = float(exp)
-        failed = act > target if op == '<=' else act < target
-        if failed:
-            raise AssertionError(f'{pfx}: exp {key}{op}{exp}, got {act}')
-
     state_first = {'baseline_state', 'duplicate_figures', 'single_metric_source', 'preserved_input_on_error', 'claim_matches_evidence'}
     unverif_last = {'unverifiable_checks', 'unverified_elements'}
     ordered_items = [
@@ -415,7 +411,7 @@ def build_projected_variants(view: Mapping[str, Any], case_id: str, base: Mappin
 
 resolve_stub_case_id = lambda v, i, c, b=None: _up.resolve_stub_case_id(v, i, c, b, extract_projection_map, write_pointer, clone_json, REL_KEYS)
 find_upstream_contract = _up.find_upstream_contract
-auto_resolve_contract = lambda cid, b, td, w, cs, rj, sb, tj=None: _up._cli.auto_resolve_contract(cid, b, td, w, cs, rj, sb, find_upstream_contract, tj)
+auto_resolve_contract = lambda cid, b, td, w, cs, rj, sb, tj=None: _up._cli.auto_resolve_contract(cid, b, td, w, cs, rj, sb, find_upstream_contract, tj, attach_bridge_plan_file)
 run_drift_cli = lambda argv: _up._cli.run_drift_cli_runner(argv, resolve_selected_files)
 sidecar_head = _sec.sidecar_head
 merge_prior_inventory = lambda out, inv, sh, rd: _sec.merge_prior_inventory(out, inv, sh, rd, resolve_selected_files)
@@ -431,9 +427,8 @@ def run_projection_checks(ctx: Any, case_id: str, payload: Any, checks: Mapping[
     has_cb = isinstance(checks, Mapping) and any(k not in ('frame', 'strictFrame') and callable(v) for k, v in checks.items())
     is_ui = isinstance(payload, Mapping) and (payload.get('schema') == 'drift.ui-observation/1' or isinstance(payload.get('evidence'), Mapping))
     pc = ((get_bridge_plan(ctx.view) or {}).get('cases') or {}).get(case_id) if getattr(ctx, 'mutation_override', None) is None and not has_cb and when_obs is None and not is_ui else None
-    if isinstance(pc, Mapping) and eval_compiled_plan_case(ctx.contract_id, case_id, pc, payload, ctx.reads[case_id]):
-        fo = checks.get('frame') if isinstance(checks, Mapping) and isinstance(checks.get('frame'), Mapping) else (payload.get('_frame') if isinstance(payload, Mapping) and _sec.is_frame_metadata_envelope(payload.get('_frame')) else None)
-        if fo is not None: _sec.verify_case_frame(ctx, case_id, fo, values_mismatch, bool(isinstance(checks, Mapping) and checks.get('strictFrame') is True) or not any(isinstance(v, Mapping) and v.get('observed') is False for v in fo.values()))
+    if isinstance(pc, Mapping) and eval_compiled_plan_case(ctx.contract_id, case_id, pc, payload, ctx.reads[case_id], ctx._proj_map('then')):
+        _sec.verify_projection_frame(ctx, case_id, payload, checks, values_mismatch)
         return
     _sec.run_projection_checks(ctx, case_id, payload, checks, invoke_verified_callback, check_projected_leaf, read_pointer, when_obs)
 

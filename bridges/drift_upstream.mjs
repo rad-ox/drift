@@ -10,6 +10,7 @@ import {
 } from './drift_checks.mjs';
 import { tightenThenMapBySumResiduals } from './drift_cli.mjs';
 import { clearUpstreamCache, findTomlInDir, findUpstreamContract, maxSourceMtime, runCaseMutants } from './drift_probes.mjs';
+import { attachBridgePlan } from './drift_ui_collector.mjs';
 import { desugar03Rel } from './drift_ui_recovery.mjs';
 export { clearUpstreamCache, findTomlInDir, findUpstreamContract, runCaseMutants };
 
@@ -443,75 +444,52 @@ export function autoResolveView(id, state, fs, path, execFileSync, readJson, par
     }
     const isViewsDir = Boolean(targetJson && /[/\\]\.drift[/\\](?:views|resolved)[/\\][^/\\]+\.json$/u.test(targetJson));
     if (rc && (!toml || (targetJson && !isViewsDir ? fs.statSync(rc).mtimeMs >= srcMtime : fs.statSync(rc).mtimeMs > srcMtime))) {
-      return readJson(rc);
+      return attachBridgePlan(readJson(rc), rc, fs, path, readJson);
     }
     if (toml) {
       const envCli = (process.env.DRIFT_CLI || '').trim();
-      const ck = `${envCli}\u0000${cur}`;
-      const bCli = path.join(cur, '.build', 'drift');
-      const clis = [];
-      for (const c of [
-        state.cachedCliKey === ck ? state.cachedCliPath : '',
-        envCli,
-        fs.existsSync(bCli) ? bCli : '',
-        'drift',
-        lCli && fs.existsSync(lCli) ? lCli : '',
-        wCli && fs.existsSync(wCli) ? wCli : '',
-      ]) {
+      const ck = `${envCli}\u0000${cur}`, bCli = path.join(cur, '.build', 'drift'), clis = [];
+      for (const c of [state.cachedCliKey === ck ? state.cachedCliPath : '', envCli, fs.existsSync(bCli) ? bCli : '', 'drift', lCli && fs.existsSync(lCli) ? lCli : '', wCli && fs.existsSync(wCli) ? wCli : '']) {
         if (c && !clis.includes(c)) clis.push(c);
       }
       const warm = !targetJson && state.warmed.has(cDir);
       if (!targetJson) state.warmed.add(cDir);
       for (const cli of clis) {
-        if (warm) {
-          let tmp = '';
-          try {
-            tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'drift-resolved-'));
-            execFileSync(cli, ['show', cDir, '--out', tmp], { cwd: cur, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-            for (const fn of fs.readdirSync(tmp)) {
-              if (fn.endsWith('.json')) {
-                const d = readJson(path.join(tmp, fn));
-                const pf = path.join(tmp, '.plans', `${fn.slice(0, -5)}.plan.json`);
-                if (fs.existsSync(pf)) {
-                  try { Object.defineProperty(d, '__plan', { value: readJson(pf), enumerable: false, configurable: true }); } catch {}
-                }
-                state.batch.set(fn.slice(0, -5), d);
+        let tmp = '';
+        try {
+          tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'drift-resolved-'));
+          execFileSync(cli, ['show', warm ? cDir : toml, '--out', tmp], { cwd: cur, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          state.cachedCliKey = ck; state.cachedCliPath = cli;
+          let found = null;
+          for (const fn of fs.readdirSync(tmp)) {
+            if (!fn.endsWith('.json')) continue;
+            const jf = path.join(tmp, fn), cid = fn.slice(0, -5), d = attachBridgePlan(readJson(jf), jf, fs, path, readJson);
+            if (warm) state.batch.set(cid, d);
+            if (cid === id) found = d;
+          }
+          if (found) {
+            if (!warm) {
+              const dirs = [path.join(cur, '.drift', 'resolved'), path.join(cur, '.drift', 'views'), path.join(cur, '.drift-work', 'resolved')];
+              if (!targetJson && !rc && !dirs.some((d) => fs.existsSync(d))) try { fs.mkdirSync(dirs[2], { recursive: true }); } catch {}
+              const tgt = targetJson || rc || dirs.filter((d) => fs.existsSync(d)).map((d) => path.join(d, `${id}.json`))[0] || '';
+              if (tgt) {
+                try {
+                  fs.mkdirSync(path.dirname(tgt), { recursive: true });
+                  fs.copyFileSync(path.join(tmp, `${id}.json`), tgt);
+                  const sp = path.join(tmp, '.plans', `${id}.plan.json`), tp = path.join(path.dirname(tgt), '.plans', `${id}.plan.json`);
+                  if (fs.existsSync(sp)) { fs.mkdirSync(path.dirname(tp), { recursive: true }); fs.copyFileSync(sp, tp); }
+                  else if (fs.existsSync(tp)) fs.rmSync(tp, { force: true });
+                } catch {}
               }
             }
-            if (state.batch.has(id)) {
-              state.cachedCliKey = ck;
-              state.cachedCliPath = cli;
-              return state.batch.get(id);
-            }
-          } catch {} finally {
-            if (tmp) {
-              try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-            }
+            return found;
           }
+        } catch {} finally {
+          if (tmp) try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
         }
-        try {
-          const out = execFileSync(cli, ['show', toml, '--as', 'json'], { cwd: cur, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-          state.cachedCliKey = ck;
-          state.cachedCliPath = cli;
-          const parsed = parseJson(out);
-          const rDir = path.join(cur, '.drift', 'resolved');
-          const vDir = path.join(cur, '.drift', 'views');
-          const wDir = path.join(cur, '.drift-work', 'resolved');
-          if (!targetJson && !rc && !fs.existsSync(rDir) && !fs.existsSync(vDir) && !fs.existsSync(wDir)) {
-            try { fs.mkdirSync(wDir, { recursive: true }); } catch {}
-          }
-          const tgt = targetJson || rc || (fs.existsSync(rDir) ? path.join(rDir, `${id}.json`) : (fs.existsSync(vDir) ? path.join(vDir, `${id}.json`) : (fs.existsSync(wDir) ? path.join(wDir, `${id}.json`) : '')));
-          if (tgt) {
-            try {
-              fs.mkdirSync(path.dirname(tgt), { recursive: true });
-              fs.writeFileSync(tgt, out, 'utf8');
-            } catch {}
-          }
-          return parsed;
-        } catch {}
       }
     }
-    if (rc) return readJson(rc);
+    if (rc) return attachBridgePlan(readJson(rc), rc, fs, path, readJson);
     if (targetJson && (fs.existsSync(path.join(cur, '.drift')) || fs.existsSync(path.join(cur, '.git')))) return null;
     const parent = path.dirname(cur);
     if (parent === cur) break;

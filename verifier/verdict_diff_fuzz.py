@@ -42,7 +42,7 @@ total = { type = "int" }
 fee = { type = "int" }
 """
 
-OPERATORS = ("eq", "contains_str", "contains_list", "dec_eq", "series", "peer_balance", "peer_tol")
+OPERATORS = ("eq", "contains_str", "contains_list", "dec_eq", "series", "peer_balance", "peer_tol", "frame_restricted", "frame_unrestricted")
 
 
 def _config_toml(proof: str, req_obs: bool) -> str:
@@ -77,11 +77,17 @@ def _make_contract_and_obs(cid: str, op_kind: str) -> tuple[str, dict[str, Any],
         then_s = 'then.status = 200\nthen.tag = "lamp"\n'
         good, bad = {"status": 200, "tag": "lamp"}, {"status": 500, "tag": "lamp"}
 
+    sc_w, case_w = "[]", ""
+    if op_kind == "frame_restricted":
+        sc_w, case_w = '["DB"]', "writes = []\n"
+    elif op_kind == "frame_unrestricted":
+        sc_w, case_w = '["DB"]', 'writes = ["DB"]\n'
+
     toml_s = (
         f'drift = "0.3"\nid = "{cid}"\nintent = "Fuzz contract {cid}."\n\n'
         '[use]\nprofile = "fuzz@1"\n\n'
-        '[scope]\nsurface = "fuzz"\nwrites = []\nreads = ["s"]\nindirect = "none"\n\n'
-        '[cases.c1]\nat = ["unit"]\nwhen.op = "run"\nwhen.base_amt = 100\n'
+        f'[scope]\nsurface = "fuzz"\nwrites = {sc_w}\nreads = ["s"]\nindirect = "none"\n\n'
+        f'[cases.c1]\nat = ["unit"]\n{case_w}when.op = "run"\nwhen.base_amt = 100\n'
         f"{then_s}"
     )
     return toml_s, good, bad
@@ -147,10 +153,16 @@ def _gen_events_for_contract(
             "outcome": outcome, "read": read, "digest": use_dig, "schema": "0.3", "capabilities": CAPS_03,
         }
         obs_roll = rng.random()
-        if obs_roll < 0.45:
-            ev["observations"] = {"c1": {"schema": "drift.observation/1", "payload": good_pay}}
-        elif obs_roll < 0.65:
-            ev["observations"] = {"c1": {"schema": "drift.observation/1", "payload": bad_pay}}
+        if obs_roll < 0.65:
+            obs_e: dict[str, Any] = {"schema": "drift.observation/1", "payload": good_pay if obs_roll < 0.45 else bad_pay}
+            fr_mode = rng.choice(("absent", "empty_obj", "empty_writes", "db_write"))
+            if fr_mode == "empty_obj":
+                obs_e["frame"] = {}
+            elif fr_mode == "empty_writes":
+                obs_e["frame"] = {"writes": []}
+            elif fr_mode == "db_write":
+                obs_e["frame"] = {"writes": ["DB"]}
+            ev["observations"] = {"c1": obs_e}
         events.append(ev)
     return events, sorted(set(discovered))
 

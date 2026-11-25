@@ -1,36 +1,23 @@
 package drift;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.Files.*;
+import static drift.DriftViewChecks.badArg;
+import static drift.DriftViewChecks.badState;
+import static drift.DriftInternal.map;
+import static drift.Json.*;
 import java.io.IOException;
 import java.lang.reflect.Method;
-import java.net.URL;
-import java.net.URLClassLoader;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.ServiceLoader;
-import java.util.TreeMap;
-import org.junit.platform.engine.TestEngine;
-import org.junit.platform.engine.TestExecutionResult;
-import org.junit.platform.engine.TestSource;
+import java.nio.file.*;
+import java.security.*;
+import java.util.*;
+import org.junit.platform.engine.*;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.engine.support.descriptor.MethodSource;
-import org.junit.platform.launcher.Launcher;
-import org.junit.platform.launcher.LauncherDiscoveryRequest;
-import org.junit.platform.launcher.TestExecutionListener;
-import org.junit.platform.launcher.TestIdentifier;
-import org.junit.platform.launcher.TestPlan;
-import org.junit.platform.launcher.core.LauncherConfig;
-import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
-import org.junit.platform.launcher.core.LauncherFactory;
+import org.junit.platform.launcher.*;
+import org.junit.platform.launcher.core.*;
 
 /** Runs current then-value mutants in an isolated JUnit Platform pass. */
 public final class MutationRunner {
@@ -43,11 +30,11 @@ public final class MutationRunner {
     /** Executes controls and mutants, writing version-bound results outside ordinary proof shards. */
     public static void run(Path manifestFile, Path resolved, Path eventsDirectory, Path resultsDirectory,
             List<String> testClasspath) throws IOException {
-        byte[] manifestBytes = Files.readAllBytes(manifestFile);
-        Object value = Json.read(manifestFile);
+        byte[] manifestBytes = readAllBytes(manifestFile);
+        Object value = read(manifestFile);
         Map<String, Object> manifest = object(value, manifestFile.toString());
         if (!Long.valueOf(1).equals(manifest.get(MANIFEST_VERSION))) {
-            throw new IllegalArgumentException("mutation manifest version must be 1");
+            throw badArg("mutation manifest version must be 1");
         }
         String manifestId = "sha256:" + sha256(manifestBytes);
         List<Target> targets = targets(manifest);
@@ -55,9 +42,9 @@ public final class MutationRunner {
         List<CaseKey> cases = cases(targets);
 
         ClassLoader previousLoader = Thread.currentThread().getContextClassLoader();
-        Files.createDirectories(resultsDirectory);
+        createDirectories(resultsDirectory);
         Path resultFile = resultsDirectory.resolve("results.jsonl");
-        Files.deleteIfExists(resultFile);
+        deleteIfExists(resultFile);
 
         List<String> records = new ArrayList<>();
         try (URLClassLoader loader = classLoader(testClasspath, previousLoader)) {
@@ -172,8 +159,8 @@ public final class MutationRunner {
             Drift.endMutationRun();
             Thread.currentThread().setContextClassLoader(previousLoader);
         }
-        Files.writeString(resultFile, String.join("\n", records) + (records.isEmpty() ? "" : "\n"),
-                StandardCharsets.UTF_8);
+        writeString(resultFile, String.join("\n", records) + (records.isEmpty() ? "" : "\n"),
+                UTF_8);
     }
 
     private static List<Target> targets(Map<String, Object> manifest) {
@@ -204,7 +191,7 @@ public final class MutationRunner {
     }
 
     private static List<TestMethod> testInventory(Path eventsDirectory) throws IOException {
-        if (!Files.isDirectory(eventsDirectory)) {
+        if (!isDirectory(eventsDirectory)) {
             return List.of();
         }
         List<Path> sidecars;
@@ -214,12 +201,12 @@ public final class MutationRunner {
         }
         Map<String, TestMethod> methods = new TreeMap<>();
         for (Path sidecar : sidecars) {
-            Map<String, Object> inventory = object(Json.read(sidecar), sidecar.toString());
+            Map<String, Object> inventory = object(read(sidecar), sidecar.toString());
             for (Object entry : list(inventory.get("tests"), sidecar + ".tests")) {
                 String value = string(entry, sidecar + ".tests[]");
                 int hash = value.indexOf('#');
                 if (hash <= 0 || hash + 1 >= value.length()) {
-                    throw new IllegalArgumentException(sidecar + " has an invalid tagged test " + value);
+                    throw badArg(sidecar + " has an invalid tagged test " + value);
                 }
                 String className = value.substring(0, hash);
                 String methodName = value.substring(hash + 1);
@@ -258,14 +245,14 @@ public final class MutationRunner {
                         ignored -> new ArrayList<>()).add(resolved);
             }
         }
-        if (Files.isDirectory(eventsDirectory)) {
+        if (isDirectory(eventsDirectory)) {
             try (var paths = Files.list(eventsDirectory)) {
                 for (Path evFile : paths.filter(p -> p.getFileName().toString().endsWith(".jsonl")).sorted().toList()) {
-                    for (String line : Files.readAllLines(evFile, StandardCharsets.UTF_8)) {
+                    for (String line : readAllLines(evFile, UTF_8)) {
                         String trimmed = line.trim();
                         if (trimmed.isEmpty()) continue;
                         try {
-                            Map<String, Object> ev = object(Json.parse(trimmed), evFile.toString());
+                            Map<String, Object> ev = object(parse(trimmed), evFile.toString());
                             if (!(ev.get("contract") instanceof String cid) || !(ev.get("test") instanceof String tid)) continue;
                             int hash = tid.indexOf('#');
                             if (hash <= 0 || hash + 1 >= tid.length()) continue;
@@ -355,13 +342,13 @@ public final class MutationRunner {
 
     private static String eventLine(String manifest, Target target, String outcome, String control) {
         StringBuilder line = new StringBuilder("{");
-        Json.field(line, "manifest", manifest).append(',');
-        Json.field(line, "contract", target.contract).append(',');
-        Json.field(line, "digest", target.digest).append(',');
-        Json.field(line, "mutant", target.id).append(',');
-        Json.field(line, "case", target.caseId).append(',');
-        Json.field(line, "outcome", outcome).append(',');
-        Json.field(line, "control", control);
+        field(line, "manifest", manifest).append(',');
+        field(line, "contract", target.contract).append(',');
+        field(line, "digest", target.digest).append(',');
+        field(line, "mutant", target.id).append(',');
+        field(line, "case", target.caseId).append(',');
+        field(line, "outcome", outcome).append(',');
+        field(line, "control", control);
         return line.append('}').toString();
     }
 
@@ -369,7 +356,7 @@ public final class MutationRunner {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
+            throw badState("SHA-256 is unavailable", e);
         }
     }
 
@@ -408,27 +395,27 @@ public final class MutationRunner {
             Map<String, Object> result = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 if (!(entry.getKey() instanceof String key)) {
-                    throw new IllegalArgumentException(where + " has a non-string key");
+                    throw badArg(where + " has a non-string key");
                 }
                 result.put(key, entry.getValue());
             }
             return result;
         }
-        throw new IllegalArgumentException(where + " is not a JSON object");
+        throw badArg(where + " is not a JSON object");
     }
 
     private static List<?> list(Object value, String where) {
         if (value instanceof List<?> list) {
             return list;
         }
-        throw new IllegalArgumentException(where + " is not a JSON array");
+        throw badArg(where + " is not a JSON array");
     }
 
     private static String string(Object value, String where) {
         if (value instanceof String text && !text.isBlank()) {
             return text;
         }
-        throw new IllegalArgumentException(where + " is not a non-empty string");
+        throw badArg(where + " is not a non-empty string");
     }
 
     private record Target(String id, String contract, String digest, String caseId, String path, Object after) {}

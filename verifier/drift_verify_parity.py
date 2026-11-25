@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from drift_verify_base import ARTIFACT_REF_RE, ID_RE, collect_receipt_files
+from drift_verify_base import ARTIFACT_REF_RE, ID_RE, collect_receipt_files, sub_use_text_params
 
 PARITY_KEYS = frozenset((
     "schema", "contract", "digest", "requirement_ref", "legacy_target", "candidate_target",
@@ -21,24 +21,9 @@ def extract_contract_cutover(raw: dict[str, Any], use_tbl: Any, dr1_digest_fn: C
     c_raw = raw.get("cutover")
     if not isinstance(c_raw, dict) or not c_raw:
         return {}, False
-    params = {k: str(v) for k, v in use_tbl.items() if k not in ("profile", "waive", "vocabulary", "concepts") and isinstance(v, (str, int, bool))} if isinstance(use_tbl, dict) else {}
-
-    def _sub(val: Any) -> Any:
-        if isinstance(val, str):
-            for pk, pv in params.items():
-                if val == f"${{{pk}}}":
-                    return pv
-                val = val.replace(f"${{{pk}}}", pv)
-            return val
-        if isinstance(val, list):
-            return [_sub(x) for x in val]
-        if isinstance(val, dict):
-            return {k: _sub(v) for k, v in val.items()}
-        return val
-
     no_note = {k: v for k, v in c_raw.items() if k not in ("note", "requirement_ref")}
     raw["cutover"] = no_note
-    sub_m = _sub(dict(c_raw))
+    sub_m = sub_use_text_params(dict(c_raw), use_tbl)
     sw = (raw.get("scope") or {}).get("writes") or []
     if "rollback_readback" not in sub_m:
         sub_m["rollback_readback"] = "required" if sw else "not_applicable"

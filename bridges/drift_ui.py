@@ -2,23 +2,16 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-try:
-    from . import drift_ui_recovery as _uir
-except ImportError:
-    try:
-        import drift_ui_recovery as _uir  # type: ignore[no-redef]
-    except ImportError:
-        _uir_spec = importlib.util.spec_from_file_location('drift_ui_recovery', Path(__file__).with_name('drift_ui_recovery.py'))
-        assert _uir_spec is not None and _uir_spec.loader is not None
-        _uir = importlib.util.module_from_spec(_uir_spec)
-        _uir_spec.loader.exec_module(_uir)
+try: from . import drift_probes as _pm
+except ImportError: import drift_probes as _pm  # type: ignore[no-redef]
+_uir = _pm.sib(__package__, __file__, 'drift_ui_recovery')
+_map, _pick = _uir._map, _uir._pick
 
 ALLOWED_DRIFT_ENV_KEYS = frozenset(('adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain'))
 DEFAULT_CAPS = ('geometry', 'input_focus', 'assistive_focus', 'wcag22_contrast', 'observed_transition', 'scroll_state')
@@ -32,8 +25,7 @@ PREDICATE_CAPABILITY: dict[str, str] = {
 }
 
 
-def _is_fin_num(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+_is_fin_num, _bool_or, _opt_surface_flag, is_element_hidden = _uir._is_fin, _uir._bool_or_none, _uir._opt_surface_flag, _uir._is_hidden_basic
 
 
 def _num_or_none(v: Any) -> int | float | None:
@@ -41,26 +33,6 @@ def _num_or_none(v: Any) -> int | float | None:
         return None
     f = float(v)
     return int(f) if f.is_integer() else f
-
-
-def _bool_or(v: Any, fb: bool | None) -> bool | None:
-    return v if isinstance(v, bool) else fb
-
-
-def _opt_surface_flag(raw: Mapping[str, Any]) -> dict[str, bool]:
-    if 'surfaceFound' in raw:
-        return {'surface_found': bool(raw['surfaceFound'])}
-    return {'surface_found': bool(raw['surface_found'])} if 'surface_found' in raw else {}
-
-
-def is_element_hidden(el: Any) -> bool:
-    if not isinstance(el, Mapping):
-        return False
-    pres = str(el.get('presence') or el.get('state') or '').strip().lower()
-    if pres in ('hidden', 'absent', 'collapsed') or el.get('hidden') is True or el.get('ariaHidden') is True or el.get('aria-hidden') == 'true':
-        return True
-    style = el.get('style') if isinstance(el.get('style'), Mapping) else {}
-    return str(el.get('display') or style.get('display') or '').strip().lower() == 'none' or str(el.get('visibility') or style.get('visibility') or '').strip().lower() in ('hidden', 'collapse')
 
 
 def is_element_scrollable(el: Any, axis: str = 'both') -> bool:
@@ -163,7 +135,7 @@ def derive_non_color_cue(node: Any) -> dict[str, bool]:
 
 def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
     s = dict(spec) if isinstance(spec, Mapping) else {}
-    raw_roles = s.get('roles') if isinstance(s.get('roles'), Mapping) else {}
+    raw_roles = _map(s, 'roles')
     elements = s.get('elements') if isinstance(s.get('elements'), list) else []
     has_explicit_missing = s.get('surface_found') is False or s.get('surfaceFound') is False
     has_roles_or_elements = bool(raw_roles) or bool(elements)
@@ -174,7 +146,7 @@ def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
     explicit_caps = list(caps_raw) if isinstance(caps_raw, list) else None
 
     roles: dict[str, dict[str, Any]] = {}
-    ev_in = s.get('evidence') if isinstance(s.get('evidence'), Mapping) else {}
+    ev_in = _map(s, 'evidence')
     unverifiable_checks = int(ev_in.get('unverifiable_checks') or s.get('unverifiableChecks') or 0)
     unverifiable_reasons = list(ev_in.get('unverifiable_reasons') or [])
     measured_checks = 0
@@ -210,47 +182,43 @@ def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
             r['content_cues'] = derive_non_color_cue(r)
         roles[role_id] = r
 
-    seq_in = s.get('sequence') if isinstance(s.get('sequence'), Mapping) else {}
+    seq_in = _map(s, 'sequence')
     before = dict(seq_in.get('before') or s.get('before') or {})
     action = dict(seq_in.get('action') or s.get('action') or {})
     trans_raw = dict(seq_in.get('transition') or s.get('transition') or {})
     after_raw = dict(seq_in.get('after') or s.get('after') or {})
 
-    configured_ms = _num_or_none(trans_raw.get('configured_duration_ms', trans_raw.get('configuredDurationMs')))
-    observed_ms = _num_or_none(trans_raw.get('observed_duration_ms', trans_raw.get('observedDurationMs')))
-    raw_ft = trans_raw.get('focus_trace', trans_raw.get('focusTrace'))
+    configured_ms = _num_or_none(_pick(trans_raw, 'configured_duration_ms', 'configuredDurationMs'))
+    observed_ms = _num_or_none(_pick(trans_raw, 'observed_duration_ms', 'observedDurationMs'))
+    raw_ft = _pick(trans_raw, 'focus_trace', 'focusTrace')
     focus_trace = list(raw_ft) if isinstance(raw_ft, list) else []
 
-    notice_role = roles.get('notice') or {}
-    detail_role = roles.get('detail') or {}
-    summary_role = roles.get('summary') or {}
+    notice_role, detail_role, summary_role = roles.get('notice') or {}, roles.get('detail') or {}, roles.get('summary') or {}
     notice_sem = str(notice_role.get('semantic_role') or notice_role.get('role') or '').strip().lower()
 
     after_focus = str(after_raw.get('input_focus_role') or after_raw.get('inputFocusRole') or '')
     before_focus = str(before.get('input_focus_role') or before.get('inputFocusRole') or '')
-    raw_steals = trans_raw.get('unexpected_focus_steals', trans_raw.get('unexpectedFocusSteals'))
+    raw_steals = _pick(trans_raw, 'unexpected_focus_steals', 'unexpectedFocusSteals')
     has_focus_obs = _is_fin_num(raw_steals) or isinstance(raw_ft, list) or bool(after_focus or before_focus)
     unexpected_steals: int | None = int(raw_steals) if _is_fin_num(raw_steals) else (0 if has_focus_obs else None)
     if notice_role.get('presence') == 'visible' and notice_sem == 'alert' and ('notice' in focus_trace or after_focus == 'notice'):
         unexpected_steals = (unexpected_steals or 0) + 1
 
-    sel_before = before.get('selected_entity_id', before.get('selectedEntityId'))
-    sel_after = after_raw.get('selected_entity_id', after_raw.get('selectedEntityId', summary_role.get('selected_entity_id')))
+    sel_before = _pick(before, 'selected_entity_id', 'selectedEntityId')
+    sel_after = _pick(after_raw, 'selected_entity_id', 'selectedEntityId', summary_role.get('selected_entity_id'))
     sel_preserved = _bool_or(after_raw.get('selection_preserved'), sel_before == sel_after if sel_before is not None and sel_after is not None else None)
 
-    dirty_before = before.get('dirty_inputs') if isinstance(before.get('dirty_inputs'), Mapping) else (before.get('dirtyInputs') if isinstance(before.get('dirtyInputs'), Mapping) else None)
-    dirty_after = after_raw.get('dirty_inputs') if isinstance(after_raw.get('dirty_inputs'), Mapping) else (after_raw.get('dirtyInputs') if isinstance(after_raw.get('dirtyInputs'), Mapping) else None)
+    dirty_before = _map(before, 'dirty_inputs', _map(before, 'dirtyInputs', False)) or None
+    dirty_after = _map(after_raw, 'dirty_inputs', _map(after_raw, 'dirtyInputs', False)) or None
     dirty_preserved = _bool_or(after_raw.get('dirty_inputs_preserved'), dirty_before == dirty_after if dirty_before is not None and dirty_after is not None else None)
 
-    anchor_before = before.get('scroll_anchor_id', before.get('scrollAnchorId'))
-    anchor_after = after_raw.get('scroll_anchor_id', after_raw.get('scrollAnchorId'))
+    anchor_before, anchor_after = _pick(before, 'scroll_anchor_id', 'scrollAnchorId'), _pick(after_raw, 'scroll_anchor_id', 'scrollAnchorId')
     scroll_delta = float(after_raw.get('scroll_offset_delta') or 0.0)
     scroll_preserved = _bool_or(after_raw.get('scroll_context_preserved'), anchor_before == anchor_after and abs(scroll_delta) <= 2.0 if anchor_before is not None and anchor_after is not None else None)
     trigger_restored = _bool_or(after_raw.get('trigger_restored'), after_focus == before_focus if before_focus and after_focus else None)
     notice_precedes = _bool_or(after_raw.get('notice_precedes_detail'), None)
     if notice_role.get('presence') == 'visible' and detail_role.get('presence') == 'visible':
-        n_geom = notice_role.get('geometry') if isinstance(notice_role.get('geometry'), Mapping) else {}
-        d_geom = detail_role.get('geometry') if isinstance(detail_role.get('geometry'), Mapping) else {}
+        n_geom, d_geom = _map(notice_role, 'geometry'), _map(detail_role, 'geometry')
         if _is_fin_num(n_geom.get('reading_order_rank')) and _is_fin_num(d_geom.get('reading_order_rank')):
             notice_precedes = float(n_geom['reading_order_rank']) < float(d_geom['reading_order_rank'])
         elif _is_fin_num(n_geom.get('y')) and _is_fin_num(d_geom.get('y')):
@@ -262,10 +230,8 @@ def observe_ui_sequence(spec: Mapping[str, Any] | None) -> dict[str, Any]:
     )
 
     c_sum = evaluate_wcag22_contrast(elements)
-    pres_in = s.get('presentation') if isinstance(s.get('presentation'), Mapping) else {}
-    clip_in = pres_in.get('clipping') if isinstance(pres_in.get('clipping'), Mapping) else {}
-    foc_in = pres_in.get('focus_visibility') if isinstance(pres_in.get('focus_visibility'), Mapping) else {}
-    cw_in = pres_in.get('contrast_wcag22') if isinstance(pres_in.get('contrast_wcag22'), Mapping) else {}
+    pres_in = _map(s, 'presentation')
+    clip_in, foc_in, cw_in = _map(pres_in, 'clipping'), _map(pres_in, 'focus_visibility'), _map(pres_in, 'contrast_wcag22')
 
     unintentional_clipped = int(clip_in['unintentional_clipped_count']) if _is_fin_num(clip_in.get('unintentional_clipped_count')) else None
     scrollable_containers = int(clip_in['scrollable_containers_count']) if _is_fin_num(clip_in.get('scrollable_containers_count')) else None

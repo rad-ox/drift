@@ -77,17 +77,22 @@ def _read_p03_stat(pf: Path) -> tuple[tuple[int, int] | None, dict[str, Any]]:
  if k not in _P03_CACHE: _P03_CACHE[k] = tomllib.loads(pf.read_text("utf-8"))
  return (st.st_mtime_ns, st.st_size), _P03_CACHE[k]
 
+def _empty_prof_03(missing: str = "") -> tuple[Any, ...]:
+ return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, [], False, False, 0, [], [], [], {}, {}, ({}, {}, set()), missing
+
 def _merged_profile_03(profiles_dir: Path, prof_ref: str, proof_rank_fn: Callable[[str], int]) -> tuple[Any, ...]:
  if not prof_ref:
-  return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], [], [], {}, {}, ({}, {}, set())
+  return _empty_prof_03()
  st0, prof_doc = _read_p03_stat(profiles_dir / f"{prof_ref}.toml")
  if st0 is None:
-  return {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "", [], False, False, False, 0, [], [], [], {}, {}, ({}, {}, set())
+  return _empty_prof_03(prof_ref)
  exts = [str(x) for x in (prof_doc.get("extends") or []) if isinstance(x, str)] if isinstance(prof_doc.get("extends"), list) else []
  chain_docs: list[tuple[str, dict[str, Any]]] = []
  chain_stats: list[tuple[str, int | None, int | None]] = []
+ ext_miss = ""
  for r in exts:
   st_r, doc_r = _read_p03_stat(profiles_dir / f"{r}.toml")
+  if st_r is None and not ext_miss: ext_miss = r
   chain_docs.append((r, doc_r))
   chain_stats.append((r, st_r[0] if st_r else None, st_r[1] if st_r else None))
  chain_docs.append((prof_ref, prof_doc))
@@ -143,7 +148,7 @@ def _merged_profile_03(profiles_dir: Path, prof_ref: str, proof_rank_fn: Callabl
  for ik, iv in m_inv.items():
   ne, pr, cp = _norm_expr_03(iv, t_sch.get(ik), "then", units, {})
   inv_0[ik] = ne; deps_0.setdefault(f"then.{ik}", []).extend(pr); caps_0.update(cp)
- merged = (units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, (inv_0, deps_0, caps_0))
+ merged = (units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, (inv_0, deps_0, caps_0), ext_miss)
  _PROF_MERGED_03_CACHE[mkey] = merged
  return merged
 
@@ -155,7 +160,7 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
  prof_ref = str(use_tbl.get("profile", ""))
  use_params = {**(use_tbl["params"] if isinstance(use_tbl.get("params"), dict) else {}), **{k: v for k, v in use_tbl.items() if k not in ("profile", "concepts", "waive", "params")}}
  waived = use_tbl.get("waive") if isinstance(use_tbl.get("waive"), dict) else {}
- units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, inv_base = _merged_profile_03(profiles_dir, prof_ref, proof_rank_fn)
+ units, w_sch, t_sch, sch_w_canon, sch_t_canon, m_inv, m_cases, m_decs, m_risks, m_ctrls, p_proof, p_sec, p_sim, p_buds, p_bmetrics, p_bm_bad, has_g, g_max, g_forb, g_forb_t, g_cont, obs_proj, obs_unit, inv_base, prof_missing = _merged_profile_03(profiles_dir, prof_ref, proof_rank_fn)
  if use_params:
   norm_inv, p_deps, all_caps = {}, {}, set()
   for ik, iv in m_inv.items():
@@ -328,7 +333,7 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
  has_any_ref = isinstance(appr, dict) and any(appr.get(k) for k in ("behavior_ref", "assurance_ref", "ref", "digest"))
  cur_ok = isinstance(appr, dict) and set(appr) <= {"behavior_ref", "assurance_ref", "by", "at"} and d_match(appr.get("behavior_ref"), beh_dig) and d_match(appr.get("assurance_ref"), assur_dig)
  act_cids = {k for k, cm in beh_cases.items() if isinstance(cm, dict) and "status" not in cm}
- st = "invalid" if (p_bm_bad or (p_buds and not res_budgets) or not _budget_metrics_closure_ok(p_bmetrics, res_budgets, act_cids)) else ("blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent")))
+ st = "invalid" if (prof_missing or p_bm_bad or (p_buds and not res_budgets) or not _budget_metrics_closure_ok(p_bmetrics, res_budgets, act_cids)) else ("blocked" if has_blk else ("current" if cur_ok else ("stale" if has_any_ref else "absent")))
  open_m = raw.get("open") if isinstance(raw.get("open"), dict) else {}
  own_d = [d for d in (raw.get("decisions") or {}).values() if isinstance(d, dict)] if isinstance(raw.get("decisions"), dict) else []
  decs = [d for s in (raw.get("decisions"), m_decs) if isinstance(s, dict) for d in s.values() if isinstance(d, dict)]
@@ -336,5 +341,5 @@ def verify_contract_03_toml(raw, path, profiles_dir, canon_fn, ref_fn, proof_ran
  roots = resolve_roots_fn(path)
  reuse_env = canon_fn({"id": cid, "intent": raw.get("intent", ""), "scope": raw.get("scope"), "waived": sorted(waived), "open": clean_open, "profile": prof_clos})
  case_reuse_sigs = {k: canon_fn({"case": beh_cases[k], "cards": {did: {**dm, "cases": [rc for rc in (dm.get("cases") or ()) if rc in act_cids]} for did, dm in loc_decs.items() if k in (dm.get("cases") or ())}}) for k in act_cids}
- return {"drift": "0.3", "id": cid, "digest": beh_dig, "ref": ref_fn(beh_dig), "assurance_digest": assur_dig, "assurance_ref": ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), "profile_proof": p_proof, "profile_security": list(p_sec), "profile_simulation": p_sim, "profile_budgets": p_buds, "profile_budget_metrics": sorted(p_bmetrics), "require_containment": eff_cont, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": beh_cases, "reuse_env": reuse_env, "case_reuse_sigs": case_reuse_sigs, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": dict(obs_proj), "units": dict(units), "unit": dict(obs_unit), "w": sc_writes, "ft": eff_forb_t}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
+ return {"drift": "0.3", "id": cid, "digest": "" if prof_missing else beh_dig, "ref": "" if prof_missing else ref_fn(beh_dig), "assurance_digest": "" if prof_missing else assur_dig, "assurance_ref": "" if prof_missing else ref_fn(assur_dig), "approval": st, "approver": str(appr.get("by", "")) if isinstance(appr, dict) and cur_ok else (str(appr.get("by", "")) if has_any_ref else ""), **({"profile_missing": prof_missing} if prof_missing else {}), "profile_proof": p_proof, "profile_security": list(p_sec), "profile_simulation": p_sim, "profile_budgets": p_buds, "profile_budget_metrics": sorted(p_bmetrics), "require_containment": eff_cont, "scope_code": sc_code, "scope_reads": sc_reads, "scope_writes": sc_writes, "invariants": sorted(norm_inv), "cases": {} if prof_missing else beh_cases, "reuse_env": reuse_env, "case_reuse_sigs": case_reuse_sigs, "budgets": res_budgets, "formal": res_formal, "cutover": res_cutover, "risks": res_risks, "controls": res_ctrls, "required_capabilities": sorted(all_caps), "obs": {"proj": dict(obs_proj), "units": dict(units), "unit": dict(obs_unit), "w": sc_writes, "ft": eff_forb_t}, "area_root": roots["source_root"], "shadow_area_root": roots["area_root"], "open_cnt": len(open_m) + sum(1 for d in own_d if d.get("pick", "") == ""), "exec_blk": blk("execution"), "rel_blk": blk("release") or any(isinstance(c, dict) and c.get("status") == "deferred" for c in beh_cases.values())}
 

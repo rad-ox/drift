@@ -95,6 +95,15 @@ def validate_event_line_impl(line: str) -> dict[str, Any]:
     }
 
 
+def canonical_test_id(test: str) -> str:
+    raw = test.strip()
+    start = raw.find("#") + 1
+    for i in range(start, len(raw)):
+        if raw[i] in ("(", "["):
+            return raw[:i]
+    return raw
+
+
 def _discover_jsonl_shards(events_paths: list[Path]) -> list[Path]:
     shards: list[Path] = []
     for path in events_paths:
@@ -218,7 +227,8 @@ def load_proof_events_impl(
 
         line_count = 0
         unev_tokens = unev_by_shard.get(sf, ())
-        for idx, line in enumerate(raw.decode("utf-8").splitlines(), 1):
+        for idx, raw_line in enumerate(raw.decode("utf-8").split("\n"), 1):
+            line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
             if not line.strip():
                 continue
             try:
@@ -231,12 +241,13 @@ def load_proof_events_impl(
             ev["_containment"] = cont_by_shard.get(sf, set())
             line_count += 1
 
-            tid = ev["test"].split("[", 1)[0]
+            tid = canonical_test_id(ev["test"])
             cls = tid.split("#", 1)[0] if "#" in tid else ""
             if (
                 not has_inv
+                or not cls
+                or len(tid) <= len(cls) + 1
                 or cls not in classes
-                or tid not in tests
                 or tid not in latest_by_class.get(cls, ())
             ):
                 gone[ev["contract"]] = gone.get(ev["contract"], 0) + 1

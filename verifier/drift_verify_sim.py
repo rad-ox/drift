@@ -12,7 +12,9 @@ from drift_verify_base import (
     SNAPSHOT_RE,
     _cov_matches,
     _valid_rel_scope,
+    check_receipt_scope_snap_subj,
     collect_receipt_files,
+    reduce_receipt_groups,
 )
 
 SIM_OPT_KEYS = frozenset(("observed_convergence", "trajectory_stability"))
@@ -134,65 +136,25 @@ def evaluate_contract_simulation_core(
         return [], []
     if not by_target and req_sim:
         return ["sim.missing"], []
-    eval_list, reasons, has_viol, has_inc = [], [], False, False
-    for tkey in sorted(by_target):
-        bucket = by_target[tkey]
-        group = [bucket[k] for k in sorted(bucket)]
-        has_conflict = len(group) > 1
-        grp_viol, grp_evals = False, []
-        for rec in group:
-            eff, rsn = rec["outcome"], ""
-            td, ri, se = rec["tick_determinism"], rec["rollback_invariance"], rec["save_epoch_compatibility"]
-            if not scope_code or not all(any(cov_matches_fn(c, sc) for c in rec["covered_scope"]) for sc in scope_code) or not active_cases or not all(c in active_cases for c in rec["cases"]):
-                eff, rsn = ("inconclusive" if eff == "passed" else eff), "sim.incomplete_scope"
-            elif expected_snapshot and rec["code_snapshot"] != expected_snapshot:
-                eff, rsn = ("inconclusive" if eff == "passed" else eff), "sim.snapshot_mismatch"
-            elif expected_subject_ref and rec["subject_ref"] != expected_subject_ref:
-                eff, rsn = ("inconclusive" if eff == "passed" else eff), "sim.subject_mismatch"
-            elif td["divergent_ticks"]:
-                eff, rsn = "violated", "sim.desync_detected"
-            elif ri["resim_mismatches"] > 0 or ri["leaked_ambient_mutations"] > 0:
-                eff, rsn = "violated", "sim.rollback_drift"
-            elif se["incompatible_epochs"]:
-                eff, rsn = "violated", "sim.save_epoch_incompatible"
-            elif td["ticks_executed"] <= 0 or not td["platforms_compared"] or ri["windows_tested"] <= 0 or ri["max_rollback_frames"] <= 0:
-                eff, rsn = ("inconclusive" if eff == "passed" else eff), "sim.incomplete_scope"
-            elif not se["active_save_epochs"] or not set(se["active_save_epochs"]).issubset(set(se["compatible_epochs"])) or not inv_keys.issubset(set(se["invariants_checked"])):
-                eff, rsn = ("inconclusive" if eff == "passed" else eff), "sim.invariants_incomplete"
-            else:
-                eff, rsn = eval_sim_opt_blocks(rec, eff)
-                if eff == "violated" and not rsn:
-                    rsn = "sim.violated"
-            if eff == "violated":
-                grp_viol = True
-            grp_evals.append((rec, eff, rsn))
-        for rec, eff0, rsn0 in grp_evals:
-            eff, rsn = eff0, rsn0
-            if has_conflict:
-                if grp_viol:
-                    eff = "violated"
-                    rsn = rsn0 if (rsn0 and rsn0 != "sim.violated") else "sim.conflicting_receipts"
-                else:
-                    eff, rsn = "inconclusive", "sim.conflicting_receipts"
-            item = {**rec, "effective_outcome": eff, "provenance": "measured"}
-            if rsn:
-                item["reason"] = rsn
-            eval_list.append(item)
-            if eff == "violated":
-                has_viol = True
-                if rsn and rsn not in reasons:
-                    reasons.append(rsn)
-                if has_conflict and "sim.conflicting_receipts" not in reasons:
-                    reasons.append("sim.conflicting_receipts")
-            elif eff != "passed":
-                has_inc = True
-                if rsn and rsn not in reasons:
-                    reasons.append(rsn)
-    if has_viol and "sim.violated" not in reasons:
-        reasons.append("sim.violated")
-    if has_inc and not has_viol and "sim.inconclusive" not in reasons:
-        reasons.append("sim.inconclusive")
-    return reasons, eval_list
+    def _eval_rec(rec: dict[str, Any]) -> tuple[str, str]:
+        if chk := check_receipt_scope_snap_subj(rec, scope_code, active_cases, expected_snapshot, expected_subject_ref, cov_matches_fn, "sim"):
+            return chk
+        eff = rec["outcome"]
+        td, ri, se = rec["tick_determinism"], rec["rollback_invariance"], rec["save_epoch_compatibility"]
+        if td["divergent_ticks"]:
+            return "violated", "sim.desync_detected"
+        if ri["resim_mismatches"] > 0 or ri["leaked_ambient_mutations"] > 0:
+            return "violated", "sim.rollback_drift"
+        if se["incompatible_epochs"]:
+            return "violated", "sim.save_epoch_incompatible"
+        deg = "inconclusive" if eff == "passed" else eff
+        if td["ticks_executed"] <= 0 or not td["platforms_compared"] or ri["windows_tested"] <= 0 or ri["max_rollback_frames"] <= 0:
+            return deg, "sim.incomplete_scope"
+        if not se["active_save_epochs"] or not set(se["active_save_epochs"]).issubset(set(se["compatible_epochs"])) or not inv_keys.issubset(set(se["invariants_checked"])):
+            return deg, "sim.invariants_incomplete"
+        eff, rsn = eval_sim_opt_blocks(rec, eff)
+        return eff, (rsn or ("sim.violated" if eff == "violated" else ""))
+    return reduce_receipt_groups(by_target, _eval_rec, "sim")
 
 
 def load_simulation_receipts_impl(events_paths: list[Path], decode_fn: Any) -> tuple[list[dict[str, Any]], list[str]]:

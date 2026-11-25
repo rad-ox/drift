@@ -1,15 +1,11 @@
 package drift;
 
+import static drift.DriftViewChecks.fail;
+
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import java.nio.charset.*;
+import java.nio.file.*;
+import java.util.*;
 
 /** The JSON subset DRIFT exchanges: objects, arrays, strings, numbers, booleans, null. */
 final class Json {
@@ -88,7 +84,7 @@ final class Json {
             if (matches.size() == 1) ratio = units.get(matches.get(0));
         }
         if (!isFiniteNumber(ratio) || ((Number) ratio).doubleValue() <= 0) {
-            throw new AssertionError("missing unit conversion from " + from + " to " + target);
+            throw fail("missing unit conversion from " + from + " to " + target);
         }
         double scale = ((Number) ratio).doubleValue();
         for (String k : List.of("eq", "approx", "min", "max", "abs_tol", "step_max_delta")) {
@@ -428,23 +424,28 @@ final class Json {
 
     static boolean isFiniteNumber(Object v) { return v instanceof Number n && Double.isFinite(n.doubleValue()); }
 
-    static boolean valuesEqual(Object a, Object b) {
+    static boolean valuesEqualExact(Object a, Object b) { return valuesEqual(a, b, true); }
+    static boolean valuesEqual(Object a, Object b) { return valuesEqual(a, b, false); }
+
+    private static boolean valuesEqual(Object a, Object b, boolean exact) {
         if (a instanceof Number || b instanceof Number) {
             if (!isFiniteNumber(a) || !isFiniteNumber(b)) return false;
-            return ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer))
-                    ? ((Number) a).longValue() == ((Number) b).longValue()
-                    : Math.abs(((Number) a).doubleValue() - ((Number) b).doubleValue()) <= 1e-9;
+            if ((a instanceof Long || a instanceof Integer) && (b instanceof Long || b instanceof Integer)) {
+                return ((Number) a).longValue() == ((Number) b).longValue();
+            }
+            double da = ((Number) a).doubleValue(), db = ((Number) b).doubleValue();
+            return exact ? da == db : Math.abs(da - db) <= 1e-9;
         }
         if (a == b) return true;
         if (a == null || b == null) return false;
         if (a instanceof List<?> la && b instanceof List<?> lb) {
             if (la.size() != lb.size()) return false;
-            for (int i = 0; i < la.size(); i++) if (!valuesEqual(la.get(i), lb.get(i))) return false;
+            for (int i = 0; i < la.size(); i++) if (!valuesEqual(la.get(i), lb.get(i), exact)) return false;
             return true;
         }
         if (a instanceof Map<?, ?> ma && b instanceof Map<?, ?> mb) {
             if (ma.size() != mb.size()) return false;
-            for (Map.Entry<?, ?> e : ma.entrySet()) if (!mb.containsKey(e.getKey()) || !valuesEqual(e.getValue(), mb.get(e.getKey()))) return false;
+            for (Map.Entry<?, ?> e : ma.entrySet()) if (!mb.containsKey(e.getKey()) || !valuesEqual(e.getValue(), mb.get(e.getKey()), exact)) return false;
             return true;
         }
         return a.equals(b);
@@ -456,10 +457,6 @@ final class Json {
         return true;
     }
 
-    static Map<String, Object> tightenThenMapBySumResiduals(Map<String, Object> whenMap, Map<String, Object> rawThen, Map<String, String> wp, Map<String, String> tp) {
-        return ExecutionContext.tightenThenMapBySumResiduals(whenMap, rawThen, wp, tp);
-    }
-
     static void checkNumericAndTuningClauses(
             Drift.Case c, String pfx, String key, Map<?, ?> exp, Object actual, Object payload, Map<String, String> proj, java.util.Set<String> relKeys) {
         double tol = (isFiniteNumber(exp.get("abs_tol")) && ((Number) exp.get("abs_tol")).doubleValue() >= 0.0)
@@ -469,17 +466,17 @@ final class Json {
             double rt = exp.containsKey("rel_tol") && isFiniteNumber(exp.get("rel_tol")) ? ((Number) exp.get("rel_tol")).doubleValue() : 0.0;
             if (!isFiniteNumber(actual) || !isFiniteNumber(exp.get("approx"))
                     || (!exp.containsKey("abs_tol") && !exp.containsKey("rel_tol")) || at < 0.0 || rt < 0.0) {
-                throw new AssertionError(pfx + ": invalid approx on then." + key);
+                throw fail(pfx + ": invalid approx on then." + key);
             }
             double ap = ((Number) exp.get("approx")).doubleValue();
             double rad = at + rt * Math.abs(ap);
             if (!Double.isFinite(rad) || Math.abs(((Number) actual).doubleValue() - ap) > rad) {
-                throw new AssertionError(pfx + ": expected then." + key + " approx " + ap + " (+/- " + rad + "), got " + actual);
+                throw fail(pfx + ": expected then." + key + " approx " + ap + " (+/- " + rad + "), got " + actual);
             }
         }
         if (exp.containsKey("balance_fields")) {
             if (!(exp.get("balance_fields") instanceof Map<?, ?> bf)) {
-                throw new AssertionError(pfx + ": invalid balance_fields on then." + key);
+                throw fail(pfx + ": invalid balance_fields on then." + key);
             }
             double sum = 0.0;
             for (String side : new String[] {"add", "sub"}) {
@@ -488,14 +485,14 @@ final class Json {
                     for (Object ref : refs) {
                         PointerLookup pr = DriftViewChecks.resolvePeer(c, payload, proj, ref);
                         if (!pr.found() || !isFiniteNumber(pr.value())) {
-                            throw new AssertionError(pfx + ": missing numeric peer \"" + ref + "\" for then." + key + ".balance_fields");
+                            throw fail(pfx + ": missing numeric peer \"" + ref + "\" for then." + key + ".balance_fields");
                         }
                         sum += sgn * ((Number) pr.value()).doubleValue();
                     }
                 }
             }
             if (!isFiniteNumber(actual) || Math.abs(((Number) actual).doubleValue() - sum) > tol) {
-                throw new AssertionError(pfx + ": expected then." + key + " == balance (" + sum + "), got " + actual);
+                throw fail(pfx + ": expected then." + key + " == balance (" + sum + "), got " + actual);
             }
         }
         if ((exp.containsKey("monotonic") || exp.containsKey("step_max_delta") || exp.containsKey("sum_total"))
@@ -504,14 +501,14 @@ final class Json {
                 if (!isFiniteNumber(v)
                         || (exp.containsKey("min") && ((Number) v).doubleValue() + tol < ((Number) exp.get("min")).doubleValue())
                         || (exp.containsKey("max") && ((Number) v).doubleValue() - tol > ((Number) exp.get("max")).doubleValue())) {
-                    throw new AssertionError(pfx + ": sequence element " + v + " outside [min, max] on then." + key);
+                    throw fail(pfx + ": sequence element " + v + " outside [min, max] on then." + key);
                 }
             }
         }
         if (exp.containsKey("monotonic")) {
             String mode = String.valueOf(exp.get("monotonic"));
             if (!(actual instanceof List<?> actList) || actList.isEmpty() || !actList.stream().allMatch(Json::isFiniteNumber)) {
-                throw new AssertionError(pfx + ": expected non-empty numeric list for then." + key + ".monotonic");
+                throw fail(pfx + ": expected non-empty numeric list for then." + key + ".monotonic");
             }
             for (int i = 1; i < actList.size(); i++) {
                 double prev = ((Number) actList.get(i - 1)).doubleValue();
@@ -523,41 +520,41 @@ final class Json {
                     case "strictly_decreasing" -> prev - tol > cur;
                     default -> false;
                 };
-                if (!ok) throw new AssertionError(pfx + ": expected then." + key + ".monotonic=" + mode + ", violated at index " + i);
+                if (!ok) throw fail(pfx + ": expected then." + key + ".monotonic=" + mode + ", violated at index " + i);
             }
         }
         if (exp.containsKey("step_max_delta")) {
             if (!isFiniteNumber(exp.get("step_max_delta")) || ((Number) exp.get("step_max_delta")).doubleValue() <= 0.0
                     || !(actual instanceof List<?> actList) || actList.isEmpty() || !actList.stream().allMatch(Json::isFiniteNumber)) {
-                throw new AssertionError(pfx + ": invalid sequence or step_max_delta on then." + key);
+                throw fail(pfx + ": invalid sequence or step_max_delta on then." + key);
             }
             double delta = ((Number) exp.get("step_max_delta")).doubleValue();
             for (int i = 1; i < actList.size(); i++) {
                 if (Math.abs(((Number) actList.get(i)).doubleValue() - ((Number) actList.get(i - 1)).doubleValue()) > delta + tol) {
-                    throw new AssertionError(pfx + ": expected then." + key + ".step_max_delta<=" + delta + ", exceeded at index " + i);
+                    throw fail(pfx + ": expected then." + key + ".step_max_delta<=" + delta + ", exceeded at index " + i);
                 }
             }
         }
         if (exp.containsKey("sum_total")) {
             if (actual instanceof Map<?, ?> am && !am.isEmpty() && am.keySet().stream().allMatch(relKeys::contains)) {
-                throw new AssertionError(pfx + ": literal relational table cannot satisfy then." + key + ".sum_total");
+                throw fail(pfx + ": literal relational table cannot satisfy then." + key + ".sum_total");
             }
             java.util.Collection<?> vals = actual instanceof List<?> l ? l : (actual instanceof Map<?, ?> m ? m.values() : List.of());
             if (vals.isEmpty() || !vals.stream().allMatch(Json::isFiniteNumber)) {
-                throw new AssertionError(pfx + ": expected non-empty numeric list or map for then." + key + ".sum_total");
+                throw fail(pfx + ": expected non-empty numeric list or map for then." + key + ".sum_total");
             }
             double total = vals.stream().mapToDouble(v -> ((Number) v).doubleValue()).sum();
             Object st = exp.get("sum_total");
             if (isFiniteNumber(st)) {
-                if (Math.abs(total - ((Number) st).doubleValue()) > tol) throw new AssertionError(pfx + ": sum_total mismatch on then." + key);
+                if (Math.abs(total - ((Number) st).doubleValue()) > tol) throw fail(pfx + ": sum_total mismatch on then." + key);
             } else if (st instanceof Map<?, ?> stMap) {
                 if ((stMap.containsKey("eq") && (!isFiniteNumber(stMap.get("eq")) || Math.abs(total - ((Number) stMap.get("eq")).doubleValue()) > tol))
                         || (stMap.containsKey("min") && (!isFiniteNumber(stMap.get("min")) || total + tol < ((Number) stMap.get("min")).doubleValue()))
                         || (stMap.containsKey("max") && (!isFiniteNumber(stMap.get("max")) || total - tol > ((Number) stMap.get("max")).doubleValue()))) {
-                    throw new AssertionError(pfx + ": sum_total outside bounds on then." + key);
+                    throw fail(pfx + ": sum_total outside bounds on then." + key);
                 }
             } else {
-                throw new AssertionError(pfx + ": invalid sum_total on then." + key);
+                throw fail(pfx + ": invalid sum_total on then." + key);
             }
         }
     }

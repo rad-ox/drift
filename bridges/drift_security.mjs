@@ -10,7 +10,7 @@ import {
   isObj,
   isStr,
   readPointer,
-  throwAssertionError,
+  throwAssertionError as fail,
   throwError,
   unwrap03Eq,
   valuesEqual,
@@ -31,38 +31,39 @@ export { hasKeyRecursive, isFrameMetadataEnvelope, requiredProbesOf, runIdempote
 export function checkNegativeLeaf(pfx, key, exp, act, mutationOverride) {
   if ('not_in' in exp) {
     if (act === null || act === undefined) {
-      throwAssertionError(`${pfx}: expected non-null value for then.${key}.not_in`);
+      fail(`${pfx}: expected non-null value for then.${key}.not_in`);
     }
     if (Array.isArray(exp.not_in)) {
       if (exp.not_in.some((x) => valuesEqual(act, x))) {
-        throwAssertionError(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in ${JSON.stringify(exp.not_in)}`);
+        fail(`${pfx}: forbidden value ${JSON.stringify(act)} in then.${key}.not_in ${JSON.stringify(exp.not_in)}`);
       }
     } else if (!valuesEqual(act, exp.not_in)) {
-      throwAssertionError(`${pfx}: pick-forbidden-value mutant on then.${key}.not_in killed (got ${JSON.stringify(act)})`);
+      fail(`${pfx}: pick-forbidden-value mutant on then.${key}.not_in killed (got ${JSON.stringify(act)})`);
     }
   }
   if ('forbid_keys' in exp) {
     if (!isObj(act) || !Array.isArray(exp.forbid_keys)) {
-      throwAssertionError(`${pfx}: expected object for then.${key}.forbid_keys`);
+      fail(`${pfx}: expected object for then.${key}.forbid_keys`);
     }
     if (mutationOverride && typeof mutationOverride.path === 'string' && mutationOverride.path.endsWith(`/${escapePointer(key)}/forbid_keys`)) {
-      throwAssertionError(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
+      fail(`${pfx}: drop-forbid-key mutant killed on then.${key}.forbid_keys`);
     }
     for (const fk of exp.forbid_keys.map(String)) {
       if (hasKeyRecursive(act, fk, true)) {
-        throwAssertionError(`${pfx}: forbidden key "${fk}" present on then.${key}`);
+        fail(`${pfx}: forbidden key "${fk}" present on then.${key}`);
       }
     }
   }
 }
 
+function caseWriteLists(view, caseId) {
+  return [Array.isArray(view?.scope?.writes) ? view.scope.writes.map(String) : [], view?.cases?.[caseId]?.writes];
+}
+
 function allowedWriteSetsOf(view, caseId) {
-  const scopeWrites = Array.isArray(view?.scope?.writes) ? view.scope.writes.map(String) : [];
-  const caseWrites = view?.cases?.[caseId]?.writes;
-  const rawAllowed = Array.isArray(caseWrites) ? caseWrites.map(String) : scopeWrites;
-  const allowed = new Set(rawAllowed);
-  const allowedBases = new Set(rawAllowed.map((w) => w.split('#')[0]));
-  return [allowed, allowedBases];
+  const [sw, cw] = caseWriteLists(view, caseId);
+  const raw = Array.isArray(cw) ? cw.map(String) : sw;
+  return [new Set(raw), new Set(raw.map((w) => w.split('#')[0]))];
 }
 
 function isWriteResourceAllowed(res, allowed, allowedBases) {
@@ -71,11 +72,10 @@ function isWriteResourceAllowed(res, allowed, allowedBases) {
 }
 
 export function forbiddenWritesOf(view, caseId) {
-  const scopeWrites = Array.isArray(view?.scope?.writes) ? view.scope.writes.map(String) : [];
-  const caseWrites = view?.cases?.[caseId]?.writes;
-  if (!Array.isArray(caseWrites)) return [];
-  const [allowed, allowedBases] = allowedWriteSetsOf(view, caseId);
-  return scopeWrites.filter((r) => !isWriteResourceAllowed(r, allowed, allowedBases));
+  const [sw, cw] = caseWriteLists(view, caseId);
+  if (!Array.isArray(cw)) return [];
+  const allowed = new Set(cw.map(String)), bases = new Set([...allowed].map((w) => w.split('#')[0]));
+  return sw.filter((r) => !isWriteResourceAllowed(r, allowed, bases));
 }
 
 function isNonNegSafeInt(v) {
@@ -89,7 +89,7 @@ function verifySingleFrameObs(pfx, res, obs, isAmbient) {
   if (isNonNegSafeInt(obs)) {
     checkedAny = true;
     if (obs > 0) {
-      throwAssertionError(`${pfx}: ${writeLabel}: expected 0 writes, observed ${obs}`);
+      fail(`${pfx}: ${writeLabel}: expected 0 writes, observed ${obs}`);
     }
   } else if (isObj(obs)) {
     let wCount = null;
@@ -104,25 +104,36 @@ function verifySingleFrameObs(pfx, res, obs, isAmbient) {
           wCount = wv.length;
           break;
         }
-        throwAssertionError(`${pfx}: invalid frame ${wk} for "${res}": expected non-negative integer, got ${wv}`);
+        fail(`${pfx}: invalid frame ${wk} for "${res}": expected non-negative integer, got ${wv}`);
       }
     }
     if (wCount !== null) {
       checkedAny = true;
       if (wCount > 0) {
-        throwAssertionError(`${pfx}: ${writeLabel}: expected 0 writes, observed ${wCount}`);
+        fail(`${pfx}: ${writeLabel}: expected 0 writes, observed ${wCount}`);
       }
     }
     if ('before' in obs && 'after' in obs) {
       checkedAny = true;
       if (!valuesEqual(obs.before, obs.after)) {
-        throwAssertionError(`${pfx}: ${snapLabel}: before and after snapshots differ`);
+        fail(`${pfx}: ${snapLabel}: before and after snapshots differ`);
       }
     }
   }
   if (!checkedAny) {
-    throwAssertionError(`${pfx}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots`);
+    fail(`${pfx}: frame observation for "${res}" must supply writes/operations/events or before/after snapshots`);
   }
+}
+
+function frameEntryWrote(obs) {
+  if (typeof obs === 'number' && Number.isInteger(obs) && obs > 0) return true;
+  if (!isObj(obs)) return false;
+  for (const wk of ['writes', 'operations', 'events']) {
+    if (!(wk in obs)) continue;
+    const wv = obs[wk];
+    if ((typeof wv === 'number' && Number.isInteger(wv) && wv > 0) || (Array.isArray(wv) && wv.length > 0)) return true;
+  }
+  return 'before' in obs && 'after' in obs && !valuesEqual(obs.before, obs.after);
 }
 
 export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
@@ -131,6 +142,8 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
   const pfx = `${ctx.contractId}.${caseId}`;
   const seen = ctx.reads.get(caseId);
   const checkedKeys = new Set();
+  let allObserved = true;
+  const observedWrites = [];
   for (const res of forbidden) {
     const baseRes = res.split('#')[0];
     checkedKeys.add(res);
@@ -141,13 +154,14 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
       verifySingleFrameObs(pfx, res, obs, false);
     }
     if (obs === undefined || (isObj(obs) && obs.observed === false)) {
+      allObserved = false;
       if (ctx && !(ctx.unobservedCases instanceof Set)) ctx.unobservedCases = new Set();
       ctx?.unobservedCases?.add(caseId);
       if (strict) {
         const msg = obs === undefined
           ? `missing frame observation for forbidden write resource "${res}"`
           : `frame.observer_missing for forbidden write resource "${res}"`;
-        throwAssertionError(`${pfx}: ${msg}`);
+        fail(`${pfx}: ${msg}`);
       }
       continue;
     }
@@ -159,15 +173,17 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
   if (isObj(frameObs)) {
     const [allowed, allowedBases] = allowedWriteSetsOf(ctx.view, caseId);
     for (const k of Object.keys(frameObs).sort()) {
-      if (checkedKeys.has(k) || isWriteResourceAllowed(k, allowed, allowedBases)) continue;
       const obsK = frameObs[k];
+      if (isObj(obsK) && obsK.observed === false) allObserved = false;
+      if (frameEntryWrote(obsK)) observedWrites.push(k);
+      if (checkedKeys.has(k) || isWriteResourceAllowed(k, allowed, allowedBases)) continue;
       const hasKMetrics = isObj(obsK) && ('writes' in obsK || 'operations' in obsK || 'events' in obsK || ('before' in obsK && 'after' in obsK));
       if (hasKMetrics) {
         verifySingleFrameObs(pfx, k, obsK, true);
       }
       if (isObj(obsK) && obsK.observed === false) {
         if (strict) {
-          throwAssertionError(`${pfx}: frame.observer_missing for perimeter resource "${k}"`);
+          fail(`${pfx}: frame.observer_missing for perimeter resource "${k}"`);
         }
         continue;
       }
@@ -175,6 +191,19 @@ export function verifyCaseFrame(ctx, caseId, frameObs, strict = true) {
         verifySingleFrameObs(pfx, k, obsK, true);
       }
     }
+  }
+  if (ctx) {
+    if (!ctx.obsFrames) ctx.obsFrames = {};
+    if (allObserved && (forbidden.length || observedWrites.length)) ctx.obsFrames[caseId] = observedWrites;
+    else delete ctx.obsFrames[caseId];
+  }
+}
+
+function verifyProjectionFrame(ctx, caseId, payload, checks) {
+  const frameObs = isObj(checks?.frame) ? checks.frame : (isFrameMetadataEnvelope(payload?._frame) ? payload._frame : null);
+  if (frameObs) {
+    const strictFrame = checks?.strictFrame === true || !Object.values(frameObs).some((v) => isObj(v) && v.observed === false);
+    verifyCaseFrame(ctx, caseId, frameObs, strictFrame);
   }
 }
 
@@ -185,11 +214,7 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whe
   const isUiObs = isObj(payload) && (payload.schema === 'drift.ui-observation/1' || isObj(payload.evidence));
   const planCase = !ctx.mutationOverride && !hasCallbacks && whenObs === null && !isUiObs ? ctx.view?.__plan?.cases?.[caseId] : null;
   if (planCase && evalCompiledPlanCase(ctx.contractId, caseId, planCase, payload, seen)) {
-    const frameObs = isObj(checks?.frame) ? checks.frame : (isFrameMetadataEnvelope(payload?._frame) ? payload._frame : null);
-    if (frameObs) {
-      const strictFrame = checks?.strictFrame === true || !Object.values(frameObs).some((v) => isObj(v) && v.observed === false);
-      verifyCaseFrame(ctx, caseId, frameObs, strictFrame);
-    }
+    verifyProjectionFrame(ctx, caseId, payload, checks);
     return;
   }
   const proj = ctx._projMap('then');
@@ -204,20 +229,20 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whe
       let targetObj = payload;
       if (k in proj) {
         const rd = readPointer(payload, proj[k]);
-        if (!rd.found) throwAssertionError(`${ctx.contractId}.${caseId}: missing projected path "${proj[k]}" for then.${k}`);
+        if (!rd.found) fail(`${ctx.contractId}.${caseId}: missing projected path "${proj[k]}" for then.${k}`);
         targetObj = rd.value;
       } else if (isObj(payload) && k in payload && isObj(payload[k])) {
         targetObj = payload[k];
       }
       if (!isObj(targetObj)) {
-        throwAssertionError(`${ctx.contractId}.${caseId}: expected object for then.${k}`);
+        fail(`${ctx.contractId}.${caseId}: expected object for then.${k}`);
       }
       if (Array.isArray(allowList)) {
         const allowedSet = new Set(allowList.map(String));
         for (const actKey of Object.keys(targetObj)) {
           if (targetObj === payload && actKey === '_frame' && isFrameMetadataEnvelope(targetObj._frame)) continue;
           if (!allowedSet.has(actKey)) {
-            throwAssertionError(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(allowList)}`);
+            fail(`${ctx.contractId}.${caseId}: unexpected key "${actKey}" outside allowed_keys ${JSON.stringify(allowList)}`);
           }
         }
       }
@@ -226,11 +251,11 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whe
         if (Array.isArray(forbidVal)) {
           for (const fk of forbidVal.map(String)) {
             if (hasKeyRecursive(targetObj, fk, isRootTarget)) {
-              throwAssertionError(`${ctx.contractId}.${caseId}: forbidden key "${fk}" present on then.${k}`);
+              fail(`${ctx.contractId}.${caseId}: forbidden key "${fk}" present on then.${k}`);
             }
           }
         } else if (!hasKeyRecursive(targetObj, String(forbidVal), isRootTarget)) {
-          throwAssertionError(`${ctx.contractId}.${caseId}: drop-forbid-key mutant killed on then.${k}.forbid_keys`);
+          fail(`${ctx.contractId}.${caseId}: drop-forbid-key mutant killed on then.${k}.forbid_keys`);
         }
       }
       checkRelationalLeaf(ctx.contractId, caseId, k, exp, targetObj, payload, proj, ctx.mutationOverride, whenEnv, ctx.view);
@@ -239,11 +264,7 @@ export async function runProjectionChecks(ctx, caseId, payload, checks = {}, whe
     }
     seen.add(k);
   }
-  const frameObs = isObj(checks?.frame) ? checks.frame : (isFrameMetadataEnvelope(payload?._frame) ? payload._frame : null);
-  if (frameObs) {
-    const strictFrame = checks?.strictFrame === true || !Object.values(frameObs).some((v) => isObj(v) && v.observed === false);
-    verifyCaseFrame(ctx, caseId, frameObs, strictFrame);
-  }
+  verifyProjectionFrame(ctx, caseId, payload, checks);
 }
 
 export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
@@ -267,7 +288,7 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
         const ptr = whenProj[wk] || `/${escapePointer(wk)}`;
         const rd = readPointer(variant, ptr);
         if (rd.found && !isObj(wexp) && !valuesEqual(rd.value, wexp)) {
-          throwAssertionError(`${ctx.contractId}.${caseId}.when.${wk} fixture mismatch: expected ${JSON.stringify(wexp)}, got ${JSON.stringify(rd.value)}`);
+          fail(`${ctx.contractId}.${caseId}.when.${wk} fixture mismatch: expected ${JSON.stringify(wexp)}, got ${JSON.stringify(rd.value)}`);
         }
       }
     }
@@ -277,7 +298,7 @@ export async function runAdverseChecks(ctx, caseId, harness, checks = {}) {
   if ((harness?.requireCrossOwner === true || harness?.bola === true) && !sawCrossOwner) {
     ctx.reads.get(caseId)?.clear();
     if (harness?.strict !== false) {
-      throwAssertionError(`${pfx}: bola.unobserved: no cross-owner variant with distinct actor_owner and resource_owner supplied`);
+      fail(`${pfx}: bola.unobserved: no cross-owner variant with distinct actor_owner and resource_owner supplied`);
     }
   }
 }
@@ -288,8 +309,9 @@ export function extractTestOrigin(t) {
     return [t.filePath, isStr(t.fullName) && t.fullName ? t.fullName : String(t.name ?? '')];
   }
   if (isStr(t.file) && t.file) {
-    const tp = Array.isArray(t.titlePath)
-      ? t.titlePath.filter((s) => isStr(s) && s && !/\.(?:spec|test|e2e)\.[A-Za-z0-9]+$/u.test(s))
+    const isFn = typeof t.titlePath === 'function', rawTp = isFn ? t.titlePath() : t.titlePath;
+    const tp = Array.isArray(rawTp)
+      ? rawTp.filter((s) => isStr(s) && s && (isFn || !/\.(?:spec|test|e2e)\.[A-Za-z0-9]+$/u.test(s)))
       : [];
     const title = tp.length ? tp.join(' > ') : String(t.title ?? t.name ?? '');
     return [t.file, title];
@@ -329,7 +351,7 @@ export async function runSeamBoundsChecks(ctx, caseId, idOrRes, prodCaseOrWhen, 
       await runProjectionChecks(ctx, caseId, observed, projChecks);
     } catch (e) {
       if (isAssertErr(e) && !String(e.message || '').includes('[seam counterexample:')) {
-        throwAssertionError(`${ctx.contractId}.${caseId} failed on seam ${prodId}#${prodCaseId} [seam counterexample: ${JSON.stringify(variant)}]: ${e.message}`);
+        fail(`${ctx.contractId}.${caseId} failed on seam ${prodId}#${prodCaseId} [seam counterexample: ${JSON.stringify(variant)}]: ${e.message}`);
       }
       throw e;
     }
@@ -356,7 +378,7 @@ export function bridgeCapabilities() {
     capabilities: [...BRIDGE_CAPABILITIES],
     runtime_baseline: 'node-24-lts',
     schema: 'drift.bridge-capabilities/1',
-    version: '0.10.0',
+    version: '0.11.0',
   };
 }
 

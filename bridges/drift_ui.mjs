@@ -1,8 +1,9 @@
 // Cross-platform UI surface, interaction sequence, and adapter normalization for DRIFT.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { buildComposePayload, buildUiaPayload, deriveObservedCapabilities, evaluateTaskRecovery, isPointCoveredByVisualOverlays, optAdapter } from './drift_ui_recovery.mjs';
+import { boolOrNull, buildComposePayload, buildUiaPayload, deriveObservedCapabilities, evaluateTaskRecovery, isElementHidden, isFinNum, isPointCoveredByVisualOverlays, optAdapter } from './drift_ui_recovery.mjs';
 
+export { isElementHidden };
 const ALLOWED_DRIFT_ENV_KEYS = new Set(['adapter', 'config', 'deps', 'drift', 'policy', 'runner', 'toolchain']);
 const PREDICATE_CAPABILITY = {
   ...Object.fromEntries(['min_contrast_ratio', 'min_contrast_wcag22', 'min_contrast_text_normal', 'min_contrast_text_large', 'min_contrast_ui_component', 'contrast_violations_count'].map((k) => [k, 'wcag22_contrast'])),
@@ -13,16 +14,7 @@ const PREDICATE_CAPABILITY = {
   ...Object.fromEntries(['after_focus_role', 'active_focus', 'trigger_restored', 'unexpected_focus_steals'].map((k) => [k, 'input_focus'])),
 };
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const isFinNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const finOrNull = (v) => (isFinNum(v) ? Number(v) : null);
-const boolOrNull = (v, fb) => (typeof v === 'boolean' ? v : fb);
-
-export function isElementHidden(el) {
-  if (!isObj(el)) return false;
-  const pres = String(el.presence ?? el.state ?? '').toLowerCase();
-  if (['hidden', 'absent', 'collapsed'].includes(pres) || el.hidden === true || el.ariaHidden === true || el['aria-hidden'] === 'true') return true;
-  return String(el.display ?? el.style?.display ?? '').toLowerCase() === 'none' || ['hidden', 'collapse'].includes(String(el.visibility ?? el.style?.visibility ?? '').toLowerCase());
-}
 
 export function isElementScrollable(el, axis = 'both') {
   if (!isObj(el)) return false;

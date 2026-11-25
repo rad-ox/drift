@@ -115,6 +115,8 @@ def run_verifier_self_test(dv_mod: Any) -> int:
     ev_u22 = ev_esc.replace('\\"', "\\u0022")
     assert dv_mod.validate_event_line(ev_esc)["observations"]["c"]["payload"]["msg"] == esc_s
     assert dv_mod.validate_event_line(ev_u22)["observations"]["c"]["payload"]["msg"] == esc_s
+    assert "touched" not in dv_mod.validate_inventory_text('{"version":1,"classes":["a"],"tests":["a#t1"]}')
+    assert "touched" in dv_mod.validate_inventory_text('{"version":1,"classes":["a"],"tests":["a#t1"],"touched":["src/a.cpp"]}')
     assert len(dv_mod.validate_inventory_text(json.dumps({"version": 1, "classes": ["a.mjs", "b.mjs"], "tests": ["a.mjs#t1", "b.mjs#t2"], "snapshot": "0" * 40, "pack_ref": "dr1:" + "0" * 12, "touched": ["src/a.mjs", "src/b.mjs"], "inputs": {"a.mjs#t1": {"src/a.mjs": "sha256:111"}}, "env": dict.fromkeys(ENV_KEYS, "v")}))["tests"]) == 2
     assert dv_mod.validate_inventory_text(json.dumps({"version": 2, "classes": ["a"], "tests": ["a#t"], "execution_ref": "sha256:" + "a" * 64, "touched": []}))["version"] == 2
     ib = '"version":1,"classes":["a"],"tests":["a#t1"]'

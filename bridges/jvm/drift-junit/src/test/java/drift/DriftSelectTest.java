@@ -21,6 +21,9 @@ class DriftSelectTest {
         @DriftCase(contract = "c", cases = {"a", "b"}, level = "http")
         void tagged() {}
 
+        @DriftCase(contract = "c", level = "http")
+        void dynamicTagged() {}
+
         @DriftCase(contract = "other", cases = "a", level = "http")
         void otherContract() {}
 
@@ -159,6 +162,49 @@ class DriftSelectTest {
         } finally {
             System.clearProperty("drift.session");
             System.clearProperty("drift.nonce");
+        }
+    }
+
+    @Test
+    void dynamicEmptyCasesAnnotationSelectsOnContractHitOrChangedCaseOnly() throws Exception {
+        DriftSelect codeHit = select("{\"all\": false, \"contract\": \"c\", \"code_hit\": true, \"cases\": [], \"tests\": []}");
+        assertTrue(codeHit.apply(method("dynamicTagged")).included());
+        DriftSelect caseHit = select("{\"all\": false, \"contract\": \"c\", \"cases\": [{\"case\": \"b\"}], \"tests\": []}");
+        assertTrue(caseHit.apply(method("dynamicTagged")).included());
+        DriftSelect emptyHit = select("{\"all\": false, \"contract\": \"c\", \"cases\": [], \"tests\": []}");
+        assertTrue(emptyHit.apply(method("dynamicTagged")).excluded());
+        DriftSelect otherHit = select("{\"all\": false, \"contract\": \"other\", \"code_hit\": true, \"cases\": [], \"tests\": []}");
+        assertTrue(otherHit.apply(method("dynamicTagged")).excluded());
+
+        System.setProperty("drift.contracts", "c");
+        System.clearProperty(DriftSelect.SELECT);
+        try {
+            assertTrue(new DriftSelect().apply(method("dynamicTagged")).included());
+            assertTrue(new DriftSelect().apply(method("otherContract")).excluded());
+        } finally {
+            System.clearProperty("drift.contracts");
+        }
+
+        DriftCase dynTag = Sample.class.getDeclaredMethod("dynamicTagged").getAnnotation(DriftCase.class);
+        try {
+            Drift.begin(dynTag);
+            assertThrows(IllegalStateException.class, () -> Drift.expect("other", "a"));
+        } finally {
+            Drift.end();
+        }
+    }
+
+    @Test
+    void emptySystemPropertyDoesNotShadowEnvInPropOrEnv() {
+        String key = "drift.test.blank.prop";
+        System.setProperty(key, "   ");
+        try {
+            String pathEnv = System.getenv("PATH");
+            if (pathEnv != null && !pathEnv.isBlank()) {
+                assertTrue(pathEnv.trim().equals(DriftListener.propOrEnv(key, "PATH")));
+            }
+        } finally {
+            System.clearProperty(key);
         }
     }
 }

@@ -2,73 +2,36 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
+import re
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-try:
-    from . import drift_ui as _ui
-    from . import drift_ui_recovery as _uir
-except ImportError:
-    try:
-        import drift_ui as _ui  # type: ignore[no-redef]
-        import drift_ui_recovery as _uir  # type: ignore[no-redef]
-    except ImportError:
-        _ui_spec = importlib.util.spec_from_file_location('drift_ui', Path(__file__).with_name('drift_ui.py'))
-        assert _ui_spec is not None and _ui_spec.loader is not None
-        _ui = importlib.util.module_from_spec(_ui_spec)
-        _ui_spec.loader.exec_module(_ui)
-        _uir_spec = importlib.util.spec_from_file_location('drift_ui_recovery', Path(__file__).with_name('drift_ui_recovery.py'))
-        assert _uir_spec is not None and _uir_spec.loader is not None
-        _uir = importlib.util.module_from_spec(_uir_spec)
-        _uir_spec.loader.exec_module(_uir)
+try: from . import drift_probes as _pm
+except ImportError: import drift_probes as _pm  # type: ignore[no-redef]
+_ui, _uir = _pm.sib(__package__, __file__, 'drift_ui', 'drift_ui_recovery')
+_map, _pick = _uir._map, _uir._pick
 
 
 def collect_playwright_sequence(options: Mapping[str, Any] | None) -> dict[str, Any]:
     opts = dict(options) if isinstance(options, Mapping) else {}
     resolve_root = opts.get('resolve_root') or opts.get('resolveRoot')
     root = resolve_root() if callable(resolve_root) else opts.get('root')
-    if not isinstance(root, Mapping) and root is None:
-        return _ui.observe_ui_sequence({
-            'surface_found': False,
-            'adapter': {'name': 'playwright-collector', 'capabilities': []},
-            'evidence': {'unverifiable_checks': 1, 'unverifiable_reasons': ['surface.missing']},
-        })
     root_map: dict[str, Any] = dict(root) if isinstance(root, Mapping) else {}
-    if root_map.get('surfaceFound') is False or root_map.get('surface_found') is False:
-        return _ui.observe_ui_sequence({
-            'surface_found': False,
-            'adapter': {'name': 'playwright-collector', 'capabilities': []},
-            'evidence': {'unverifiable_checks': 1, 'unverifiable_reasons': ['surface.missing']},
-        })
-
+    if root is None or root_map.get('surfaceFound') is False or root_map.get('surface_found') is False:
+        return _ui.observe_ui_sequence({'surface_found': False, 'adapter': {'name': 'playwright-collector', 'capabilities': []}, 'evidence': {'unverifiable_checks': 1, 'unverifiable_reasons': ['surface.missing']}})
     now_fn = opts.get('now') if callable(opts.get('now')) else (lambda: time.monotonic() * 1000.0)
-    before_in = opts.get('before') if isinstance(opts.get('before'), Mapping) else {}
-    before_snap: dict[str, Any] = {
-        'input_focus_role': before_in.get('input_focus_role') or root_map.get('input_focus_role') or root_map.get('activeFocusRole') or '',
-        **(
-            {'selected_entity_id': before_in.get('selected_entity_id', root_map.get('selected_entity_id'))}
-            if ('selected_entity_id' in before_in or 'selected_entity_id' in root_map)
-            else {}
-        ),
-        **(
-            {'scroll_anchor_id': before_in.get('scroll_anchor_id', root_map.get('scroll_anchor_id'))}
-            if ('scroll_anchor_id' in before_in or 'scroll_anchor_id' in root_map)
-            else {}
-        ),
-        **(
-            {'dirty_inputs': copy.deepcopy(before_in.get('dirty_inputs') or root_map.get('dirty_inputs'))}
-            if isinstance(before_in.get('dirty_inputs') or root_map.get('dirty_inputs'), Mapping)
-            else {}
-        ),
-        **(
-            {'step_data': copy.deepcopy(before_in.get('step_data') or root_map.get('step_data'))}
-            if isinstance(before_in.get('step_data') or root_map.get('step_data'), Mapping)
-            else {}
-        ),
-    }
+    before_in = _map(opts, 'before')
+    def _snap(base, a, b, focus):
+        out = {**base, 'input_focus_role': focus}
+        for k in ('selected_entity_id', 'scroll_anchor_id'):
+            if k in a or k in b: out[k] = a.get(k, b.get(k))
+        for k in ('dirty_inputs', 'step_data'):
+            v = a.get(k) or b.get(k)
+            if isinstance(v, Mapping): out[k] = copy.deepcopy(v)
+        return out
+    before_snap = _snap({}, before_in, root_map, before_in.get('input_focus_role') or root_map.get('input_focus_role') or root_map.get('activeFocusRole') or '')
 
     focus_trace: list[str] = []
     listeners_attached = False
@@ -107,49 +70,35 @@ def collect_playwright_sequence(options: Mapping[str, Any] | None) -> dict[str, 
             action_fn(scope)
         wait_until = opts.get('wait_until') or opts.get('waitUntil')
         if callable(wait_until):
-            timeout_ms = float(opts.get('timeout_ms', opts.get('timeoutMs', 1000.0)))
-            poll_ms = float(opts.get('poll_interval_ms', opts.get('pollIntervalMs', 5.0)))
+            timeout_ms = float(_pick(opts, 'timeout_ms', 'timeoutMs', 1000.0))
+            poll_ms = float(_pick(opts, 'poll_interval_ms', 'pollIntervalMs', 5.0))
             advance_fn = opts.get('advance_time') or opts.get('advanceTime')
             settled = bool(wait_until(scope))
             while not settled and (float(now_fn()) - t0) < timeout_ms:
-                if callable(advance_fn):
-                    advance_fn(poll_ms)
-                else:
-                    time.sleep(poll_ms / 1000.0)
+                if callable(advance_fn): advance_fn(poll_ms)
+                else: time.sleep(poll_ms / 1000.0)
                 settled = bool(wait_until(scope))
-            if not settled:
-                settle_timed_out = True
+            if not settled: settle_timed_out = True
     finally:
-        listeners_attached = False
-        listeners_detached = True
+        listeners_attached, listeners_detached = False, True
 
     t1 = float(now_fn())
-    obs_dur = opts.get('observed_duration_ms', opts.get('observedDurationMs'))
+    obs_dur = _pick(opts, 'observed_duration_ms', 'observedDurationMs')
     observed_duration_ms = int(obs_dur) if isinstance(obs_dur, (int, float)) else max(0, round(t1 - t0))
 
-    after_in = opts.get('after') if isinstance(opts.get('after'), Mapping) else {}
-    root_after = root_map.get('after') if isinstance(root_map.get('after'), Mapping) else {}
-    after_snap: dict[str, Any] = {
-        **after_in,
-        **root_after,
-        'input_focus_role': root_map.get('input_focus_role') or after_in.get('input_focus_role') or before_snap['input_focus_role'],
-        **({'selected_entity_id': root_map['selected_entity_id']} if 'selected_entity_id' in root_map else {}),
-        **({'scroll_anchor_id': root_map['scroll_anchor_id']} if 'scroll_anchor_id' in root_map else {}),
-        **({'dirty_inputs': copy.deepcopy(root_map['dirty_inputs'])} if isinstance(root_map.get('dirty_inputs'), Mapping) else {}),
-        **({'step_data': copy.deepcopy(root_map['step_data'])} if isinstance(root_map.get('step_data'), Mapping) else {}),
-    }
+    after_in, root_after = _map(opts, 'after'), _map(root_map, 'after')
+    after_snap = _snap({**after_in, **root_after}, root_map, {}, root_map.get('input_focus_role') or after_in.get('input_focus_role') or before_snap['input_focus_role'])
 
-    ev_in = opts.get('evidence') if isinstance(opts.get('evidence'), Mapping) else {}
+    ev_in = _map(opts, 'evidence')
     unv_reasons = list(ev_in.get('unverifiable_reasons') or [])
     unv_checks = int(ev_in.get('unverifiable_checks') or 0)
     if settle_timed_out:
-        unv_checks += 1
-        unv_reasons.append('ui.settle_timeout')
+        unv_checks += 1; unv_reasons.append('ui.settle_timeout')
 
-    roles_after = root_map.get('roles') if isinstance(root_map.get('roles'), Mapping) else (opts.get('roles') or {})
+    roles_after = _map(root_map, 'roles', opts.get('roles') or {})
     elements_after = root_map.get('elements') if isinstance(root_map.get('elements'), list) else (opts.get('elements') or [])
-    trans_in = opts.get('transition') if isinstance(opts.get('transition'), Mapping) else {}
-    conf_ms = opts.get('configured_duration_ms', opts.get('configuredDurationMs', root_map.get('configuredDurationMs')))
+    trans_in = _map(opts, 'transition')
+    conf_ms = _pick(opts, 'configured_duration_ms', 'configuredDurationMs', root_map.get('configuredDurationMs'))
 
     obs = _ui.observe_ui_sequence({
         **opts,
@@ -210,7 +159,7 @@ def attach_bridge_plan_file(doc: dict[str, Any], fp: Path | None, read_json_fn: 
     return doc
 
 
-def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None, escape_pointer: Callable[[str], str], read_pointer: Callable[[Any, str], tuple[bool, Any]], check_relational_leaf: Callable[..., bool]) -> bool:
+def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, Any], payload: Any, seen: set[str] | None, escape_pointer: Callable[[str], str], read_pointer: Callable[[Any, str], tuple[bool, Any]], check_relational_leaf: Callable[..., bool], proj: Mapping[str, str] | None = None) -> bool:
     clauses = plan_case.get('clauses') if isinstance(plan_case, Mapping) else None
     if not isinstance(clauses, (list, tuple)):
         return False
@@ -228,8 +177,15 @@ def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, 
         raw_c = dict(cl['constraint'])
         fake_c = {'units': {'__u->target': conv}, 'schema': {'then': {pred: {'unit': 'target'}}}} if conv != 1.0 else {}
         exp = {**raw_c, 'convert_from': '__u'} if conv != 1.0 else raw_c
-        if (isinstance(raw_c.get('keys'), Mapping) or 'allowed_keys' in raw_c or 'forbid_keys' in raw_c) and ptr == f'/{escape_pointer(pred)}':
-            act = payload[pred] if isinstance(payload, Mapping) and isinstance(payload.get(pred), Mapping) else payload
+        if isinstance(raw_c.get('keys'), Mapping) or 'allowed_keys' in raw_c or 'forbid_keys' in raw_c:
+            if (proj is not None and pred in proj) or ptr != f'/{escape_pointer(pred)}':
+                found, act = read_pointer(payload, ptr)
+                if not found: raise AssertionError(f'{pfx}: missing projected path "{ptr}" for then.{pred}')
+            elif isinstance(payload, Mapping) and pred in payload:
+                act = payload[pred]
+            else:
+                act = payload
+            if not isinstance(act, Mapping): raise AssertionError(f'{pfx}: expected mapping for then.{pred}')
         else:
             found, act = read_pointer(payload, ptr)
             if not found:
@@ -240,10 +196,10 @@ def eval_plan_case_impl(contract_id: str, case_id: str, plan_case: Mapping[str, 
     return True
 
 
-def build_env_dict(adapter_id: str, raw: str, strip_bom: Callable[[str], str], env_keys: tuple[str, ...]) -> dict[str, str]:
-    import json
-    import platform
-    base = {'adapter': adapter_id, 'config': 'default', 'deps': 'none', 'drift': '0.10.0', 'policy': 'core@1', 'runner': 'python-unittest', 'toolchain': f'python@{platform.python_version()}'}
+def build_env_dict(adapter_id, raw, strip_bom, env_keys):
+    import json, os, platform, sys
+    rn = 'pytest' if (os.environ.get('PYTEST_CURRENT_TEST') or re.search(r'\bpytest\b', f"{os.environ.get('DRIFT_TEST_CMD', '')} {sys.argv[0] if sys.argv else ''}", re.I)) else 'python-unittest'
+    base = {'adapter': adapter_id, 'config': 'default', 'deps': 'none', 'drift': '0.11.0', 'policy': 'core@1', 'runner': rn, 'toolchain': f'python@{platform.python_version()}'}
     if raw:
         parsed = json.loads(strip_bom(raw))
         if not isinstance(parsed, dict):
@@ -255,7 +211,13 @@ def build_env_dict(adapter_id: str, raw: str, strip_bom: Callable[[str], str], e
     return base
 
 
-def load_view_doc(contract_id: str, views: dict[str, dict[str, Any]], environ: Mapping[str, str], auto_resolve_fn: Callable[..., dict[str, Any] | None], attach_plan_fn: Callable[..., dict[str, Any]], read_json_fn: Callable[[Path], Any]) -> dict[str, Any]:
+def _split_tid(t):
+    s = t.strip() if isinstance(t, str) else ''
+    h = s.find('#')
+    return (s[:h], re.split(r'[(\[]', s[h + 1:], maxsplit=1)[0]) if h > 0 else ('', '')
+
+
+def load_view_doc(contract_id, views, environ, auto_resolve_fn, attach_plan_fn, read_json_fn):
     if contract_id in views:
         return views[contract_id]
     res = environ.get('DRIFT_RESOLVED', '').strip()
@@ -282,12 +244,12 @@ def load_view_doc(contract_id: str, views: dict[str, dict[str, Any]], environ: M
     return doc
 
 
-def record_discovery_into(test_id: str, active_out: str, environ: Mapping[str, str], discover_dir_fn: Callable[[], str], shard_path: Path | None, bad_cls: frozenset[str], bad_mth: frozenset[str], disc_classes: set[str], disc_tests: set[str], ensure_inv_fn: Callable[[str], dict[str, Any]], flush_inv_fn: Callable[[str, dict[str, Any]], None], ensure_exit_fn: Callable[[], None]) -> None:
+def record_discovery_into(test_id, active_out, environ, discover_dir_fn, shard_path, bad_cls, bad_mth, disc_classes, disc_tests, ensure_inv_fn, flush_inv_fn, ensure_exit_fn):
     tgt = active_out or environ.get('DRIFT_EVENTS', '').strip() or discover_dir_fn()
     if not tgt:
         return
-    h = test_id.find('#') if isinstance(test_id, str) else -1
-    cls, mth = (test_id[:h] if h > 0 else ''), (test_id[h + 1:] if h > 0 else '').split('[', 1)[0]
+    _pm.sidecar_head(environ, (), ())
+    cls, mth = _split_tid(test_id)
     if not cls or not mth or any(c.isspace() or c in bad_cls for c in cls) or any(c.isspace() or c in bad_mth for c in mth):
         raise ValueError(f'DRIFT_EVENTS requires a test id in Class#method form: "{test_id}"')
     canon = f'{cls}#{mth}'
@@ -308,7 +270,7 @@ def record_discovery_into(test_id: str, active_out: str, environ: Mapping[str, s
         flush_inv_fn(out, inv)
 
 
-def record_context_input(ctx: Any, fp: str | Path, pre: bytes | str | None, input_digest_fn: Callable[[Path, bytes | None], str], resolve_events_fn: Callable[[], str], record_disc_fn: Callable[[str, str], None], invs: dict[str, dict[str, Any]]) -> str:
+def record_context_input(ctx, fp, pre, input_digest_fn, resolve_events_fn, record_disc_fn, invs):
     import os
     is_self = isinstance(pre, str)
     cwd = Path(os.path.normpath(os.getcwd()))
@@ -319,15 +281,17 @@ def record_context_input(ctx: Any, fp: str | Path, pre: bytes | str | None, inpu
         rel = Path(fp).as_posix()
     dig = pre if is_self else input_digest_fn(abs_p, pre)
     if ctx.mutation_override is None:
-        if not is_self:
+        if is_self and rel == f'.drift/self-stub/{ctx.contract_id}':
+            ctx._self_stub = True
+        elif not is_self:
             ctx._input_files[abs_p] = (rel, dig)
         out = resolve_events_fn()
         if out:
             record_disc_fn(ctx.test_id, out)
             inv = invs.get(out)
             if inv is not None:
-                h = ctx.test_id.find('#')
-                canon = f"{ctx.test_id[:h]}#{ctx.test_id[h + 1:].split('[', 1)[0]}" if h > 0 else ctx.test_id
+                cls, mth = _split_tid(ctx.test_id)
+                canon = f'{cls}#{mth}' if cls and mth else ctx.test_id
                 fm = inv['inputs'].setdefault(canon, {})
                 if fm.get(rel) != dig:
                     fm[rel] = dig
@@ -335,7 +299,7 @@ def record_context_input(ctx: Any, fp: str | Path, pre: bytes | str | None, inpu
     return dig
 
 
-def verify_recorded_inputs(contract: str, test: str, input_files: dict[Path, tuple[str, str]], digests: dict[str, tuple[tuple[int, int] | None, str]], hash_bytes_fn: Callable[[bytes], str]) -> None:
+def verify_recorded_inputs(contract, test, input_files, digests, hash_bytes_fn):
     for abs_p, (rel, dig) in input_files.items():
         if not abs_p.is_file():
             raise AssertionError(f'{contract}: recorded input "{rel}" was mutated during test "{test}"')

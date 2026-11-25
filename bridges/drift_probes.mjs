@@ -1,5 +1,5 @@
 // Reusable observable behavioral probes for the DRIFT JavaScript bridge.
-import { isFinNum, isObj, isStr, throwAssertionError, valuesEqual } from './drift_checks.mjs';
+import { isFinNum, isObj, isStr, sidecarHead, throwAssertionError as fail, valuesEqual } from './drift_checks.mjs';
 
 const DEFAULT_VOLATILE_KEYS = new Set(['request_id', 'timestamp', 'trace_id', 'audit_id']);
 const DEFAULT_ALLOWED_SECOND_WRITES = new Set(['AUDIT_LOG', 'audit_log', 'METRICS', 'metrics']);
@@ -25,7 +25,7 @@ export function requiredProbesOf(view, caseId) {
 
 export function hasKeyRecursive(val, fk, isRoot = true, depth = 0) {
   if (depth > 64) {
-    throwAssertionError('observation.incomplete: max_depth_exceeded (> 64)');
+    fail('observation.incomplete: max_depth_exceeded (> 64)');
   }
   if (Array.isArray(val)) {
     return val.some((item) => hasKeyRecursive(item, fk, false, depth + 1));
@@ -33,10 +33,10 @@ export function hasKeyRecursive(val, fk, isRoot = true, depth = 0) {
   if (val !== null && typeof val === 'object') {
     const proto = Object.getPrototypeOf(val);
     if (proto !== null && proto !== Object.prototype) {
-      throwAssertionError('observation.incomplete: non_traversable_object');
+      fail('observation.incomplete: non_traversable_object');
     }
     if (val._truncated === true || val.__truncated__ === true) {
-      throwAssertionError('observation.incomplete: truncated_capture');
+      fail('observation.incomplete: truncated_capture');
     }
   }
   if (!isObj(val)) return false;
@@ -56,7 +56,7 @@ function unverifiedOrThrow(ctx, caseId, strict, reason, detail) {
   if (ctx && !(ctx.unobservedCases instanceof Set)) ctx.unobservedCases = new Set();
   ctx?.unobservedCases?.add(caseId);
   if (strict) {
-    throwAssertionError(`${ctx.contractId}.${caseId}: ${reason}: ${detail}`);
+    fail(`${ctx.contractId}.${caseId}: ${reason}: ${detail}`);
   }
   return { observed: false, reason };
 }
@@ -67,19 +67,19 @@ export async function runIdempotencyProbe(ctx, caseId, obs, runProjectionFn) {
   if (!isObj(obs)) return unverifiedOrThrow(ctx, caseId, strict, 'idempotency.unobserved', 'unobserved');
   const hasState = obs.stateAfterFirst !== undefined && obs.stateAfterSecond !== undefined;
   const sw = isObj(obs.secondWrites) ? obs.secondWrites : null;
-  if (hasState && !valuesEqual(obs.stateAfterFirst, obs.stateAfterSecond)) throwAssertionError(`${pfx}: idempotency.domain_state_mutated`);
+  if (hasState && !valuesEqual(obs.stateAfterFirst, obs.stateAfterSecond)) fail(`${pfx}: idempotency.domain_state_mutated`);
   if (sw) {
     const a2 = new Set(Array.isArray(obs.allowedSecondWrites) ? obs.allowedSecondWrites.map(String) : DEFAULT_ALLOWED_SECOND_WRITES);
     for (const [res, wv] of Object.entries(sw)) {
       if (a2.has(res) || a2.has(res.split('#')[0])) continue;
       const c = Array.isArray(wv) ? wv.length : Number(wv);
-      if (!Number.isSafeInteger(c) || c !== 0) throwAssertionError(`${pfx}: idempotency.duplicate_write on "${res}": ${c}`);
+      if (!Number.isSafeInteger(c) || c !== 0) fail(`${pfx}: idempotency.duplicate_write on "${res}": ${c}`);
     }
   }
   if (isObj(obs.first) && isObj(obs.second)) {
     const vol = new Set(Array.isArray(obs.volatileKeys) ? obs.volatileKeys.map(String) : DEFAULT_VOLATILE_KEYS);
     for (const k of Object.keys(obs.first)) {
-      if (!vol.has(k) && k !== '_frame' && k in obs.second && !valuesEqual(obs.first[k], obs.second[k])) throwAssertionError(`${pfx}: idempotency.response_diverged on "${k}"`);
+      if (!vol.has(k) && k !== '_frame' && k in obs.second && !valuesEqual(obs.first[k], obs.second[k])) fail(`${pfx}: idempotency.response_diverged on "${k}"`);
     }
   }
   if (obs.observed === false || (!hasState && !sw)) return unverifiedOrThrow(ctx, caseId, strict, 'idempotency.unobserved', 'unobserved');
@@ -94,12 +94,12 @@ export function runSeamProbe(ctx, caseId, obs) {
   if (!isObj(obs)) return unverifiedOrThrow(ctx, caseId, strict, 'seam.unobserved', 'unobserved');
   const hasR = 'retryable' in obs || 'maxAttempts' in obs, hasT = obs.timedOut === true, hasQ = 'maxQueries' in obs, isInt = Number.isSafeInteger;
   if (hasR && isInt(obs.attempts) && obs.attempts > 0) {
-    if (obs.retryable === false && obs.attempts > 1) throwAssertionError(`${pfx}: seam.non_retryable_retried`);
-    if (obs.retryable === true && obs.attempts < 2) throwAssertionError(`${pfx}: seam.retry_missing`);
-    if ('maxAttempts' in obs && (!isInt(obs.maxAttempts) || obs.attempts > obs.maxAttempts)) throwAssertionError(`${pfx}: seam.max_attempts_exceeded`);
+    if (obs.retryable === false && obs.attempts > 1) fail(`${pfx}: seam.non_retryable_retried`);
+    if (obs.retryable === true && obs.attempts < 2) fail(`${pfx}: seam.retry_missing`);
+    if ('maxAttempts' in obs && (!isInt(obs.maxAttempts) || obs.attempts > obs.maxAttempts)) fail(`${pfx}: seam.max_attempts_exceeded`);
   }
-  if (hasT && isInt(obs.lateWrites) && obs.lateWrites > 0) throwAssertionError(`${pfx}: seam.timeout_late_write`);
-  if (hasQ && isInt(obs.queries) && isInt(obs.maxQueries) && obs.queries > obs.maxQueries) throwAssertionError(`${pfx}: seam.query_budget_exceeded`);
+  if (hasT && isInt(obs.lateWrites) && obs.lateWrites > 0) fail(`${pfx}: seam.timeout_late_write`);
+  if (hasQ && isInt(obs.queries) && isInt(obs.maxQueries) && obs.queries > obs.maxQueries) fail(`${pfx}: seam.query_budget_exceeded`);
   if (obs.observed === false || (!hasR && !hasT && !hasQ) || (hasR && (!isInt(obs.attempts) || obs.attempts <= 0))) return unverifiedOrThrow(ctx, caseId, strict, 'seam.unobserved', 'unobserved');
   if (hasT && (!isInt(obs.lateWrites ?? 0) || (obs.lateWrites ?? 0) < 0)) return unverifiedOrThrow(ctx, caseId, strict, 'seam.unobserved', 'invalid lateWrites');
   if (hasQ && (!isInt(obs.queries) || obs.queries < 0 || !isInt(obs.maxQueries) || obs.maxQueries < 0)) return unverifiedOrThrow(ctx, caseId, strict, 'queries.unobserved', 'unobserved');
@@ -112,7 +112,7 @@ export function runRollbackProbe(ctx, caseId, obs) {
   const pfx = `${ctx.contractId}.${caseId}`, strict = !isObj(obs) || obs.strict !== false;
   if (isObj(obs) && obs.before !== undefined && obs.after !== undefined) {
     const res = isStr(obs.resource) && obs.resource ? obs.resource : 'primary';
-    if (!valuesEqual(obs.before, obs.after) && obs.compensated !== true) throwAssertionError(`${pfx}: rollback.dirty_partial_write on "${res}"`);
+    if (!valuesEqual(obs.before, obs.after) && obs.compensated !== true) fail(`${pfx}: rollback.dirty_partial_write on "${res}"`);
   }
   if (!isObj(obs) || obs.observed === false || obs.before === undefined || obs.after === undefined) return unverifiedOrThrow(ctx, caseId, strict, 'rollback.unobserved', 'unobserved');
   ctx?.reads?.get(caseId)?.add('@probe:rollback');
@@ -124,16 +124,16 @@ export function checkBolaVariantPair(pfx, variant) {
   const b = isObj(variant.bola) ? variant.bola : variant;
   if (!('actor_owner' in b) && !('resource_owner' in b)) return false;
   const a = isStr(b.actor_owner) ? b.actor_owner.trim() : '', o = isStr(b.resource_owner) ? b.resource_owner.trim() : '';
-  if (!a || !o || a === o) throwAssertionError(`${pfx}: bola.invalid_fixture`);
+  if (!a || !o || a === o) fail(`${pfx}: bola.invalid_fixture`);
   return true;
 }
 
 function containsStringLeaf(val, needle, depth = 0) {
-  if (depth > 64) throwAssertionError('observation.incomplete: max_depth_exceeded (> 64)');
+  if (depth > 64) fail('observation.incomplete: max_depth_exceeded (> 64)');
   if (isStr(val)) return val.includes(needle);
   if (Array.isArray(val)) return val.some((x) => containsStringLeaf(x, needle, depth + 1));
   if (isObj(val)) {
-    if (val._truncated === true || val.__truncated__ === true) throwAssertionError('observation.incomplete: truncated_capture');
+    if (val._truncated === true || val.__truncated__ === true) fail('observation.incomplete: truncated_capture');
     return Object.values(val).some((v) => containsStringLeaf(v, needle, depth + 1));
   }
   return false;
@@ -147,7 +147,7 @@ export function runLogSinkProbe(ctx, caseId, obs) {
   const sec = rs.filter((s) => isStr(s) && s.trim() !== ''), logs = obs.logLines ?? obs.log_lines;
   const hl = Array.isArray(logs) || isStr(logs), hp = obs.payload !== undefined && obs.payload !== null;
   for (const s of sec) {
-    if ((hl && containsStringLeaf(logs, s)) || (hp && containsStringLeaf(obs.payload, s))) throwAssertionError(`${pfx}: log_sink.secret_leaked`);
+    if ((hl && containsStringLeaf(logs, s)) || (hp && containsStringLeaf(obs.payload, s))) fail(`${pfx}: log_sink.secret_leaked`);
   }
   if (obs.observed === false || !sec.length || (!hl && !hp)) return unverifiedOrThrow(ctx, caseId, strict, 'log_sink.unobserved', 'unobserved');
   ctx?.reads?.get(caseId)?.add('@probe:log_sink');
@@ -273,7 +273,8 @@ export async function runCaseMutants(mutCfg, mutOut, ctx, contract, passed, elap
 }
 
 export function buildEnvObj(adapterId, raw, nodeVer, parseJson, envKeys, errFn) {
-  const base = { adapter: adapterId, config: 'default', deps: 'none', drift: '0.10.0', policy: 'core@1', runner: 'node:test', toolchain: `node@${nodeVer}` };
+  const m = /\b(mocha|vitest|jest|playwright)\b/iu.exec(`${process.env.DRIFT_TEST_CMD || ''} ${process.argv[1] || ''}`);
+  const base = { adapter: adapterId, config: 'default', deps: 'none', drift: '0.11.0', policy: 'core@1', runner: m ? m[1].toLowerCase() : 'node:test', toolchain: `node@${nodeVer}` };
   if (raw) {
     const parsed = parseJson(raw);
     if (!isObj(parsed)) errFn('DRIFT_ENV must be a JSON object');
@@ -344,7 +345,8 @@ export function discoverEventsDirFrom(cwd, env, fs, path) {
 export function recordDiscoveryInto(testId, activeOut, env, discoverDirFn, shardPath, discClasses, discTests, ensureInvFn, flushInvFn, ensureExitFn, fs, errFn) {
   const tgt = activeOut || env.DRIFT_EVENTS || discoverDirFn();
   if (!tgt) return;
-  const h = isStr(testId) ? testId.indexOf('#') : -1, cls = h > 0 ? testId.slice(0, h) : '', mth = (h > 0 ? testId.slice(h + 1) : '').split('[', 1)[0];
+  sidecarHead(env, [], []);
+  const raw = isStr(testId) ? testId.trim() : '', h = raw.indexOf('#'), cls = h > 0 ? raw.slice(0, h) : '', mth = (h > 0 ? raw.slice(h + 1) : '').split(/[([]/u, 1)[0];
   if (!cls || !mth || /[\s/\\#[\]]/u.test(cls) || /[\s#[\]]/u.test(mth)) errFn(`DRIFT_EVENTS requires a test id in Class#method form: "${testId}"`);
   const canon = `${cls}#${mth}`, out = activeOut || shardPath || (tgt.endsWith('.jsonl') && fs.existsSync(tgt) ? tgt : '');
   discClasses.add(cls); discTests.add(canon);
@@ -378,14 +380,15 @@ export function recordContextInput(ctx, filePath, pre, cwd, inputDigestFn, resol
   const rel = relRaw && !relRaw.startsWith('..') ? relRaw : String(filePath).split(path.sep).join('/');
   const dig = isSelf ? pre : inputDigestFn(abs, pre);
   if (!ctx.mutationOverride) {
+    if (pre === 'sha256:self-stub') ctx.selfStub = true;
     if (!isSelf) ctx.inputFiles.set(abs, { rel, dig });
     const out = resolveEventsFn();
     if (out) {
       recordDiscFn(ctx.testId, out);
       const inv = inventories.get(out);
       if (inv) {
-        const h = ctx.testId.indexOf('#');
-        const canon = h > 0 ? `${ctx.testId.slice(0, h)}#${ctx.testId.slice(h + 1).split('[', 1)[0]}` : ctx.testId;
+        const raw = ctx.testId.trim(), h = raw.indexOf('#');
+        const canon = h > 0 ? `${raw.slice(0, h)}#${raw.slice(h + 1).split(/[([]/u, 1)[0]}` : raw;
         let fm = inv.inputs.get(canon);
         if (!fm) { fm = new Map(); inv.inputs.set(canon, fm); }
         if (fm.get(rel) !== dig) {

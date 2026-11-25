@@ -1,5 +1,6 @@
 package drift.maven;
 
+import static java.nio.file.Files.*;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,6 +21,10 @@ abstract class DriftMojo extends AbstractMojo {
     /** The DRIFT area of the module: config.toml, profiles/ and contracts/. */
     @Parameter(property = "drift.area", defaultValue = "${project.basedir}/.drift")
     File area;
+
+    /** Optional external shadow-mode state directory (passed as --state-dir; contains .drift/). */
+    @Parameter(property = "drift.stateDir")
+    File stateDir;
 
     /** Where the resolved views and the events go; a clean build removes them. */
     @Parameter(property = "drift.output", defaultValue = "${project.build.directory}/drift")
@@ -71,7 +76,7 @@ abstract class DriftMojo extends AbstractMojo {
             getLog().warn("drift: tests are skipped, so no proof is produced and " + goal + " does not run");
             return true;
         }
-        if (!Files.exists(area.toPath())) {
+        if (!exists(effectiveArea())) {
             String policy = missingArea == null ? "auto" : missingArea.trim().toLowerCase();
             if ("skip".equals(policy) || ("auto".equals(policy) && reactorHasAdoptedSibling())) {
                 getLog().info("drift: " + goal + " skipped (module has no .drift directory)");
@@ -86,15 +91,26 @@ abstract class DriftMojo extends AbstractMojo {
             return false;
         }
         for (MavenProject p : mavenSession.getProjects()) {
-            if (p.getBasedir() != null && Files.isRegularFile(p.getBasedir().toPath().resolve(".drift").resolve("config.toml"))) {
+            if (p.getBasedir() != null && isRegularFile(p.getBasedir().toPath().resolve(".drift").resolve("config.toml"))) {
                 return true;
             }
         }
         return false;
     }
 
+    Path effectiveArea() {
+        return stateDir != null ? stateDir.toPath().resolve(".drift") : area.toPath();
+    }
+
+    void appendStateDir(List<String> args) {
+        if (stateDir != null) {
+            args.add("--state-dir");
+            args.add(stateDir.toPath().toAbsolutePath().normalize().toString());
+        }
+    }
+
     Path contracts() {
-        return area.toPath().resolve("contracts");
+        return effectiveArea().resolve("contracts");
     }
 
     Path events() {
@@ -103,11 +119,11 @@ abstract class DriftMojo extends AbstractMojo {
 
     boolean hasEvents() throws MojoExecutionException {
         Path ev = events();
-        if (Files.isRegularFile(ev)) {
+        if (isRegularFile(ev)) {
             return true;
         }
-        if (Files.isDirectory(ev)) {
-            try (var s = Files.list(ev)) {
+        if (isDirectory(ev)) {
+            try (var s = list(ev)) {
                 return s.anyMatch(p -> p.toString().endsWith(".jsonl"));
             } catch (java.io.IOException e) {
                 throw new MojoExecutionException("cannot read " + ev, e);
@@ -122,12 +138,12 @@ abstract class DriftMojo extends AbstractMojo {
 
     /** The area must be adopted: its configuration is what the owner approves first. */
     void requireArea() throws MojoExecutionException {
-        Path config = area.toPath().resolve("config.toml");
-        if (!Files.isRegularFile(config)) {
+        Path config = effectiveArea().resolve("config.toml");
+        if (!isRegularFile(config)) {
             throw new MojoExecutionException("DRIFT is not adopted in this module: " + config + " is missing."
                     + System.lineSeparator() + "Create it, then ask the owner to approve it with"
                     + " drift approve " + config + " --by <owner>:" + System.lineSeparator()
-                    + System.lineSeparator() + "drift = \"0.2\"" + System.lineSeparator() + "kind = \"config\""
+                    + System.lineSeparator() + "drift = \"0.3\"" + System.lineSeparator() + "kind = \"config\""
                     + System.lineSeparator() + System.lineSeparator() + "[area]" + System.lineSeparator()
                     + "owner = \"<owner>\"" + System.lineSeparator());
         }

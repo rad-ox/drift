@@ -1,18 +1,10 @@
 package drift.maven;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
+import static java.nio.file.Files.*;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Properties;
+import java.nio.file.*;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -43,6 +35,9 @@ final class Cli {
         this.path = path;
     }
 
+    static MojoExecutionException execErr(String msg) { return new MojoExecutionException(msg); }
+    static MojoExecutionException execErr(String msg, Throwable e) { return new MojoExecutionException(msg, e); }
+
     /** The output of one run: its exit status and its merged standard output and error. */
     record Result(int status, List<String> lines) {}
 
@@ -51,8 +46,8 @@ final class Cli {
             throws MojoExecutionException {
         if (configured != null && !configured.isBlank()) {
             Path p = Path.of(configured);
-            if (!Files.isExecutable(p)) {
-                throw new MojoExecutionException("drift.cli " + configured + " is not an executable file");
+            if (!isExecutable(p)) {
+                throw execErr("drift.cli " + configured + " is not an executable file");
             }
             return new Cli(p);
         }
@@ -63,19 +58,19 @@ final class Cli {
                 Path resolved = system.resolveArtifact(session,
                         new ArtifactRequest(artifact, repositories, null)).getArtifact().getFile().toPath();
                 Path target = work.resolve("bin").resolve(windows() ? "drift.exe" : "drift");
-                Files.createDirectories(target.getParent());
-                if (!Files.isRegularFile(target) || !Files.isExecutable(target)
-                        || Files.size(resolved) != Files.size(target)
-                        || Files.mismatch(resolved, target) != -1L) {
-                    Path tmp = Files.createTempFile(target.getParent(), ".drift-", ".tmp");
+                createDirectories(target.getParent());
+                if (!isRegularFile(target) || !isExecutable(target)
+                        || size(resolved) != size(target)
+                        || mismatch(resolved, target) != -1L) {
+                    Path tmp = createTempFile(target.getParent(), ".drift-", ".tmp");
                     try {
-                        Files.copy(resolved, tmp, StandardCopyOption.REPLACE_EXISTING);
+                        copy(resolved, tmp, StandardCopyOption.REPLACE_EXISTING);
                         if (!tmp.toFile().setExecutable(true)) {
-                            throw new MojoExecutionException("cannot make " + tmp + " executable");
+                            throw execErr("cannot make " + tmp + " executable");
                         }
-                        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+                        move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
                     } finally {
-                        Files.deleteIfExists(tmp);
+                        deleteIfExists(tmp);
                     }
                 }
                 log.debug("drift: using " + artifact);
@@ -83,7 +78,7 @@ final class Cli {
             } catch (ArtifactResolutionException e) {
                 log.debug("drift: " + artifact + " is not available: " + e.getMessage());
             } catch (IOException e) {
-                throw new MojoExecutionException("cannot copy the drift command", e);
+                throw execErr("cannot copy the drift command", e);
             }
         }
         String name = windows() ? "drift.exe" : "drift";
@@ -92,11 +87,11 @@ final class Cli {
                 continue;
             }
             Path p = Path.of(dir, name);
-            if (Files.isExecutable(p)) {
+            if (isExecutable(p)) {
                 return new Cli(p);
             }
         }
-        throw new MojoExecutionException("the drift command was not found: set <cli> or -Ddrift.cli, install "
+        throw execErr("the drift command was not found: set <cli> or -Ddrift.cli, install "
                 + "drift on the PATH, or make " + groupId + ":drift-cli:" + version + " available");
     }
 
@@ -107,7 +102,7 @@ final class Cli {
     void requireVersion(String expected, String build, Log log) throws MojoExecutionException {
         try {
             Path abs = path.toAbsolutePath().normalize();
-            String cacheKey = abs + "\u0000" + Files.getLastModifiedTime(abs).toMillis() + "\u0000" + Files.size(abs);
+            String cacheKey = abs + "\u0000" + getLastModifiedTime(abs).toMillis() + "\u0000" + size(abs);
             String want = expected + "\u0000" + build;
             if (want.equals(VERIFIED_VERSIONS.get(cacheKey))) {
                 return;
@@ -116,10 +111,10 @@ final class Cli {
             String line = r.lines().isEmpty() ? "" : r.lines().get(0);
             Matcher m = VERSION.matcher(line);
             if (r.status() != 0 || !m.find()) {
-                throw new MojoExecutionException(path + " does not report a drift version: " + r.lines());
+                throw execErr(path + " does not report a drift version: " + r.lines());
             }
             if (!m.group(1).equals(expected)) {
-                throw new MojoExecutionException(path + " is drift " + m.group(1) + ", the plugin is " + expected
+                throw execErr(path + " is drift " + m.group(1) + ", the plugin is " + expected
                         + ": install drift " + expected + " or set <cli> to it");
             }
             Matcher b = BUILD.matcher(line);
@@ -129,7 +124,7 @@ final class Cli {
             }
             VERIFIED_VERSIONS.put(cacheKey, want);
         } catch (IOException e) {
-            throw new MojoExecutionException("cannot stat " + path, e);
+            throw execErr("cannot stat " + path, e);
         }
     }
 
@@ -160,16 +155,16 @@ final class Cli {
             }
             if (!p.waitFor(TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
                 p.destroyForcibly();
-                throw new MojoExecutionException(String.join(" ", command) + " did not finish in "
+                throw execErr(String.join(" ", command) + " did not finish in "
                         + TIMEOUT_MINUTES + " minutes");
             }
             String text = out.toString(StandardCharsets.UTF_8);
             return new Result(p.exitValue(), text.isEmpty() ? List.of() : List.of(text.split("\\R")));
         } catch (IOException e) {
-            throw new MojoExecutionException("cannot run " + path, e);
+            throw execErr("cannot run " + path, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new MojoExecutionException("interrupted while running " + path, e);
+            throw execErr("interrupted while running " + path, e);
         }
     }
 

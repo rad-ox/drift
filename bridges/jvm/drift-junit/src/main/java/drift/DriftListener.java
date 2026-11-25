@@ -1,32 +1,19 @@
 package drift;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import static java.nio.file.Files.*;
+import static drift.Json.*;
+import java.io.*;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeoutException;
-import org.junit.platform.engine.TestExecutionResult;
-import org.junit.platform.engine.TestDescriptor;
-import org.junit.platform.engine.UniqueId;
-import org.junit.platform.engine.support.descriptor.ClassSource;
-import org.junit.platform.engine.support.descriptor.MethodSource;
-import org.junit.platform.launcher.TestExecutionListener;
-import org.junit.platform.launcher.TestIdentifier;
-import org.junit.platform.launcher.TestPlan;
+import java.nio.file.*;
+import static java.nio.file.StandardOpenOption.*;
+import java.util.*;
+import java.util.concurrent.*;
+import org.junit.platform.engine.*;
+import org.junit.platform.engine.support.descriptor.*;
+import org.junit.platform.launcher.*;
 
 /**
  * Appends one proof event per {@link DriftCase} test to the JSONL file named by the system
@@ -65,32 +52,36 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     private static boolean isClosureSource(TestIdentifier id) {
-        if (id.getSource().isEmpty()) {
-            return false;
-        }
-        var src = id.getSource().get();
-        if (src instanceof ClassSource) {
-            return true;
-        }
+        var src = id.getSource().orElse(null);
+        if (src instanceof ClassSource) return true;
         if (src instanceof MethodSource ms) {
-            try {
-                ms.getJavaMethod();
-                return false;
-            } catch (RuntimeException e) {
-                return true;
-            }
+            try { ms.getJavaMethod(); return false; } catch (RuntimeException e) { return true; }
         }
         return false;
     }
 
     @Override
     public void executionSkipped(TestIdentifier id, String reason) {
-        if (id.isTest()) {
-            if (!Drift.mutationRun()) {
-                write(id, "disabled", tagOf(id));
+        if (!Drift.mutationRun()) {
+            DriftCase tag = id.isTest() ? tagOf(id) : null;
+            if (tag != null && tag.cases().length > 0) {
+                write(id, "disabled", tag);
+            } else if (id.getSource().isPresent()) {
+                var src = id.getSource().get();
+                synchronized (DriftListener.class) {
+                    if (src instanceof MethodSource ms) {
+                        DISCOVERED_CLASSES.add(ms.getClassName());
+                        Set<String> s = DISCOVERED_TESTS.get(ms.getClassName());
+                        if (s != null) s.remove(canonicalId(ms.getClassName() + "#" + ms.getMethodName()));
+                    } else if (src instanceof ClassSource cs) {
+                        String cn = cs.getClassName();
+                        DISCOVERED_CLASSES.add(cn);
+                        DISCOVERED_TESTS.keySet().removeIf(k -> k.equals(cn) || k.startsWith(cn + "$"));
+                    }
+                }
             }
-            Drift.end();
         }
+        if (id.isTest()) Drift.end();
     }
 
     @Override
@@ -98,17 +89,20 @@ public final class DriftListener implements TestExecutionListener {
         if (!id.isTest()) {
             return;
         }
-        String outcome = switch (result.getStatus()) {
-            case SUCCESSFUL -> "passed";
-            case ABORTED -> "skipped";
-            case FAILED -> result.getThrowable().filter(TimeoutException.class::isInstance).isPresent()
-                    ? "timeout" : "failed";
-        };
-        if (!Drift.mutationRun()) {
-            DriftCase tag = Drift.tag();
-            write(id, outcome, tag != null ? tag : tagOf(id));
+        try {
+            String outcome = switch (result.getStatus()) {
+                case SUCCESSFUL -> "passed";
+                case ABORTED -> "skipped";
+                case FAILED -> result.getThrowable().filter(TimeoutException.class::isInstance).isPresent()
+                        ? "timeout" : "failed";
+            };
+            if (!Drift.mutationRun()) {
+                DriftCase tag = Drift.tag();
+                write(id, outcome, tag != null ? tag : tagOf(id));
+            }
+        } finally {
+            Drift.end();
         }
-        Drift.end();
     }
 
     static DriftCase tagOf(MethodSource ms) {
@@ -123,15 +117,12 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     private static DriftCase tagOf(TestIdentifier id) {
-        if (id.getSource().isEmpty() || !(id.getSource().get() instanceof MethodSource ms)) {
-            return null;
-        }
-        return tagOf(ms);
+        return id.getSource().orElse(null) instanceof MethodSource ms ? tagOf(ms) : null;
     }
 
     private static void write(TestIdentifier id, String outcome, DriftCase tag) {
         String file = eventsTarget();
-        if (file == null || file.isBlank() || tag == null || tag.contract().isEmpty() || id.getSource().isEmpty()) {
+        if (file == null || tag == null || tag.contract().isEmpty() || tag.cases().length == 0 || id.getSource().isEmpty()) {
             return;
         }
         String className;
@@ -144,17 +135,18 @@ public final class DriftListener implements TestExecutionListener {
         } else if (src instanceof ClassSource cs) {
             if (isVintageJUnit4Handled(cs.getJavaClass(), id.getUniqueId())) return;
             className = cs.getClassName();
-            methodName = id.getDisplayName();
+            methodName = id.getDisplayName().trim().replaceAll("[#\\s\\[\\]()]+", "_");
+            if (methodName.isEmpty()) methodName = "test";
         } else {
             return;
         }
-        String resolvedDir = System.getProperty(Drift.RESOLVED);
+        String resolvedDir = Drift.resolvedDir();
         boolean hasContract = Drift.hasContract(tag.contract());
         if (resolvedDir != null && !resolvedDir.isBlank() && !hasContract
                 && "passed".equals(outcome)) {
             outcome = "failed";
         }
-        if ("passed".equals(outcome) && !Drift.inputsUnchanged()) {
+        if ("passed".equals(outcome) && (!Drift.inputsUnchanged() || DriftWhen.listenerFallbackViolated(tag))) {
             outcome = "failed";
         }
         List<String> read = new ArrayList<>();
@@ -165,45 +157,58 @@ public final class DriftListener implements TestExecutionListener {
                 }
             }
         }
-        String canonicalTest = className + "#" + methodName;
-        String test = canonicalTest + ordinal(id);
+        String rawTest = className + "#" + methodName;
+        String canonicalTest = canonicalId(rawTest);
+        String test = rawTest + ordinal(id);
         Map<String, String> inputs = Drift.recordedInputs();
         synchronized (DriftListener.class) {
             if (DriftVerify.isDynamicTag(tag)) {
                 DISCOVERED_CLASSES.add(className);
-                DISCOVERED_TESTS.computeIfAbsent(className, ignored -> new TreeSet<>()).add(canonicalTest);
+                DISCOVERED_TESTS.computeIfAbsent(className, k -> new TreeSet<>()).add(canonicalTest);
             }
-            if (!inputs.isEmpty()) {
-                RECORDED_INPUTS.computeIfAbsent(canonicalTest, ignored -> new TreeMap<>()).putAll(inputs);
-            }
+            if (!inputs.isEmpty()) RECORDED_INPUTS.computeIfAbsent(canonicalTest, k -> new TreeMap<>()).putAll(inputs);
         }
+        appendEvent(Path.of(file), test, tag.contract(), List.of(tag.cases()), tag.level(), outcome, read);
+    }
+
+    static String canonicalId(String test) {
+        int h = test.indexOf('#');
+        if (h <= 0) return test;
+        for (int i = h + 1; i < test.length(); i++) {
+            char c = test.charAt(i);
+            if ((c == '(' || c == '[') && i > h + 1) return test.substring(0, i);
+        }
+        return test;
+    }
+
+    static String propOrEnv(String prop, String env) {
+        String p = System.getProperty(prop);
+        if (p != null && !p.isBlank()) return p.trim();
+        String e = System.getenv(env);
+        return e != null && !e.isBlank() ? e.trim() : null;
+    }
+
+    private static void appendEvent(Path p, String test, String contract, List<String> cases, String level, String outcome, List<String> read) {
         StringBuilder line = new StringBuilder("{");
-        Json.field(line, "test", test).append(',');
-        Json.field(line, "contract", tag.contract()).append(',');
-        Json.field(line, "cases", List.of(tag.cases())).append(',');
-        Json.field(line, "level", tag.level()).append(',');
-        Json.field(line, "outcome", outcome);
-        if (!read.isEmpty()) {
-            Json.field(line.append(','), "read", read);
+        field(line, "test", test).append(',');
+        field(line, "contract", contract).append(',');
+        field(line, "cases", cases).append(',');
+        field(line, "level", level).append(',');
+        field(line, "outcome", outcome);
+        if (!read.isEmpty()) field(line.append(','), "read", read);
+        String digest = Drift.digest(contract);
+        if (digest != null) field(line.append(','), "digest", digest);
+        if (Drift.isSchema03(contract)) {
+            field(line.append(','), "schema", "0.3");
+            field(line.append(','), "capabilities", Drift.requiredCapabilities(contract));
+            DriftObservations.appendField(line, contract, outcome, read);
         }
-        String digest = Drift.digest(tag.contract());
-        if (digest != null) {
-            Json.field(line.append(','), "digest", digest);
-        }
-        if (Drift.isSchema03(tag.contract())) {
-            Json.field(line.append(','), "schema", "0.3");
-            Json.field(line.append(','), "capabilities", Drift.requiredCapabilities(tag.contract()));
-        }
-        line.append("}\n");
-        append(Path.of(file), line.toString());
+        append(p, line.append("}\n").toString());
     }
 
     private static String eventsTarget() {
-        String prop = System.getProperty(EVENTS);
-        if (prop != null && !prop.isBlank()) return prop;
-        String env = System.getenv("DRIFT_EVENTS");
-        if (env != null && !env.isBlank()) return env;
-        return DriftInternal.sessionProperty("events", true);
+        String direct = propOrEnv(EVENTS, "DRIFT_EVENTS");
+        return direct != null ? direct : DriftInternal.sessionProperty("events", true);
     }
 
     private static boolean isVintageJUnit4Handled(Class<?> cls, String uniqueId) {
@@ -217,69 +222,89 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     static synchronized void recordStandaloneEvent(
-            String canonicalTest,
+            String rawTest,
             String contract,
             List<String> cases,
             String level,
             String outcome,
             List<String> read) {
         String file = eventsTarget();
-        if (file == null || file.isBlank()) {
-            return;
+        if (file == null) return;
+        Path tgt = Path.of(file).toAbsolutePath().normalize();
+        if (standaloneTarget != null && !standaloneTarget.equals(tgt)) {
+            flushStandaloneEvents();
+            resetState();
         }
+        standaloneTarget = tgt;
+        standaloneDirty = true;
         if (!standaloneHookRegistered) {
             standaloneHookRegistered = true;
             Runtime.getRuntime().addShutdownHook(new Thread(DriftListener::flushStandaloneEvents));
         }
-        int hash = canonicalTest.indexOf('#');
-        String className = hash > 0 ? canonicalTest.substring(0, hash) : canonicalTest;
+        if ("passed".equals(outcome) && !Drift.inputsUnchanged()) outcome = "failed";
+        String invTest = canonicalId(rawTest);
+        int hash = invTest.indexOf('#');
+        String className = hash > 0 ? invTest.substring(0, hash) : invTest;
         DISCOVERED_CLASSES.add(className);
-        DISCOVERED_TESTS.computeIfAbsent(className, ignored -> new TreeSet<>()).add(canonicalTest);
+        DISCOVERED_TESTS.computeIfAbsent(className, k -> new TreeSet<>()).add(invTest);
         Map<String, String> inputs = Drift.recordedInputs();
-        if (!inputs.isEmpty()) {
-            RECORDED_INPUTS.computeIfAbsent(canonicalTest, ignored -> new TreeMap<>()).putAll(inputs);
-        }
-        StringBuilder line = new StringBuilder("{");
-        Json.field(line, "test", canonicalTest).append(',');
-        Json.field(line, "contract", contract).append(',');
-        Json.field(line, "cases", cases).append(',');
-        Json.field(line, "level", level).append(',');
-        Json.field(line, "outcome", outcome);
-        if (!read.isEmpty()) {
-            Json.field(line.append(','), "read", read);
-        }
-        String digest = Drift.digest(contract);
-        if (digest != null) {
-            Json.field(line.append(','), "digest", digest);
-        }
-        if (Drift.isSchema03(contract)) {
-            Json.field(line.append(','), "schema", "0.3");
-            Json.field(line.append(','), "capabilities", Drift.requiredCapabilities(contract));
-        }
-        line.append("}\n");
-        append(Path.of(file), line.toString());
+        if (!inputs.isEmpty()) RECORDED_INPUTS.computeIfAbsent(invTest, k -> new TreeMap<>()).putAll(inputs);
+        appendEvent(tgt, rawTest, contract, cases, level, outcome, read);
     }
 
     static synchronized void flushStandaloneEvents() {
-        for (Map.Entry<Path, StringBuilder> entry : BUFFERS.entrySet()) {
-            if (entry.getValue().length() > 0) {
-                flushBuffer(entry.getKey(), entry.getValue());
-            }
+        if (!standaloneDirty && BUFFERS.isEmpty()) {
+            return;
         }
-        BUFFERS.clear();
-        for (FileChannel channel : OPEN.values()) {
-            try {
-                channel.close();
-            } catch (IOException e) {
-                throw new UncheckedIOException("cannot close an events file", e);
-            }
+        Path tgt = standaloneTarget;
+        if (tgt == null) {
+            String f = eventsTarget();
+            if (f != null) tgt = Path.of(f);
+        }
+        try {
+            if (tgt != null) flushAndWriteInventory(tgt);
+            else flushOpen();
+        } finally {
+            try { closeOpen(); } catch (RuntimeException ignored) {}
+            standaloneDirty = false;
+        }
+    }
+
+    private static void flushOpen() {
+        for (var entry : BUFFERS.entrySet()) {
+            if (entry.getValue().length() > 0) flushBuffer(entry.getKey(), entry.getValue());
+        }
+        closeOpen();
+    }
+
+    private static void closeOpen() {
+        IOException err = null;
+        for (FileChannel ch : OPEN.values()) {
+            try { ch.close(); } catch (IOException e) { if (err == null) err = e; }
         }
         OPEN.clear();
-        writeInventory();
+        BUFFERS.clear();
+        if (err != null) throw new UncheckedIOException("cannot close an events file", err);
+    }
+
+    private static void resetState() {
         PLAN_FILE.clear();
         DISCOVERED_CLASSES.clear();
         DISCOVERED_TESTS.clear();
         RECORDED_INPUTS.clear();
+        standaloneTarget = null;
+        standaloneDirty = false;
+    }
+
+    private static void flushAndReset() {
+        try {
+            String target = eventsTarget();
+            if (target != null) flushAndWriteInventory(Path.of(target));
+            else flushOpen();
+        } finally {
+            try { closeOpen(); } catch (RuntimeException ignored) {}
+            resetState();
+        }
     }
 
     /**
@@ -299,6 +324,8 @@ public final class DriftListener implements TestExecutionListener {
     }
 
     private static int planSeq;
+    private static Path standaloneTarget;
+    private static boolean standaloneDirty;
     private static final Map<Path, Path> PLAN_FILE = new HashMap<>();
     private static final Map<Path, FileChannel> OPEN = new HashMap<>();
     private static final Map<Path, StringBuilder> BUFFERS = new HashMap<>();
@@ -308,33 +335,22 @@ public final class DriftListener implements TestExecutionListener {
 
     /** Records discovery before selection filters exclude descriptors. */
     static synchronized void discovered(TestDescriptor descriptor) {
-        if (Drift.mutationRun()) {
-            return;
-        }
-        String evTarget = eventsTarget();
-        if (evTarget == null || evTarget.isBlank() || descriptor.getSource().isEmpty()) {
-            return;
-        }
+        if (Drift.mutationRun() || eventsTarget() == null || descriptor.getSource().isEmpty()) return;
         var source = descriptor.getSource().get();
-        String className;
+        String cn, mn = null;
         DriftCase tag = null;
-        String methodName = null;
         if (source instanceof MethodSource ms) {
             if (isVintageJUnit4Handled(ms.getJavaClass(), descriptor.getUniqueId().toString())) return;
-            className = ms.getClassName();
-            methodName = ms.getMethodName();
-            DISCOVERED_CLASSES.add(className);
+            cn = ms.getClassName();
+            mn = ms.getMethodName();
             tag = tagOf(ms);
         } else if (source instanceof ClassSource cs) {
-            className = cs.getClassName();
+            cn = cs.getClassName();
         } else {
             return;
         }
-        DISCOVERED_CLASSES.add(className);
-        if (tag != null && methodName != null) {
-            DISCOVERED_TESTS.computeIfAbsent(className, ignored -> new TreeSet<>())
-                    .add(className + "#" + methodName);
-        }
+        DISCOVERED_CLASSES.add(cn);
+        if (tag != null && mn != null) DISCOVERED_TESTS.computeIfAbsent(cn, k -> new TreeSet<>()).add(canonicalId(cn + "#" + mn));
     }
 
     @Override
@@ -342,313 +358,269 @@ public final class DriftListener implements TestExecutionListener {
         if (Drift.mutationRun()) {
             return;
         }
-        String target = System.getProperty(EVENTS);
-        if (target == null || target.isBlank()) {
+        synchronized (DriftListener.class) {
+            if (standaloneTarget != null) {
+                flushStandaloneEvents();
+                resetState();
+            }
+        }
+        String target = eventsTarget();
+        if (target == null) {
             return;
         }
+        validateConfig();
         Path file = planFile(Path.of(target));
         try {
-            Path parent = file.toAbsolutePath().getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            if (Files.notExists(file)) {
-                Files.createFile(file);
-            }
+            mkdirs(file);
+            if (notExists(file)) createFile(file);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot create an events shard", e);
         }
     }
 
-    /** Closes the events files at the end of each test plan, so no file stays held open. */
     @Override
     public void testPlanExecutionFinished(TestPlan plan) {
-        if (Drift.mutationRun()) {
-            return;
-        }
+        if (Drift.mutationRun()) return;
         synchronized (DriftListener.class) {
-            for (Map.Entry<Path, StringBuilder> entry : BUFFERS.entrySet()) {
-                if (entry.getValue().length() > 0) {
-                    flushBuffer(entry.getKey(), entry.getValue());
-                }
-            }
-            BUFFERS.clear();
-            for (FileChannel channel : OPEN.values()) {
-                try {
-                    channel.close();
-                } catch (IOException e) {
-                    throw new UncheckedIOException("cannot close an events file", e);
-                }
-            }
-            OPEN.clear();
-            writeInventory();
-            PLAN_FILE.clear();
-            DISCOVERED_CLASSES.clear();
-            DISCOVERED_TESTS.clear();
-            RECORDED_INPUTS.clear();
+            flushAndReset();
         }
     }
 
-    /**
-     * One open channel per events file in this JVM; writes are buffered in memory and flushed at
-     * threshold or at the end of the test plan. When {@code drift.events} names a directory (any
-     * path not ending in {@code .jsonl}), each test plan writes its own
-     * {@code <utcMillis>-<pid>-<seq>.jsonl} file inside it, so forked JVMs and remote workers
-     * never contend on one file and lexical order is chronological.
-     */
+    private static void mkdirs(Path f) throws IOException {
+        Path p = f.toAbsolutePath().getParent();
+        if (p != null) createDirectories(p);
+    }
+
     private static synchronized void append(Path target, String line) {
         Path file = planFile(target);
-        StringBuilder buf = BUFFERS.computeIfAbsent(file, ignored -> new StringBuilder(1024));
+        StringBuilder buf = BUFFERS.computeIfAbsent(file, k -> new StringBuilder(1024));
         buf.append(line);
-        if (buf.length() >= BUFFER_FLUSH_THRESHOLD) {
-            flushBuffer(file, buf);
-        }
+        if (buf.length() >= BUFFER_FLUSH_THRESHOLD) flushBuffer(file, buf);
+    }
+
+    private static void writeBuf(FileChannel ch, StringBuilder buf) throws IOException {
+        ByteBuffer bytes = ByteBuffer.wrap(buf.toString().getBytes(StandardCharsets.UTF_8));
+        while (bytes.hasRemaining()) ch.write(bytes);
+        buf.setLength(0);
     }
 
     private static void flushBuffer(Path file, StringBuilder buf) {
         try {
-            FileChannel channel = OPEN.get(file);
-            if (channel == null) {
-                Path parent = file.toAbsolutePath().getParent();
-                if (parent != null) {
-                    Files.createDirectories(parent);
-                }
-                channel = FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-                        StandardOpenOption.APPEND);
-                OPEN.put(file, channel);
+            FileChannel ch = OPEN.get(file);
+            if (ch == null) {
+                mkdirs(file);
+                OPEN.put(file, ch = FileChannel.open(file, CREATE, WRITE, APPEND));
             }
-            ByteBuffer bytes = ByteBuffer.wrap(buf.toString().getBytes(StandardCharsets.UTF_8));
-            buf.setLength(0);
-            while (bytes.hasRemaining()) {
-                channel.write(bytes);
-            }
+            writeBuf(ch, buf);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot append to " + file, e);
         }
     }
 
+    private static boolean isSingleFile(Path t) {
+        return t.getFileName() != null && t.getFileName().toString().endsWith(".jsonl");
+    }
+
+    private static Path sidecarOf(Path f) {
+        String n = f.getFileName().toString();
+        return f.resolveSibling(n.substring(0, n.length() - 6) + ".meta.json");
+    }
+
     private static Path planFile(Path target) {
-        return target.getFileName() != null && target.getFileName().toString().endsWith(".jsonl")
-                ? target
+        return isSingleFile(target) ? target
                 : PLAN_FILE.computeIfAbsent(target, d -> d.resolve(String.format("%013d-%d-%04d.jsonl",
                         System.currentTimeMillis(), ProcessHandle.current().pid(), ++planSeq)));
     }
 
-    private static void writeInventory() {
+    private static String resolveSnapshot() {
+        String s = propOrEnv(SNAPSHOT, "DRIFT_SNAPSHOT");
+        if (s == null) s = DriftInternal.sessionProperty("snapshot", true);
+        if (s != null && !validSnapshot(s = s.trim())) throw new IllegalStateException("invalid drift.snapshot: " + s);
+        return s;
+    }
+
+    static void validateConfig() {
+        if (Drift.mutationRun()) return;
         String target = eventsTarget();
-        if (target == null || target.isBlank()) {
-            return;
-        }
-        Path eventsFile = planFile(Path.of(target));
-        Path sidecar = eventsFile.resolveSibling(eventsFile.getFileName().toString()
-                .substring(0, eventsFile.getFileName().toString().length() - ".jsonl".length()) + ".meta.json");
-        Map<String, Set<String>> tests = new TreeMap<>();
-        Set<String> classes = new TreeSet<>();
-        String existingSnapshot = null;
-        if (Path.of(target).getFileName() != null
-                && Path.of(target).getFileName().toString().endsWith(".jsonl")
-                && Files.exists(sidecar)) {
-            existingSnapshot = readInventory(sidecar, classes, tests);
-        }
-        String snapshot = System.getProperty(SNAPSHOT);
-        if (snapshot == null || snapshot.isBlank()) {
-            snapshot = DriftInternal.sessionProperty("snapshot", true);
-        }
-        if (snapshot == null || snapshot.isBlank()) {
-            snapshot = existingSnapshot;
-        } else {
-            snapshot = snapshot.trim();
-            if (!validSnapshot(snapshot)) {
-                throw new IllegalStateException("invalid drift.snapshot: " + snapshot);
+        if (target == null) return;
+        String snap = resolveSnapshot();
+        resolveEnv();
+        ExecutionContext.appendTail(new StringBuilder(), ExecutionContext.executionRef());
+        Path t = Path.of(target);
+        if (isSingleFile(t)) {
+            Path sc = sidecarOf(t);
+            if (exists(sc) && !Objects.equals(readInventory(sc, new TreeSet<>(), new TreeMap<>(), new TreeMap<>()), snap)) {
+                String msg = "snapshot mismatch for " + sc;
+                System.err.println("drift: " + msg);
+                throw new IllegalStateException(msg);
             }
-        }
-        classes.addAll(DISCOVERED_CLASSES);
-        for (String className : DISCOVERED_CLASSES) {
-            tests.put(className, new TreeSet<>(DISCOVERED_TESTS.getOrDefault(className, Set.of())));
-        }
-        List<String> testNames = new ArrayList<>();
-        for (Map.Entry<String, Set<String>> entry : tests.entrySet()) {
-            testNames.addAll(entry.getValue());
-        }
-        String executionRef = ExecutionContext.executionRef();
-        StringBuilder json = new StringBuilder("{\"version\":").append(executionRef == null ? 1 : 2).append(',');
-        Json.field(json, "classes", new ArrayList<>(classes)).append(',');
-        Json.field(json, "tests", testNames);
-        if (executionRef != null) {
-            Json.field(json.append(','), "execution_ref", executionRef);
-        }
-        if (snapshot != null && !snapshot.isBlank()) {
-            Json.field(json.append(','), "snapshot", snapshot);
-        }
-        ExecutionContext.appendTail(json, executionRef);
-        if (!RECORDED_INPUTS.isEmpty()) {
-            json.append(",\"inputs\":{");
-            boolean firstTest = true;
-            for (Map.Entry<String, Map<String, String>> entry : RECORDED_INPUTS.entrySet()) {
-                if (entry.getValue().isEmpty()) {
-                    continue;
-                }
-                if (!firstTest) {
-                    json.append(',');
-                }
-                firstTest = false;
-                Json.quote(json, entry.getKey()).append(":{");
-                boolean firstFile = true;
-                for (Map.Entry<String, String> f : entry.getValue().entrySet()) {
-                    if (!firstFile) {
-                        json.append(',');
-                    }
-                    firstFile = false;
-                    Json.field(json, f.getKey(), f.getValue());
-                }
-                json.append('}');
-            }
-            json.append('}');
-        }
-        Map<String, String> env = resolveEnv();
-        if (env != null) {
-            json.append(",\"env\":{");
-            boolean firstEnv = true;
-            for (Map.Entry<String, String> e : env.entrySet()) {
-                if (!firstEnv) {
-                    json.append(',');
-                }
-                firstEnv = false;
-                Json.field(json, e.getKey(), e.getValue());
-            }
-            json.append('}');
-        }
-        json.append("}\n");
-        try {
-            Path parent = sidecar.toAbsolutePath().getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            Files.writeString(sidecar, json.toString(), StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot write the test inventory " + sidecar, e);
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, String> resolveEnv() {
-        String raw = System.getProperty(ENV, "");
-        if (raw.isBlank()) {
-            String envVar = System.getenv("DRIFT_ENV");
-            if (envVar != null) {
-                raw = envVar.trim();
-            }
-        } else {
-            raw = raw.trim();
+    private static void appendStrMap(StringBuilder json, Map<String, String> m) {
+        json.append('{');
+        boolean first = true;
+        for (var e : m.entrySet()) {
+            if (!first) json.append(',');
+            first = false;
+            field(json, e.getKey(), e.getValue());
         }
-        String pk = System.getProperty(PROOF_KEY, "");
-        if (pk.isBlank()) {
-            String pkVar = System.getenv("DRIFT_PROOF_KEY");
-            if (pkVar != null) {
-                pk = pkVar.trim();
-            }
-        } else {
-            pk = pk.trim();
-        }
-        if (raw.isEmpty() && !"1".equals(pk) && !"true".equalsIgnoreCase(pk)) {
-            return null;
-        }
-        Map<String, String> base = new TreeMap<>();
-        base.put("adapter", "drift-junit@0.10.0");
-        base.put("config", "default");
-        base.put("deps", "none");
-        base.put("drift", "0.10.0");
-        base.put("policy", "core@1");
-        base.put("runner", "junit-platform");
-        base.put("toolchain", "java@" + System.getProperty("java.version", "unknown"));
-        if (!raw.isEmpty()) {
-            Object parsed = Json.parse(raw);
-            if (!(parsed instanceof Map<?, ?> map)) {
-                throw new IllegalArgumentException("drift.env / DRIFT_ENV must be a JSON object");
-            }
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                if (!(entry.getKey() instanceof String k) || !ENV_KEYS.contains(k)
-                        || !(entry.getValue() instanceof String v) || v.isBlank()) {
-                    throw new IllegalArgumentException("invalid drift.env key: " + entry.getKey());
+        json.append('}');
+    }
+
+    private static void flushAndWriteInventory(Path target) {
+        Path ef = planFile(target), sc = sidecarOf(ef);
+        String snap = resolveSnapshot(), ref = ExecutionContext.executionRef();
+        Map<String, String> env = resolveEnv();
+        StringBuilder tail = new StringBuilder();
+        ExecutionContext.appendTail(tail, ref);
+        try {
+            if (isSingleFile(target)) {
+                mkdirs(ef);
+                FileChannel prev = OPEN.remove(ef);
+                if (prev != null) prev.close();
+                try (FileChannel lk = FileChannel.open(ef, CREATE, WRITE, APPEND); var ignored = lk.lock()) {
+                    String inv = buildInventory(sc, true, snap, env, ref, tail);
+                    StringBuilder b = BUFFERS.remove(ef);
+                    if (b != null && b.length() > 0) writeBuf(lk, b);
+                    flushOpen();
+                    writeAtomic(sc, inv);
                 }
+            } else {
+                String inv = buildInventory(sc, false, snap, env, ref, tail);
+                flushOpen();
+                writeAtomic(sc, inv);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot write the test inventory " + sc, e);
+        }
+    }
+
+    private static String buildInventory(
+            Path sidecar, boolean single, String snapshot, Map<String, String> env, String ref, StringBuilder tail) {
+        Map<String, Set<String>> tests = new TreeMap<>();
+        Set<String> classes = new TreeSet<>();
+        Map<String, Map<String, String>> inputs = new TreeMap<>();
+        if (single && exists(sidecar) && !Objects.equals(readInventory(sidecar, classes, tests, inputs), snapshot))
+            throw new IllegalStateException("snapshot mismatch for " + sidecar);
+        classes.addAll(DISCOVERED_CLASSES);
+        for (String cn : DISCOVERED_CLASSES) tests.put(cn, new TreeSet<>(DISCOVERED_TESTS.getOrDefault(cn, Set.of())));
+        List<String> testNames = new ArrayList<>();
+        for (Set<String> s : tests.values()) testNames.addAll(s);
+        for (var e : RECORDED_INPUTS.entrySet()) {
+            if (!e.getValue().isEmpty()) inputs.computeIfAbsent(e.getKey(), k -> new TreeMap<>()).putAll(e.getValue());
+        }
+        inputs.keySet().retainAll(new HashSet<>(testNames));
+        StringBuilder json = new StringBuilder("{\"version\":").append(ref == null ? 1 : 2).append(',');
+        field(json, "classes", new ArrayList<>(classes)).append(',');
+        field(json, "tests", testNames);
+        if (ref != null) field(json.append(','), "execution_ref", ref);
+        if (snapshot != null) field(json.append(','), "snapshot", snapshot);
+        json.append(tail);
+        if (!inputs.isEmpty()) {
+            json.append(",\"inputs\":{");
+            boolean first = true;
+            for (var e : inputs.entrySet()) {
+                if (e.getValue().isEmpty()) continue;
+                if (!first) json.append(',');
+                first = false;
+                quote(json, e.getKey()).append(':');
+                appendStrMap(json, e.getValue());
+            }
+            json.append('}');
+        }
+        if (env != null) appendStrMap(json.append(",\"env\":"), env);
+        return json.append("}\n").toString();
+    }
+
+    private static void writeAtomic(Path sc, String json) throws IOException {
+        mkdirs(sc);
+        Path tmp = sc.resolveSibling(sc.getFileName() + ".tmp");
+        try {
+            writeString(tmp, json);
+            move(tmp, sc, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            deleteIfExists(tmp);
+        }
+    }
+
+    private static Map<String, String> resolveEnv() {
+        String raw = propOrEnv(ENV, "DRIFT_ENV"), pk = propOrEnv(PROOF_KEY, "DRIFT_PROOF_KEY");
+        if (raw == null && !"1".equals(pk) && !"true".equalsIgnoreCase(pk)) return null;
+        Map<String, String> base = new TreeMap<>(Map.of(
+                "adapter", "drift-junit@0.11.0", "config", "default", "deps", "none",
+                "drift", "0.11.0", "policy", "core@1", "runner", "junit-platform",
+                "toolchain", "java@" + System.getProperty("java.version", "unknown")));
+        if (raw != null) {
+            if (!(Json.parse(raw) instanceof Map<?, ?> map))
+                throw new IllegalArgumentException("drift.env / DRIFT_ENV must be a JSON object");
+            for (var e : map.entrySet()) {
+                if (!(e.getKey() instanceof String k) || !ENV_KEYS.contains(k)
+                        || !(e.getValue() instanceof String v) || v.isBlank())
+                    throw new IllegalArgumentException("invalid drift.env key: " + e.getKey());
                 base.put(k, v.trim());
             }
         }
         return base;
     }
 
-    private static boolean validSnapshot(String value) {
-        if (value == null || (value.length() != 40 && value.length() != 64)) {
-            return false;
-        }
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            if ((c < '0' || c > '9') && (c < 'a' || c > 'f')) {
-                return false;
-            }
-        }
-        return true;
+    private static boolean validSnapshot(String v) {
+        return v != null && v.matches("[0-9a-f]{40}|[0-9a-f]{64}");
+    }
+
+    private static IllegalStateException badInv(Path sidecar, String msg) {
+        return new IllegalStateException(sidecar + " " + msg);
     }
 
     @SuppressWarnings("unchecked")
-    private static String readInventory(Path sidecar, Set<String> classes, Map<String, Set<String>> tests) {
+    private static String readInventory(
+            Path sidecar, Set<String> classes, Map<String, Set<String>> tests, Map<String, Map<String, String>> inputs) {
         try {
-            Object value = Json.read(sidecar);
-            if (!(value instanceof Map<?, ?> raw)) {
-                throw new IllegalStateException(sidecar + " is not a JSON object");
-            }
-            Map<String, Object> inventory = (Map<String, Object>) raw;
+            if (!(Json.read(sidecar) instanceof Map<?, ?> raw)) throw badInv(sidecar, "is not a JSON object");
+            Map<String, Object> inv = (Map<String, Object>) raw;
             Set<String> allowed = Set.of("version", "classes", "tests", "snapshot", "pack_ref",
                     "touched", "self_stubbed", "inputs", "env", "execution_ref");
-            ExecutionContext.checkHead(sidecar, inventory);
-            if (!inventory.containsKey("classes") || !inventory.containsKey("tests")
-                    || !allowed.containsAll(inventory.keySet())
-                    || !(inventory.get("classes") instanceof List<?> classList)
-                    || !(inventory.get("tests") instanceof List<?> testList)) {
-                throw new IllegalStateException(sidecar + " has an invalid inventory shape");
-            }
+            ExecutionContext.checkHead(sidecar, inv);
+            if (!allowed.containsAll(inv.keySet()) || !(inv.get("classes") instanceof List<?> classList)
+                    || !(inv.get("tests") instanceof List<?> testList))
+                throw badInv(sidecar, "has an invalid inventory shape");
             String snapshot = null;
-            if (inventory.containsKey("snapshot")) {
-                if (!(inventory.get("snapshot") instanceof String snap) || !validSnapshot(snap)) {
-                    throw new IllegalStateException(sidecar + " has an invalid snapshot");
-                }
+            if (inv.containsKey("snapshot")) {
+                if (!(inv.get("snapshot") instanceof String snap) || !validSnapshot(snap))
+                    throw badInv(sidecar, "has an invalid snapshot");
                 snapshot = snap;
             }
-            List<String> sortedClasses = new ArrayList<>();
+            String prev = null;
             for (Object item : classList) {
-                if (!(item instanceof String className)) {
-                    throw new IllegalStateException(sidecar + " has a non-string class");
-                }
-                if (className.isBlank() || className.indexOf('#') >= 0) {
-                    throw new IllegalStateException(sidecar + " has an invalid class name");
-                }
-                sortedClasses.add(className);
-                classes.add(className);
-                tests.putIfAbsent(className, new TreeSet<>());
+                if (!(item instanceof String cn)) throw badInv(sidecar, "has a non-string class");
+                if (cn.isBlank() || cn.indexOf('#') >= 0) throw badInv(sidecar, "has an invalid class name");
+                if (prev != null && prev.compareTo(cn) >= 0) throw badInv(sidecar, "classes are not sorted and unique");
+                prev = cn;
+                classes.add(cn);
+                tests.putIfAbsent(cn, new TreeSet<>());
             }
-            if (!sortedClasses.equals(sortedClasses.stream().distinct().sorted().toList())) {
-                throw new IllegalStateException(sidecar + " classes are not sorted and unique");
-            }
-            List<String> sortedTests = new ArrayList<>();
+            prev = null;
             for (Object item : testList) {
-                if (!(item instanceof String testName)) {
-                    throw new IllegalStateException(sidecar + " has a non-string test");
-                }
-                int hash = testName.indexOf('#');
-                int methodEnd = testName.indexOf('[', hash + 1);
-                String method = methodEnd < 0 ? testName.substring(hash + 1) : testName.substring(hash + 1, methodEnd);
-                if (hash <= 0 || hash + 1 >= testName.length()
-                        || !classes.contains(testName.substring(0, hash)) || method.isBlank()
-                        || method.contains("#") || method.contains(" ") || method.contains("[")
-                        || method.contains("]") || testName.contains("[") || testName.contains("]")) {
-                    throw new IllegalStateException(sidecar + " has an invalid test name");
-                }
-                sortedTests.add(testName);
-                tests.computeIfAbsent(testName.substring(0, hash), ignored -> new TreeSet<>()).add(testName);
+                if (!(item instanceof String tn)) throw badInv(sidecar, "has a non-string test");
+                int h = tn.indexOf('#');
+                String cn = h > 0 ? tn.substring(0, h) : "";
+                String m = h > 0 ? tn.substring(h + 1) : "";
+                if (h <= 0 || !classes.contains(cn) || m.isBlank() || m.indexOf('#') >= 0
+                        || m.indexOf(' ') >= 0 || tn.indexOf('[') >= 0 || tn.indexOf(']') >= 0)
+                    throw badInv(sidecar, "has an invalid test name");
+                if (prev != null && prev.compareTo(tn) >= 0) throw badInv(sidecar, "tests are not sorted and unique");
+                prev = tn;
+                tests.computeIfAbsent(cn, k -> new TreeSet<>()).add(tn);
             }
-            if (!sortedTests.equals(sortedTests.stream().distinct().sorted().toList())) {
-                throw new IllegalStateException(sidecar + " tests are not sorted and unique");
+            if (inv.get("inputs") instanceof Map<?, ?> rawIn) {
+                for (var e : rawIn.entrySet()) {
+                    if (e.getKey() instanceof String tk && e.getValue() instanceof Map<?, ?> fm) {
+                        Map<String, String> m = inputs.computeIfAbsent(tk, k -> new TreeMap<>());
+                        for (var fe : fm.entrySet()) {
+                            if (fe.getKey() instanceof String fk && fe.getValue() instanceof String fv) m.put(fk, fv);
+                        }
+                    }
+                }
             }
             return snapshot;
         } catch (IOException e) {

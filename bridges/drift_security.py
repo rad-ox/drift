@@ -2,45 +2,34 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-import importlib.util
 import json
 from pathlib import Path
 import re
 from typing import Any
 try:
-  from .drift_probes import ThenView, check_bola_variant_pair, has_key_recursive, is_frame_metadata_envelope, merge_prior_inventory, required_probes_of, run_idempotency_probe, run_log_sink_probe, run_rollback_probe, run_seam_probe, sidecar_head
+  from . import drift_probes as _pm
 except ImportError:
-  try:
-    from drift_probes import ThenView, check_bola_variant_pair, has_key_recursive, is_frame_metadata_envelope, merge_prior_inventory, required_probes_of, run_idempotency_probe, run_log_sink_probe, run_rollback_probe, run_seam_probe, sidecar_head  # type: ignore[no-redef]
-  except ImportError:
-    _ps = importlib.util.spec_from_file_location('drift_probes', Path(__file__).with_name('drift_probes.py'))
-    assert _ps is not None and _ps.loader is not None
-    _pm = importlib.util.module_from_spec(_ps)
-    _ps.loader.exec_module(_pm)
-    ThenView, check_bola_variant_pair, has_key_recursive, is_frame_metadata_envelope, merge_prior_inventory, required_probes_of, run_idempotency_probe, run_log_sink_probe, run_rollback_probe, run_seam_probe, sidecar_head = _pm.ThenView, _pm.check_bola_variant_pair, _pm.has_key_recursive, _pm.is_frame_metadata_envelope, _pm.merge_prior_inventory, _pm.required_probes_of, _pm.run_idempotency_probe, _pm.run_log_sink_probe, _pm.run_rollback_probe, _pm.run_seam_probe, _pm.sidecar_head
-def _allowed_write_sets_of(view: Mapping[str, Any], case_id: str) -> tuple[set[str], set[str]]:
+  import drift_probes as _pm  # type: ignore[no-redef]
+ThenView, check_bola_variant_pair, has_key_recursive, is_frame_metadata_envelope, merge_prior_inventory, required_probes_of, run_idempotency_probe, run_log_sink_probe, run_rollback_probe, run_seam_probe, sidecar_head = _pm.ThenView, _pm.check_bola_variant_pair, _pm.has_key_recursive, _pm.is_frame_metadata_envelope, _pm.merge_prior_inventory, _pm.required_probes_of, _pm.run_idempotency_probe, _pm.run_log_sink_probe, _pm.run_rollback_probe, _pm.run_seam_probe, _pm.sidecar_head
+def _case_write_lists(view: Mapping[str, Any], case_id: str) -> tuple[list[str], Any]:
   scope = view.get('scope') if isinstance(view, Mapping) else None
-  scope_writes = [str(x) for x in (scope.get('writes') or ())] if isinstance(scope, Mapping) else []
   cases = view.get('cases') if isinstance(view, Mapping) else None
-  case_map = cases.get(case_id) if isinstance(cases, Mapping) else None
-  case_writes = case_map.get('writes') if isinstance(case_map, Mapping) else None
-  raw_allowed = [str(x) for x in case_writes] if isinstance(case_writes, (list, tuple)) else scope_writes
-  allowed = set(raw_allowed)
-  allowed_bases = {w.partition('#')[0] for w in raw_allowed}
-  return allowed, allowed_bases
+  cm = cases.get(case_id) if isinstance(cases, Mapping) else None
+  return ([str(x) for x in (scope.get('writes') or ())] if isinstance(scope, Mapping) else []), (cm.get('writes') if isinstance(cm, Mapping) else None)
+def _allowed_write_sets_of(view: Mapping[str, Any], case_id: str) -> tuple[set[str], set[str]]:
+  sw, cw = _case_write_lists(view, case_id)
+  raw = [str(x) for x in cw] if isinstance(cw, (list, tuple)) else sw
+  return set(raw), {w.partition('#')[0] for w in raw}
 def _is_write_resource_allowed(res: str, allowed: set[str], allowed_bases: set[str]) -> bool:
   base = res.partition('#')[0]
   return res in allowed or base in allowed or ('#' not in res and res in allowed_bases)
 def forbidden_writes_of(view: Mapping[str, Any], case_id: str) -> list[str]:
-  scope = view.get('scope') if isinstance(view, Mapping) else None
-  scope_writes = [str(x) for x in (scope.get('writes') or ())] if isinstance(scope, Mapping) else []
-  cases = view.get('cases') if isinstance(view, Mapping) else None
-  case_map = cases.get(case_id) if isinstance(cases, Mapping) else None
-  case_writes = case_map.get('writes') if isinstance(case_map, Mapping) else None
-  if not isinstance(case_writes, (list, tuple)):
+  sw, cw = _case_write_lists(view, case_id)
+  if not isinstance(cw, (list, tuple)):
     return []
-  allowed, allowed_bases = _allowed_write_sets_of(view, case_id)
-  return [r for r in scope_writes if not _is_write_resource_allowed(r, allowed, allowed_bases)]
+  allowed = {str(x) for x in cw}
+  allowed_bases = {w.partition('#')[0] for w in allowed}
+  return [r for r in sw if not _is_write_resource_allowed(r, allowed, allowed_bases)]
 def _verify_single_frame_obs(pfx: str, res: str, obs: Any, values_mismatch: Callable[[Any, Any], bool], is_ambient: bool) -> None:
   checked_any = False
   write_label = f'undeclared write on perimeter resource "{res}"' if is_ambient else f'frame violation on resource "{res}"'
@@ -71,12 +60,22 @@ def _verify_single_frame_obs(pfx: str, res: str, obs: Any, values_mismatch: Call
         raise AssertionError(f'{pfx}: {snap_label}: before and after snapshots differ')
   if not checked_any:
     raise AssertionError(f'{pfx}: frame observation for "{res}" must supply writes/operations/events or before/after snapshots')
+def _frame_entry_wrote(obs: Any, values_mismatch: Callable[[Any, Any], bool]) -> bool:
+  if isinstance(obs, int) and not isinstance(obs, bool) and obs > 0: return True
+  if not isinstance(obs, Mapping): return False
+  for wk in ('writes', 'operations', 'events'):
+    if wk in obs:
+      wv = obs[wk]
+      if (isinstance(wv, int) and not isinstance(wv, bool) and wv > 0) or (isinstance(wv, (list, tuple)) and len(wv) > 0): return True
+  return 'before' in obs and 'after' in obs and values_mismatch(obs['before'], obs['after'])
 def verify_case_frame(ctx: Any, case_id: str, frame_obs: Any, values_mismatch: Callable[[Any, Any], bool], strict: bool = True) -> None:
   ctx._require_tagged(case_id)
   forbidden = forbidden_writes_of(ctx.view, case_id)
   pfx = f'{ctx.contract_id}.{case_id}'
   seen = ctx.reads[case_id]
   checked_keys: set[str] = set()
+  all_obs = True
+  obs_writes: list[str] = []
   for res in forbidden:
     base_res = res.partition('#')[0]
     checked_keys.add(res)
@@ -86,13 +85,8 @@ def verify_case_frame(ctx: Any, case_id: str, frame_obs: Any, values_mismatch: C
     if has_metrics:
       _verify_single_frame_obs(pfx, res, obs, values_mismatch, False)
     if obs is None or (isinstance(obs, Mapping) and obs.get('observed') is False):
-      if not hasattr(ctx, 'unobserved_cases') or not isinstance(getattr(ctx, 'unobserved_cases'), set):
-        try:
-          ctx.unobserved_cases = set()
-        except Exception:
-          pass
-      if hasattr(ctx, 'unobserved_cases') and isinstance(ctx.unobserved_cases, set):
-        ctx.unobserved_cases.add(case_id)
+      all_obs = False
+      _pm.mark_unobserved(ctx, case_id)
       if strict:
         msg = f'missing frame observation for forbidden write resource "{res}"' if obs is None else f'frame.observer_missing for forbidden write resource "{res}"'
         raise AssertionError(f'{pfx}: {msg}')
@@ -103,9 +97,11 @@ def verify_case_frame(ctx: Any, case_id: str, frame_obs: Any, values_mismatch: C
   if isinstance(frame_obs, Mapping):
     allowed, allowed_bases = _allowed_write_sets_of(ctx.view, case_id)
     for k in sorted(str(x) for x in frame_obs.keys()):
+      obs_k = frame_obs.get(k)
+      if isinstance(obs_k, Mapping) and obs_k.get('observed') is False: all_obs = False
+      if _frame_entry_wrote(obs_k, values_mismatch): obs_writes.append(k)
       if k in checked_keys or _is_write_resource_allowed(k, allowed, allowed_bases):
         continue
-      obs_k = frame_obs.get(k)
       has_k_metrics = isinstance(obs_k, Mapping) and (any(x in obs_k for x in ('writes', 'operations', 'events')) or ('before' in obs_k and 'after' in obs_k))
       if has_k_metrics:
         _verify_single_frame_obs(pfx, k, obs_k, values_mismatch, True)
@@ -115,6 +111,13 @@ def verify_case_frame(ctx: Any, case_id: str, frame_obs: Any, values_mismatch: C
         continue
       if not has_k_metrics:
         _verify_single_frame_obs(pfx, k, obs_k, values_mismatch, True)
+  if hasattr(ctx, '__dict__'):
+    fr = getattr(ctx, '_obs_frames', None)
+    if not isinstance(fr, dict):
+      fr = {}
+      ctx._obs_frames = fr
+    if all_obs and (forbidden or obs_writes): fr[case_id] = obs_writes
+    else: fr.pop(case_id, None)
 def run_projection_checks(
   ctx: Any,
   case_id: str,
@@ -142,7 +145,7 @@ def run_projection_checks(
         if not found:
           raise AssertionError(f'{ctx.contract_id}.{case_id}: missing projected path "{proj[k]}" for then.{k}')
         target_obj = val
-      elif isinstance(payload, Mapping) and k in payload and isinstance(payload[k], Mapping):
+      elif isinstance(payload, Mapping) and k in payload:
         target_obj = payload[k]
       if not isinstance(target_obj, Mapping):
         raise AssertionError(f'{ctx.contract_id}.{case_id}: expected mapping for then.{k}')
@@ -167,10 +170,11 @@ def run_projection_checks(
     else:
       check_projected_leaf(ctx.contract_id, case_id, k, exp, payload, proj, ctx.mutation_override, True, 'no check or projection for', when_env, ctx.view)
     seen.add(k)
-  frame_obs = checks.get('frame') if isinstance(checks, Mapping) and isinstance(checks.get('frame'), Mapping) else (payload.get('_frame') if isinstance(payload, Mapping) and is_frame_metadata_envelope(payload.get('_frame')) else None)
-  if frame_obs is not None:
-    strict_frame = bool(isinstance(checks, Mapping) and checks.get('strictFrame') is True) or not any(isinstance(v, Mapping) and v.get('observed') is False for v in frame_obs.values())
-    verify_case_frame(ctx, case_id, frame_obs, lambda a, b: a != b, strict_frame)
+  verify_projection_frame(ctx, case_id, payload, checks, lambda a, b: a != b)
+def verify_projection_frame(ctx: Any, case_id: str, payload: Any, checks: Mapping[str, Any] | None, mismatch: Callable[[Any, Any], bool]) -> None:
+  fo = checks.get('frame') if isinstance(checks, Mapping) and isinstance(checks.get('frame'), Mapping) else (payload.get('_frame') if isinstance(payload, Mapping) and is_frame_metadata_envelope(payload.get('_frame')) else None)
+  if fo is not None:
+    verify_case_frame(ctx, case_id, fo, mismatch, bool(isinstance(checks, Mapping) and checks.get('strictFrame') is True) or not any(isinstance(v, Mapping) and v.get('observed') is False for v in fo.values()))
 def run_adverse_checks(
   ctx: Any,
   case_id: str,
@@ -225,7 +229,7 @@ def bridge_capabilities() -> dict[str, Any]:
     'capabilities': list(BRIDGE_CAPABILITIES),
     'runtime_baseline': 'python-3.14',
     'schema': 'drift.bridge-capabilities/1',
-    'version': '0.10.0',
+    'version': '0.11.0',
   }
 def require_capabilities(required: list[str] | tuple[str, ...]) -> None:
   if not isinstance(required, (list, tuple)):
@@ -302,6 +306,17 @@ def tighten_then_by_sum_residuals(when_map: Mapping[str, Any], raw_then: Mapping
           if _is_num(v): return (v, v)
           if _is_relational_map(v, rk): return (v['min'] if _is_num(v.get('min')) else None, v['max'] if _is_num(v.get('max')) else None)
     return (None, None)
+  def res_bounds(mult: dict[str, int], rep: dict[str, Any], weight: Callable[[str, int], int]) -> tuple[float, float, bool, bool]:
+    r_lo, r_hi, ok_lo, ok_hi = 0.0, 0.0, True, True
+    for ck, mp in mult.items():
+      d = weight(ck, mp)
+      if d <= 0: continue
+      b_lo, b_hi = lb(rep[ck])
+      if b_lo is not None: r_lo += d * b_lo
+      else: ok_lo = False
+      if b_hi is not None: r_hi += d * b_hi
+      else: ok_hi = False
+    return (r_lo, r_hi, ok_lo, ok_hi)
   for _ in range(3):
     for tk, tv in list(out.items()):
       if not _is_relational_map(tv, rk): continue
@@ -330,26 +345,12 @@ def tighten_then_by_sum_residuals(when_map: Mapping[str, Any], raw_then: Mapping
           if ck: mult[ck], rep[ck] = mult.get(ck, 0) + 1, rep.get(ck, sf)
         mk = mult.get(ck_tgt, 0)
         if mk < 1: continue
-        rem_lo, rem_hi, all_lo, all_hi = 0.0, 0.0, True, True
-        for ck, mp in mult.items():
-          if ck == ck_tgt: continue
-          b_lo, b_hi = lb(rep[ck])
-          if b_lo is not None: rem_lo += mp * b_lo
-          else: all_lo = False
-          if b_hi is not None: rem_hi += mp * b_hi
-          else: all_hi = False
+        rem_lo, rem_hi, all_lo, all_hi = res_bounds(mult, rep, lambda ck, mp: 0 if ck == ck_tgt else mp)
         for ck_p, mp in mult.items():
           if ck_p == ck_tgt: continue
           ord_rel = _peer_order_relation(ck_tgt, ck_p, out, wp, tp, rk)
           if ord_rel == 0: continue
-          o_lo, o_hi, o_all_lo, o_all_hi = 0.0, 0.0, True, True
-          for ck_q, mq in mult.items():
-            if ck_q in (ck_tgt, ck_p): continue
-            b_lo, b_hi = lb(rep[ck_q])
-            if b_lo is not None: o_lo += mq * b_lo
-            else: o_all_lo = False
-            if b_hi is not None: o_hi += mq * b_hi
-            else: o_all_hi = False
+          o_lo, o_hi, o_all_lo, o_all_hi = res_bounds(mult, rep, lambda ck, mq, cp=ck_p: 0 if ck in (ck_tgt, cp) else mq)
           if ord_rel in (1, 3) and s_hi is not None and o_all_lo:
             cnd = _round_num(lo_k, hi_k, (s_hi - o_lo) / (mk + mp), False)
             hi_k = cnd if hi_k is None else min(hi_k, cnd)
@@ -366,14 +367,7 @@ def tighten_then_by_sum_residuals(when_map: Mapping[str, Any], raw_then: Mapping
             if ck: mult_b[ck] = mult_b.get(ck, 0) + 1
           if ck_tgt in mult_b: continue
           if len(bv['sum_fields']) < len(sv['sum_fields']) and all(mult.get(ck, 0) >= m for ck, m in mult_b.items()):
-            ex_lo, ex_hi, ex_all_lo, ex_all_hi = 0.0, 0.0, True, True
-            for ck, mp in mult.items():
-              if ck != ck_tgt and mp > mult_b.get(ck, 0):
-                d, (r_lo, r_hi) = mp - mult_b.get(ck, 0), lb(rep[ck])
-                if r_lo is not None: ex_lo += d * r_lo
-                else: ex_all_lo = False
-                if r_hi is not None: ex_hi += d * r_hi
-                else: ex_all_hi = False
+            ex_lo, ex_hi, ex_all_lo, ex_all_hi = res_bounds(mult, rep, lambda ck, mp, mb=mult_b: 0 if ck == ck_tgt else mp - mb.get(ck, 0))
             if b_lo is not None and ex_all_lo: rem_lo, all_lo = (max(rem_lo, b_lo + ex_lo) if all_lo else (b_lo + ex_lo)), True
             if b_hi is not None and ex_all_hi: rem_hi, all_hi = (min(rem_hi, b_hi + ex_hi) if all_hi else (b_hi + ex_hi)), True
           if len(mult) == 2 and len(mult_b) == 2:

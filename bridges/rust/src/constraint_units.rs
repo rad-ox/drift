@@ -64,22 +64,14 @@ pub(crate) fn eval_compiled_plan_case_impl(
         let ptr = cm.get("pointer").and_then(|v| v.as_str()).unwrap_or(&default_ptr);
         let conv = cm.get("conv").and_then(|v| v.as_f64()).unwrap_or(1.0);
         let Some(raw_c) = cm.get("constraint").and_then(|v| v.as_object()) else { continue };
-        let mut rel = raw_c.clone();
-        let mut fake_view = BTreeMap::new();
-        if (conv - 1.0).abs() > 0.0 {
-            let mut units = BTreeMap::new();
-            units.insert("__u->target".to_string(), JsonValue::Number(conv));
-            let mut p_schema = BTreeMap::new();
-            p_schema.insert("unit".to_string(), JsonValue::Str("target".to_string()));
-            let mut then_schema = BTreeMap::new();
-            then_schema.insert(pred.to_string(), JsonValue::Object(p_schema));
-            let mut schema = BTreeMap::new();
-            schema.insert("then".to_string(), JsonValue::Object(then_schema));
-            fake_view.insert("units".to_string(), JsonValue::Object(units));
-            fake_view.insert("schema".to_string(), JsonValue::Object(schema));
-            rel.insert("convert_from".to_string(), JsonValue::Str("__u".to_string()));
-        }
-        let lowered = normalize_constraint_03(&rel, if fake_view.is_empty() { None } else { Some(&fake_view) }, pred)?;
+        let lowered = if (conv - 1.0).abs() > 0.0 {
+            if !conv.is_finite() || conv <= 0.0 {
+                return Err(format!("{}: missing unit conversion from __u", pred));
+            }
+            scale_constraint_03(desugar_03_rel(raw_c), conv)
+        } else {
+            normalize_constraint_03(raw_c, None, pred)?
+        };
         let mut peer_ptrs = BTreeMap::new();
         if let Some(pp) = cm.get("peer_pointers").and_then(|v| v.as_object()) {
             for (k, v) in pp {
@@ -110,7 +102,7 @@ pub(crate) fn normalize_constraint_03(
     context: Option<&BTreeMap<String, JsonValue>>,
     pred: &str,
 ) -> Result<BTreeMap<String, JsonValue>, String> {
-    let mut out = desugar_03_rel(raw);
+    let out = desugar_03_rel(raw);
     let Some(from) = raw.get("convert_from").and_then(JsonValue::as_str) else {
         return Ok(out);
     };
@@ -148,6 +140,10 @@ pub(crate) fn normalize_constraint_03(
     }
     .filter(|r| r.is_finite() && *r > 0.0)
     .ok_or_else(|| format!("{}: missing unit conversion from {}", pred, from))?;
+    Ok(scale_constraint_03(out, ratio))
+}
+
+fn scale_constraint_03(mut out: BTreeMap<String, JsonValue>, ratio: f64) -> BTreeMap<String, JsonValue> {
     let scale = |v: &mut JsonValue| {
         if let JsonValue::Number(n) = v {
             *n *= ratio;
@@ -174,5 +170,5 @@ pub(crate) fn normalize_constraint_03(
             scale(st);
         }
     }
-    Ok(out)
+    out
 }

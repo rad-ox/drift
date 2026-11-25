@@ -53,10 +53,10 @@ Each level delivers standalone value—stop where the cost stops paying, or clim
 
 ### 1. Initialize an Area
 
-Bootstrap a `.drift` area in your project root:
+Bootstrap a `.drift` area in your project root (append `--observed` to start with hardened `proof = "verified"` and `require_observations = true`):
 
 ```bash
-drift init alice .
+drift init alice .                # or: drift init alice . --observed
 drift approve .drift/config.toml --by alice
 ```
 
@@ -216,7 +216,7 @@ Add the dependency and plugin to `pom.xml`:
   <dependency>
     <groupId>io.github.rad-ox</groupId>
     <artifactId>drift-junit</artifactId>
-    <version>0.10.0</version>
+    <version>0.11.0</version>
     <scope>test</scope>
   </dependency>
 </dependencies>
@@ -226,7 +226,7 @@ Add the dependency and plugin to `pom.xml`:
     <plugin>
       <groupId>io.github.rad-ox</groupId>
       <artifactId>drift-maven-plugin</artifactId>
-      <version>0.10.0</version>
+      <version>0.11.0</version>
       <executions>
         <execution>
           <goals>
@@ -253,7 +253,7 @@ void returnsAnExistingItem() throws Exception {
 }
 ```
 
-In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.10.0`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
+In **Scala 3 / sbt** (such as **MUnit** `FunSuite`), resolve `drift-junit` (`0.11.0`) from local Maven and call `Drift.expect(contract, caseId, level)` + `c.verify(...)`:
 
 ```scala
 import drift.Drift
@@ -287,8 +287,8 @@ test('returns existing item', async (t) => {
 ```
 
 ```bash
-node --test
-drift gate .drift/contracts --events .drift/events
+drift run --gate -- node --test
+# Or manually: node --test && drift gate .drift/contracts --events .drift/events
 ```
 
 ### Option C: Python 3 (`bridges/drift.py`)
@@ -311,8 +311,8 @@ def test_found():
 ```
 
 ```bash
-pytest
-drift gate .drift/contracts --events .drift/events
+DRIFT_STRICT_WHEN=1 drift run --gate -- pytest
+# Or manually: pytest && drift gate .drift/contracts --events .drift/events
 ```
 
 ### Other Runtimes (Rust, V, C++20, C#, Godot GDScript, PHP, JUnit 4, COBOL)

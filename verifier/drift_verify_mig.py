@@ -4,7 +4,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-from drift_verify_base import SHA256_REF_RE, SNAPSHOT_RE, collect_receipt_files
+from drift_verify_base import SHA256_REF_RE, SNAPSHOT_RE, check_receipt_scope_snap_subj, collect_receipt_files, reduce_receipt_groups
 from drift_verify_parity import evaluate_contract_composition_core, load_composition_manifests_core
 from drift_verify_sim import eval_sim_opt_blocks
 
@@ -58,44 +58,20 @@ def evaluate_contract_migration_core(contract: dict[str, Any], mig_receipts: lis
       by_target.setdefault(tkey, {})[ikey] = r
   if not by_target and not (req_mig and res_set): return [], []
   if not by_target and req_mig and res_set: return ["migration.missing"], []
-  eval_list, reasons, has_viol, has_inc = [], [], False, False
-  for tkey in sorted(by_target):
-    bucket = by_target[tkey]
-    group = [bucket[k] for k in sorted(bucket)]
-    has_conflict, grp_viol, grp_evals = len(group) > 1, False, []
-    for rec in group:
-      eff, rsn, r_res = rec["outcome"], "", rec["resource"].strip()
-      res_ok = bool(r_res) and (r_res in res_set or ("#" in r_res and r_res.split("#", 1)[0].strip() in res_set))
-      ec, dc, osaf = rec["epoch_compatibility"], rec["data_correctness"], rec["operational_safety"]
-      if not res_ok or not scope_code or not all(any(cov_matches_fn(c, sc) for c in rec["covered_scope"]) for sc in scope_code) or not active_cases or not all(c in active_cases for c in rec["cases"]): eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.incomplete_scope"
-      elif expected_snapshot and rec["code_snapshot"] != expected_snapshot: eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.snapshot_mismatch"
-      elif expected_subject_ref and rec["subject_ref"] != expected_subject_ref: eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.subject_mismatch"
-      elif ec["incompatible_epochs"]: eff, rsn = "violated", "migration.epoch_incompatible"
-      elif dc["violations"] > 0: eff, rsn = "violated", "migration.data_invariant_violated"
-      elif osaf["lock_budget_ms"] > 0 and osaf["duration_budget_ms"] > 0 and (osaf["max_lock_ms"] > osaf["lock_budget_ms"] or osaf["duration_ms"] > osaf["duration_budget_ms"]): eff, rsn = "violated", "migration.lock_budget_exceeded"
-      elif not ec["active_epochs"] or not set(ec["active_epochs"]).issubset(set(ec["compatible_epochs"])): eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.epoch_incomplete"
-      elif not inv_keys.issubset(set(dc["invariants_checked"])) or (rec["phase"] == "backfill" and dc["rows_verified"] <= 0): eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.invariants_incomplete"
-      elif not osaf["lock_mode"] or osaf["lock_budget_ms"] <= 0 or osaf["duration_budget_ms"] <= 0 or not SHA256_REF_RE.match(osaf["context_ref"]): eff, rsn = ("inconclusive" if eff == "passed" else eff), "migration.operational_unmeasured"
-      elif eff == "violated" and not rsn: rsn = "migration.violated"
-      if eff == "violated": grp_viol = True
-      grp_evals.append((rec, eff, rsn))
-    for rec, eff0, rsn0 in grp_evals:
-      eff, rsn = eff0, rsn0
-      if has_conflict:
-        if grp_viol: eff, rsn = "violated", (rsn0 if (rsn0 and rsn0 != "migration.violated") else "migration.conflicting_receipts")
-        else: eff, rsn = "inconclusive", "migration.conflicting_receipts"
-      item = {**rec, "effective_outcome": eff, "provenance": "measured", **({"reason": rsn} if rsn else {})}
-      eval_list.append(item)
-      if eff == "violated":
-        has_viol = True
-        if rsn and rsn not in reasons: reasons.append(rsn)
-        if has_conflict and "migration.conflicting_receipts" not in reasons: reasons.append("migration.conflicting_receipts")
-      elif eff != "passed":
-        has_inc = True
-        if rsn and rsn not in reasons: reasons.append(rsn)
-  if has_viol and "migration.violated" not in reasons: reasons.append("migration.violated")
-  if has_inc and not has_viol and "migration.inconclusive" not in reasons:
-    reasons.append("migration.inconclusive")
-  return reasons, eval_list
+  def _eval_rec(rec: dict[str, Any]) -> tuple[str, str]:
+    eff, r_res = rec["outcome"], rec["resource"].strip()
+    res_ok = bool(r_res) and (r_res in res_set or ("#" in r_res and r_res.split("#", 1)[0].strip() in res_set))
+    if chk := check_receipt_scope_snap_subj(rec, scope_code, active_cases, expected_snapshot, expected_subject_ref, cov_matches_fn, "migration", res_ok):
+      return chk
+    ec, dc, osaf = rec["epoch_compatibility"], rec["data_correctness"], rec["operational_safety"]
+    if ec["incompatible_epochs"]: return "violated", "migration.epoch_incompatible"
+    if dc["violations"] > 0: return "violated", "migration.data_invariant_violated"
+    if osaf["lock_budget_ms"] > 0 and osaf["duration_budget_ms"] > 0 and (osaf["max_lock_ms"] > osaf["lock_budget_ms"] or osaf["duration_ms"] > osaf["duration_budget_ms"]): return "violated", "migration.lock_budget_exceeded"
+    deg = "inconclusive" if eff == "passed" else eff
+    if not ec["active_epochs"] or not set(ec["active_epochs"]).issubset(set(ec["compatible_epochs"])): return deg, "migration.epoch_incomplete"
+    if not inv_keys.issubset(set(dc["invariants_checked"])) or (rec["phase"] == "backfill" and dc["rows_verified"] <= 0): return deg, "migration.invariants_incomplete"
+    if not osaf["lock_mode"] or osaf["lock_budget_ms"] <= 0 or osaf["duration_budget_ms"] <= 0 or not SHA256_REF_RE.match(osaf["context_ref"]): return deg, "migration.operational_unmeasured"
+    return eff, ("migration.violated" if eff == "violated" else "")
+  return reduce_receipt_groups(by_target, _eval_rec, "migration")
 
 __all__ = ["collect_receipt_files", "eval_sim_opt_blocks", "evaluate_contract_composition_core", "evaluate_contract_migration_core", "load_composition_manifests_core", "load_migration_receipts_core"]
